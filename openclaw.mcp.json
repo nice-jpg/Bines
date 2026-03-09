@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "market-analysis": {
-      "command": "python3",
-      "args": ["/Users/nice/Project/misc/Bines/mcp_server.py"],
+      "command": "node",
+      "args": ["/Users/nice/Project/misc/Bines/mcp_server.js"],
       "cwd": "/Users/nice/Project/misc/Bines"
     }
   }
