@@ -163,7 +163,7 @@ async function fetchOverpass(lat, lng, radiusKm) {
   return payload.elements || [];
 }
 
-async function fetchAmapPois(lat, lng, radiusKm, amapKey, maxPages = 4) {
+async function fetchAmapPois(lat, lng, radiusKm, amapKey, maxPages = 8) {
   const rows = [];
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (let page = 1; page <= maxPages; page += 1) {
@@ -220,22 +220,68 @@ function inferCategoryL2(tags) {
   return null;
 }
 
-function inferCategoryL2FromAmap(poiType, name) {
-  const text = `${poiType || ''}|${name || ''}`;
-  const rules = [
-    ['咖啡', '咖啡馆'], ['甜品', '面包甜点'], ['面包', '面包甜点'], ['快餐', '中式快餐'], ['中餐', '中式快餐'],
-    ['便利店', '便利店'], ['服装', '服饰店'], ['美妆', '美妆集合店'], ['理发', '理发店'], ['美甲', '美甲店'],
-    ['洗衣', '洗衣店'], ['培训', '语言培训'], ['学校', '素质教育'], ['牙科', '口腔门诊'], ['口腔', '口腔门诊'],
-    ['诊所', '健康管理'], ['康复', '康复理疗'], ['健身', '健身工作室'], ['运动馆', '健身工作室'],
-    ['桌游', '桌游馆'], ['剧本杀', '剧本杀'],
+function inferCategoryL2FromAmap(poiType) {
+  const typeText = String(poiType || '').trim();
+  if (!typeText) return null;
+
+  const segments = typeText.split(';').map((x) => x.trim()).filter(Boolean);
+  const full = segments.join(';');
+  const top = segments[0] || '';
+
+  const preciseRules = [
+    ['餐饮服务;咖啡厅', '咖啡馆'],
+    ['餐饮服务;糕饼店', '面包甜点'],
+    ['餐饮服务;快餐厅', '中式快餐'],
+    ['购物服务;便利店', '便利店'],
+    ['购物服务;专卖店;服装鞋帽皮具店', '服饰店'],
+    ['购物服务;专卖店;宠物用品店', '生活服务'],
+    ['购物服务;商场;化妆品店', '美妆集合店'],
+    ['生活服务;美容美发店;理发店', '理发店'],
+    ['生活服务;美容美发店;美甲', '美甲店'],
+    ['生活服务;洗浴推拿场所;洗衣店', '洗衣店'],
+    ['科教文化服务;培训机构', '语言培训'],
+    ['科教文化服务;学校', '素质教育'],
+    ['医疗保健服务;专科医院;口腔医院', '口腔门诊'],
+    ['医疗保健服务;诊所', '健康管理'],
+    ['医疗保健服务;疗养院', '康复理疗'],
+    ['体育休闲服务;运动场馆;健身中心', '健身工作室'],
+    ['体育休闲服务;娱乐场所;游戏厅', '桌游馆'],
   ];
-  for (const [k, v] of rules) if (text.includes(k)) return v;
-  if (text.includes('购物服务')) return '服饰店';
-  if (text.includes('生活服务')) return '生活服务';
-  if (text.includes('医疗保健服务')) return '健康管理';
-  if (text.includes('科教文化服务')) return '素质教育';
-  if (text.includes('体育休闲服务')) return '文娱';
-  if (text.includes('餐饮服务')) return '中式快餐';
+  for (const [needle, mapped] of preciseRules) {
+    if (full.includes(needle)) return mapped;
+  }
+
+  const keywordRules = [
+    ['咖啡', '咖啡馆'],
+    ['甜品', '面包甜点'],
+    ['面包', '面包甜点'],
+    ['快餐', '中式快餐'],
+    ['便利店', '便利店'],
+    ['服装', '服饰店'],
+    ['化妆品', '美妆集合店'],
+    ['理发', '理发店'],
+    ['美甲', '美甲店'],
+    ['洗衣', '洗衣店'],
+    ['宠物', '生活服务'],
+    ['培训', '语言培训'],
+    ['学校', '素质教育'],
+    ['口腔', '口腔门诊'],
+    ['诊所', '健康管理'],
+    ['康复', '康复理疗'],
+    ['健身', '健身工作室'],
+    ['桌游', '桌游馆'],
+    ['剧本杀', '剧本杀'],
+  ];
+  for (const [needle, mapped] of keywordRules) {
+    if (full.includes(needle)) return mapped;
+  }
+
+  if (top.includes('购物服务')) return '生活服务';
+  if (top.includes('生活服务')) return '生活服务';
+  if (top.includes('医疗保健服务')) return '健康管理';
+  if (top.includes('科教文化服务')) return '素质教育';
+  if (top.includes('体育休闲服务')) return '文娱';
+  if (top.includes('餐饮服务')) return '中式快餐';
   return null;
 }
 
@@ -311,7 +357,7 @@ function buildPoiSnapshotFromAmap(pois, centerLat, centerLng, radiusKm) {
     const lng = Number(lngStr);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
     if (haversineKm(centerLat, centerLng, lat, lng) > radiusKm) continue;
-    const categoryL2 = inferCategoryL2FromAmap(p.type, p.name);
+    const categoryL2 = inferCategoryL2FromAmap(p.type);
     if (!categoryL2) continue;
     const biz = p.biz_ext || {};
     const ratingRaw = Number(biz.rating || 4.1);
@@ -406,7 +452,16 @@ function writeJson(filePath, payload) {
   fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
 }
 
-async function acquireMarketInputs({ regionQuery, outputDir, defaultRadiusKm = DEFAULT_RADIUS_KM, countrycodes = null, dataSource = 'amap', amapKey = null, emitProgress = null }) {
+async function acquireMarketInputs({
+  regionQuery,
+  outputDir,
+  defaultRadiusKm = DEFAULT_RADIUS_KM,
+  countrycodes = null,
+  dataSource = 'amap',
+  amapKey = null,
+  amapMaxPages = 8,
+  emitProgress = null,
+}) {
   const source = String(dataSource || 'amap').toLowerCase();
   if (!SUPPORTED_SOURCES.includes(source)) throw new Error(`不支持的数据源: ${source}, 可选: ${SUPPORTED_SOURCES.join(',')}`);
 
@@ -422,7 +477,7 @@ async function acquireMarketInputs({ regionQuery, outputDir, defaultRadiusKm = D
     if (!key) throw new Error('使用高德数据源需要传入 amap_key 或设置环境变量 AMAP_API_KEY');
     center = await geocodeRegionAmap(regionQuery, key);
     if (emitProgress) emitProgress('poi_fetch', '抓取高德 POI 数据');
-    const pois = await fetchAmapPois(center.lat, center.lng, defaultRadiusKm, key);
+    const pois = await fetchAmapPois(center.lat, center.lng, defaultRadiusKm, key, Number(amapMaxPages || 8));
     poiRows = buildPoiSnapshotFromAmap(pois, center.lat, center.lng, defaultRadiusKm);
   } else {
     center = await geocodeRegionOsm(regionQuery, countrycodes);
@@ -436,7 +491,7 @@ async function acquireMarketInputs({ regionQuery, outputDir, defaultRadiusKm = D
     const expanded = clamp(defaultRadiusKm + 0.4, MIN_RADIUS_KM, MAX_RADIUS_KM);
     if (source === 'amap') {
       const key = amapKey || process.env.AMAP_API_KEY;
-      const pois = await fetchAmapPois(center.lat, center.lng, expanded, key);
+      const pois = await fetchAmapPois(center.lat, center.lng, expanded, key, Number(amapMaxPages || 8));
       poiRows = buildPoiSnapshotFromAmap(pois, center.lat, center.lng, expanded);
     } else {
       elements = await fetchOverpass(center.lat, center.lng, expanded);
@@ -485,7 +540,7 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv);
   if (!args['region-query'] || !args['output-dir']) {
-    console.error('Usage: node data_acquisition.js --region-query "上海 徐家汇" --output-dir data/runtime_inputs [--data-source amap|osm] [--amap-key xxx] [--countrycodes cn]');
+    console.error('Usage: node data_acquisition.js --region-query "上海 徐家汇" --output-dir data/runtime_inputs [--data-source amap|osm] [--amap-key xxx] [--amap-max-pages 8] [--countrycodes cn]');
     process.exit(1);
   }
 
@@ -496,6 +551,7 @@ async function main() {
     countrycodes: args.countrycodes || null,
     dataSource: args['data-source'] || 'amap',
     amapKey: args['amap-key'] || null,
+    amapMaxPages: Number(args['amap-max-pages'] || 8),
   });
   console.log(JSON.stringify(result, null, 2));
 }

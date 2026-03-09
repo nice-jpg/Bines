@@ -49,7 +49,8 @@ export AMAP_API_KEY="你的高德Key"
 node data_acquisition.js \
   --region-query "安徽省宿州市" \
   --output-dir data/runtime_inputs \
-  --data-source amap
+  --data-source amap \
+  --amap-max-pages 8
 ```
 
 输出中会返回：
@@ -59,6 +60,24 @@ node data_acquisition.js \
 - `radius_km`
 - `poi_path`
 - `context_path`
+
+说明：`--amap-max-pages` 默认 `8`，每页最多 `25` 条，理论上限约 `200` 条（受高德实际返回与限流影响）。
+
+## 调试脚本（scripts）
+
+调试用途的 raw POI 抓取已独立到 `scripts/`，不影响主流程逻辑：
+
+```bash
+export AMAP_API_KEY=\"你的高德Key\"
+
+node scripts/fetch_amap_raw_pois.js \
+  --region-query \"安徽省宿州市\" \
+  --output-file data/debug/amap_pois_raw_300.json \
+  --radius-km 1.5 \
+  --page-size 25 \
+  --max-pages 12 \
+  --total-limit 300
+```
 
 ## MCP 模式（OpenClaw）
 

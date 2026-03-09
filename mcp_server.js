@@ -74,6 +74,7 @@ class MCPServer {
               default_radius_km: { type: 'number', default: 1.5 },
               data_source: { type: 'string', enum: ['amap', 'osm'], default: 'amap' },
               amap_key: { type: 'string' },
+              amap_max_pages: { type: 'number', default: 8 },
               countrycodes: { type: 'string' },
             },
             required: ['region_query', 'output_dir'],
@@ -91,6 +92,7 @@ class MCPServer {
               default_radius_km: { type: 'number', default: 1.5 },
               data_source: { type: 'string', enum: ['amap', 'osm'], default: 'amap' },
               amap_key: { type: 'string' },
+              amap_max_pages: { type: 'number', default: 8 },
               countrycodes: { type: 'string' },
             },
             required: ['region_query', 'output_dir', 'dictionary_path'],
@@ -144,6 +146,7 @@ class MCPServer {
       defaultRadiusKm: Number(arguments_.default_radius_km || 1.5),
       dataSource: arguments_.data_source || 'amap',
       amapKey: arguments_.amap_key || null,
+      amapMaxPages: Number(arguments_.amap_max_pages || 8),
       countrycodes: arguments_.countrycodes || null,
       emitProgress: (stage, message) => this.emitProgress(stage, message),
     });
