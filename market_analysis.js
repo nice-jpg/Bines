@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+const fs = require('node:fs');
+const path = require('node:path');
 const { runAnalysis } = require('./analysis_core');
 
 function parseArgs(argv) {
@@ -20,16 +22,33 @@ function required(args, key) {
   return args[key];
 }
 
+function loadScopeFromPoiDir(poiPath) {
+  const scopePath = path.join(path.dirname(path.resolve(poiPath)), 'analysis_scope.json');
+  if (!fs.existsSync(scopePath)) return null;
+  return JSON.parse(fs.readFileSync(scopePath, 'utf8'));
+}
+
 function main() {
   const args = parseArgs(process.argv);
+  const poiPath = required(args, 'poi');
+  const scope = loadScopeFromPoiDir(poiPath);
+  const centerLat = args['center-lat'] != null ? Number(args['center-lat']) : Number(scope?.center_lat);
+  const centerLng = args['center-lng'] != null ? Number(args['center-lng']) : Number(scope?.center_lng);
+  const radiusKm = args['radius-km'] != null ? Number(args['radius-km']) : Number(scope?.radius_km);
+  if (!Number.isFinite(centerLat) || !Number.isFinite(centerLng) || !Number.isFinite(radiusKm)) {
+    throw new Error(
+      'Missing analysis scope. Run data_acquisition first (to generate analysis_scope.json), or pass --center-lat --center-lng --radius-km.',
+    );
+  }
+
   const result = runAnalysis({
-    poiPath: required(args, 'poi'),
+    poiPath,
     contextPath: required(args, 'context'),
     dictionaryPath: required(args, 'dictionary'),
     outputDir: required(args, 'output'),
-    centerLat: Number(required(args, 'center-lat')),
-    centerLng: Number(required(args, 'center-lng')),
-    radiusKm: Number(args['radius-km'] || 1.5),
+    centerLat,
+    centerLng,
+    radiusKm,
   });
 
   console.log('Analysis completed.');

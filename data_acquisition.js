@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { resolveAmapKey } = require('./scripts/map_service_env');
 
 const DEFAULT_RADIUS_KM = 1.5;
 const MIN_RADIUS_KM = 0.8;
@@ -224,64 +225,105 @@ function inferCategoryL2FromAmap(poiType) {
   const typeText = String(poiType || '').trim();
   if (!typeText) return null;
 
-  const segments = typeText.split(';').map((x) => x.trim()).filter(Boolean);
-  const full = segments.join(';');
-  const top = segments[0] || '';
-
-  const preciseRules = [
-    ['餐饮服务;咖啡厅', '咖啡馆'],
-    ['餐饮服务;糕饼店', '面包甜点'],
-    ['餐饮服务;快餐厅', '中式快餐'],
-    ['购物服务;便利店', '便利店'],
-    ['购物服务;专卖店;服装鞋帽皮具店', '服饰店'],
-    ['购物服务;专卖店;宠物用品店', '生活服务'],
+  const typePaths = typeText.split('|').map((x) => x.trim()).filter(Boolean);
+  const exactPathRules = new Map([
+    ['餐饮服务;咖啡厅;咖啡厅', '咖啡馆'],
+    ['餐饮服务;糕饼店;糕饼店', '面包甜点'],
+    ['餐饮服务;冷饮店;冷饮店', '面包甜点'],
+    ['餐饮服务;快餐厅;快餐厅', '中式快餐'],
+    ['餐饮服务;中餐厅;中餐厅', '中式快餐'],
+    ['餐饮服务;中餐厅;特色/地方风味餐厅', '中式快餐'],
+    ['餐饮服务;中餐厅;火锅店', '中式快餐'],
+    ['餐饮服务;中餐厅;综合酒楼', '中式快餐'],
+    ['餐饮服务;外国餐厅;日本料理', '中式快餐'],
+    ['购物服务;便民商店/便利店;便民商店/便利店', '便利店'],
+    ['购物服务;超级市场;超市', '便利店'],
+    ['购物服务;服装鞋帽皮具店;服装鞋帽皮具店', '服饰店'],
     ['购物服务;商场;化妆品店', '美妆集合店'],
-    ['生活服务;美容美发店;理发店', '理发店'],
-    ['生活服务;美容美发店;美甲', '美甲店'],
-    ['生活服务;洗浴推拿场所;洗衣店', '洗衣店'],
-    ['科教文化服务;培训机构', '语言培训'],
-    ['科教文化服务;学校', '素质教育'],
+    ['生活服务;美容美发店;美容美发店', '理发店'],
+    ['生活服务;洗衣店;洗衣店', '洗衣店'],
+    ['科教文化服务;培训机构;培训机构', '语言培训'],
     ['医疗保健服务;专科医院;口腔医院', '口腔门诊'],
-    ['医疗保健服务;诊所', '健康管理'],
-    ['医疗保健服务;疗养院', '康复理疗'],
+    ['医疗保健服务;诊所;诊所', '健康管理'],
+    ['医疗保健服务;动物医疗场所;宠物诊所', '健康管理'],
+    ['医疗保健服务;医药保健销售店;药房', '健康管理'],
     ['体育休闲服务;运动场馆;健身中心', '健身工作室'],
-    ['体育休闲服务;娱乐场所;游戏厅', '桌游馆'],
-  ];
-  for (const [needle, mapped] of preciseRules) {
-    if (full.includes(needle)) return mapped;
-  }
+    ['体育休闲服务;运动场馆;台球厅', '文娱综合'],
+    ['体育休闲服务;运动场馆;乒乓球馆', '文娱综合'],
+    ['体育休闲服务;娱乐场所;KTV', '文娱综合'],
+    ['体育休闲服务;娱乐场所;酒吧', '文娱综合'],
+    ['购物服务;专卖店;宠物用品店', '生活服务综合'],
+    ['购物服务;专卖店;书店', '零售综合'],
+    ['购物服务;专卖店;烟酒专卖店', '零售综合'],
+    ['购物服务;专卖店;儿童用品店', '零售综合'],
+    ['购物服务;专卖店;自行车专卖店', '零售综合'],
+    ['购物服务;专卖店;专营店', '零售综合'],
+  ]);
 
   const keywordRules = [
     ['咖啡', '咖啡馆'],
-    ['甜品', '面包甜点'],
-    ['面包', '面包甜点'],
+    ['糕饼', '面包甜点'],
+    ['冷饮', '面包甜点'],
     ['快餐', '中式快餐'],
+    ['中餐', '中式快餐'],
     ['便利店', '便利店'],
+    ['超市', '便利店'],
     ['服装', '服饰店'],
     ['化妆品', '美妆集合店'],
-    ['理发', '理发店'],
-    ['美甲', '美甲店'],
+    ['美容美发', '理发店'],
     ['洗衣', '洗衣店'],
-    ['宠物', '生活服务'],
     ['培训', '语言培训'],
     ['学校', '素质教育'],
     ['口腔', '口腔门诊'],
     ['诊所', '健康管理'],
-    ['康复', '康复理疗'],
+    ['药房', '健康管理'],
     ['健身', '健身工作室'],
-    ['桌游', '桌游馆'],
-    ['剧本杀', '剧本杀'],
+    ['台球', '文娱综合'],
+    ['乒乓球', '文娱综合'],
+    ['KTV', '文娱综合'],
+    ['酒吧', '文娱综合'],
+    ['宠物', '生活服务综合'],
+    ['步行街', '零售综合'],
+    ['购物中心', '零售综合'],
+    ['农副产品市场', '零售综合'],
+    ['果品市场', '零售综合'],
+    ['建材', '零售综合'],
   ];
-  for (const [needle, mapped] of keywordRules) {
-    if (full.includes(needle)) return mapped;
-  }
 
-  if (top.includes('购物服务')) return '生活服务';
-  if (top.includes('生活服务')) return '生活服务';
-  if (top.includes('医疗保健服务')) return '健康管理';
-  if (top.includes('科教文化服务')) return '素质教育';
-  if (top.includes('体育休闲服务')) return '文娱';
-  if (top.includes('餐饮服务')) return '中式快餐';
+  const disallowTop = new Set(['政府机构及社会团体']);
+  const weakGenericPaths = new Set([
+    '餐饮服务;餐饮相关场所;餐饮相关',
+    '购物服务;购物相关场所;购物相关场所',
+    '生活服务;生活服务场所;生活服务场所',
+    '科教文化服务;科教文化场所;科教文化场所',
+    '体育休闲服务;体育休闲服务场所;体育休闲服务场所',
+  ]);
+  const hasGovPath = typePaths.some((p) => p.startsWith('政府机构及社会团体;'));
+  const strongPaths = typePaths.filter((p) => !weakGenericPaths.has(p));
+  const candidatePaths = hasGovPath ? strongPaths.filter((p) => !p.startsWith('生活服务;生活服务场所;')) : strongPaths;
+  if (!candidatePaths.length) return null;
+
+  let topFallback = null;
+  for (const rawPath of candidatePaths) {
+    if (exactPathRules.has(rawPath)) return exactPathRules.get(rawPath);
+    const segments = rawPath.split(';').map((x) => x.trim()).filter(Boolean);
+    const top = segments[0] || '';
+    if (disallowTop.has(top)) continue;
+
+    for (const [needle, mapped] of keywordRules) {
+      if (rawPath.includes(needle)) return mapped;
+    }
+
+    if (!topFallback) {
+      if (top.includes('餐饮服务')) topFallback = '餐饮综合';
+      else if (top.includes('购物服务')) topFallback = '零售综合';
+      else if (top.includes('生活服务')) topFallback = '生活服务综合';
+      else if (top.includes('医疗保健服务')) topFallback = '健康服务综合';
+      else if (top.includes('科教文化服务')) topFallback = '教育综合';
+      else if (top.includes('体育休闲服务')) topFallback = '文娱综合';
+    }
+  }
+  if (topFallback) return topFallback;
   return null;
 }
 
@@ -459,6 +501,7 @@ async function acquireMarketInputs({
   countrycodes = null,
   dataSource = 'amap',
   amapKey = null,
+  envFile = '.env',
   amapMaxPages = 8,
   emitProgress = null,
 }) {
@@ -473,7 +516,7 @@ async function acquireMarketInputs({
   let elements = [];
 
   if (source === 'amap') {
-    const key = amapKey || process.env.AMAP_API_KEY;
+    const key = resolveAmapKey(amapKey, envFile);
     if (!key) throw new Error('使用高德数据源需要传入 amap_key 或设置环境变量 AMAP_API_KEY');
     center = await geocodeRegionAmap(regionQuery, key);
     if (emitProgress) emitProgress('poi_fetch', '抓取高德 POI 数据');
@@ -490,7 +533,7 @@ async function acquireMarketInputs({
     await new Promise((r) => setTimeout(r, 1000));
     const expanded = clamp(defaultRadiusKm + 0.4, MIN_RADIUS_KM, MAX_RADIUS_KM);
     if (source === 'amap') {
-      const key = amapKey || process.env.AMAP_API_KEY;
+      const key = resolveAmapKey(amapKey, envFile);
       const pois = await fetchAmapPois(center.lat, center.lng, expanded, key, Number(amapMaxPages || 8));
       poiRows = buildPoiSnapshotFromAmap(pois, center.lat, center.lng, expanded);
     } else {
@@ -509,8 +552,16 @@ async function acquireMarketInputs({
   if (emitProgress) emitProgress('write_outputs', '写入输入文件');
   const poiPath = path.join(outputDir, 'poi_snapshot.csv');
   const contextPath = path.join(outputDir, 'region_context.json');
+  const scopePath = path.join(outputDir, 'analysis_scope.json');
   writePoiSnapshot(poiPath, poiRows);
   writeJson(contextPath, regionContext);
+  writeJson(scopePath, {
+    center_lat: center.lat,
+    center_lng: center.lng,
+    radius_km: suggestedRadiusKm,
+    region_query: regionQuery,
+    resolved_location: center.display_name,
+  });
 
   return {
     region_query: regionQuery,
@@ -522,6 +573,7 @@ async function acquireMarketInputs({
     poi_count: poiRows.length,
     poi_path: poiPath,
     context_path: contextPath,
+    scope_path: scopePath,
   };
 }
 
@@ -540,7 +592,7 @@ function parseArgs(argv) {
 async function main() {
   const args = parseArgs(process.argv);
   if (!args['region-query'] || !args['output-dir']) {
-    console.error('Usage: node data_acquisition.js --region-query "上海 徐家汇" --output-dir data/runtime_inputs [--data-source amap|osm] [--amap-key xxx] [--amap-max-pages 8] [--countrycodes cn]');
+    console.error('Usage: node data_acquisition.js --region-query "上海 徐家汇" --output-dir data/runtime_inputs [--data-source amap|osm] [--amap-key xxx] [--env-file .env] [--amap-max-pages 8] [--countrycodes cn]');
     process.exit(1);
   }
 
@@ -551,6 +603,7 @@ async function main() {
     countrycodes: args.countrycodes || null,
     dataSource: args['data-source'] || 'amap',
     amapKey: args['amap-key'] || null,
+    envFile: args['env-file'] || '.env',
     amapMaxPages: Number(args['amap-max-pages'] || 8),
   });
   console.log(JSON.stringify(result, null, 2));

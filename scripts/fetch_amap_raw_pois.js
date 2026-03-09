@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+const { resolveAmapKey } = require('./map_service_env');
 
 const AMAP_MAIN_TYPES = '050000|060000|070000|080000|090000|140000';
 
@@ -102,7 +103,7 @@ async function fetchAmapRawPois({ key, lat, lng, radiusKm, maxPages, pageSize, t
 
 async function main() {
   const args = parseArgs(process.argv);
-  const key = args['amap-key'] || process.env.AMAP_API_KEY;
+  const key = resolveAmapKey(args['amap-key'] || null, args['env-file'] || '.env');
   if (!key) throw new Error('请提供 --amap-key 或设置 AMAP_API_KEY');
 
   const regionQuery = requireArg(args, 'region-query');

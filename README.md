@@ -33,11 +33,10 @@ node market_analysis.js \
   --poi data/poi_snapshot.csv \
   --context data/region_context.json \
   --dictionary data/industry_dictionary.json \
-  --output outputs \
-  --center-lat 31.2304 \
-  --center-lng 121.4737 \
-  --radius-km 1.5
+  --output outputs
 ```
+
+说明：若 `--poi` 同目录存在 `analysis_scope.json`（由采集阶段生成），分析会自动使用其中的 `center_lat/center_lng/radius_km`，无需重复传坐标。
 
 ## 自动获取输入数据
 
