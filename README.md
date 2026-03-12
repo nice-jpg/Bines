@@ -108,3 +108,58 @@ OpenClaw 配置样例见 [openclaw.mcp.json](/Users/nice/Project/misc/Bines/open
 ```bash
 node --test tests/*.test.js
 ```
+
+## 门店事实数据补全
+
+使用 `scripts/enrich_store_facts.js` 逐店补充多源指标并输出店铺事实表：
+
+```bash
+node scripts/enrich_store_facts.js \
+  --poi data/runtime_inputs_sync/poi_snapshot.csv \
+  --output data/facts/store_facts.csv \
+  --env-file .env \
+  --city 宿州
+```
+
+可选：
+
+- `--meituan-csv`：美团导出表（推荐含 `name/rating/review_count/review_count_7d/review_count_30d/review_activity_days_30d/rating_stability_30d/avg_price`）
+- `--dianping-csv`：点评导出表（同上字段口径）
+- `--delay-ms`：每店请求间隔，默认 `280`
+
+口径说明（重要）：
+
+- 本模块不输出真实订单真值：`fused_order_count`固定为空。
+- 统一写入 `order_missing_reason=NO_AUTHORIZED_ORDER_SOURCE`。
+- 以 `demand_proxy_score` 替代订单强度，计算公式：
+  - `0.45*评论规模分 + 0.30*评论增速分 + 0.15*活跃连续性分 + 0.10*评分稳定性分`
+- 输出同时包含 `demand_proxy_level(A/B/C)` 与 `low_signal_flag`。
+- 额外生成质量报告：`*_quality_report.json`，含 `proxy_coverage_rate / order_truth_coverage_rate / low_signal_store_count`。
+- 该代理分仅用于横向比较与趋势观察，不代表平台真实订单数。
+
+## 从0开始的店铺事实采集流水线
+
+脚本：`scripts/store_facts_pipeline.js`
+
+输入：
+
+- 必填：`--poi`（店铺清单 CSV）
+- 可选：
+  - `--meituan-csv` / `--dianping-csv`（授权导出）
+  - `--meituan-url-csv` / `--dianping-url-csv`（公开页面 URL 清单，在线提取可见指标）
+
+输出：
+
+- `store_facts.csv`（每店一行）
+- `store_facts_quality_report.json`
+
+示例：
+
+```bash
+node scripts/store_facts_pipeline.js \
+  --poi data/runtime_inputs_sync/poi_snapshot.csv \
+  --output data/facts/store_facts_v2.csv \
+  --meituan-csv data/sources/meituan_export.csv \
+  --dianping-csv data/sources/dianping_export.csv \
+  --match-threshold 0.75
+```

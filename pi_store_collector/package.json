@@ -1,0 +1,10 @@
+{
+  "name": "pi-store-collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test tests/*.test.js"
+  }
+}
