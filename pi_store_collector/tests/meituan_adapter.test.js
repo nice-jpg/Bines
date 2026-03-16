@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { escapeForAdbInputText } = require('../src/device/adb_client');
 
 const {
   createMeituanAdbAdapter,
@@ -12,6 +13,14 @@ const {
   extractReviewFactsFromTexts,
 } = require('../src/adapters/meituan_adb_adapter');
 const { buildAdapters } = require('../src/adapters');
+
+test('escapeForAdbInputText escapes shell-sensitive store names', () => {
+  const out = escapeForAdbInputText('三陶自习室(一中校区)');
+  assert.equal(out, '三陶自习室\\(一中校区\\)');
+
+  const out2 = escapeForAdbInputText('A 店 & B 店');
+  assert.equal(out2, 'A%s店%s\\&%sB%s店');
+});
 
 test('extractors parse ui xml text and basic facts', () => {
   const xml = `<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
@@ -47,11 +56,25 @@ test('meituan adb adapter collect with mocked adb runner', async () => {
   const calls = [];
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'meituan-adapter-'));
   const xml = `<hierarchy><node text="测试羊肉馆"/><node text="4.5"/><node text="88条评价"/><node text="羊肉汤"/><node text="¥26"/></hierarchy>`;
+  let dumpsysCount = 0;
 
   async function runner(bin, args) {
     calls.push({ bin, args });
+    if (args.includes('dumpsys')) {
+      dumpsysCount += 1;
+      if (dumpsysCount === 1) {
+        return {
+          stdout: 'View Hierarchy:\n  android.widget.TextView{id/search V.ED.... 100,200-300,260 text="搜索"}\n',
+          stderr: '',
+        };
+      }
+      return {
+        stdout: 'View Hierarchy:\n  android.widget.TextView{id/store V.ED.... 100,200-300,260 text="测试羊肉馆"}\n  android.widget.TextView{id/rating V.ED.... 100,280-180,320 text="4.5"}\n  android.widget.TextView{id/review V.ED.... 100,330-260,360 text="88条评价"}\n  android.widget.TextView{id/product V.ED.... 100,400-220,440 text="羊肉汤"}\n  android.widget.TextView{id/price V.ED.... 240,400-320,440 text="¥26"}\n',
+        stderr: '',
+      };
+    }
     if (args.includes('uiautomator') && args.includes('dump')) {
-      return { stdout: 'UI hierchary dumped', stderr: '' };
+      throw new Error('uiautomator unavailable');
     }
     if (args.includes('exec-out') && args.includes('cat')) {
       return { stdout: xml, stderr: '' };
@@ -81,11 +104,13 @@ test('meituan adb adapter collect with mocked adb runner', async () => {
   assert.ok(Array.isArray(out.product_facts));
   assert.ok(fs.existsSync(out.raw_artifact_path));
   assert.ok(calls.length >= 5);
+  const searchTapCall = calls.find((x) => x.args.includes('tap') && x.args.includes('200') && x.args.includes('230'));
+  assert.ok(searchTapCall);
 });
 
 test('buildAdapters switches meituan adapter by config', () => {
-  const a1 = buildAdapters({ useMock: false, useMeituanAdb: false });
-  assert.equal(a1.meituan.name, 'meituan-stub-adapter');
+  const a1 = buildAdapters({ useMock: false });
+  assert.equal(a1.meituan.name, 'meituan-adb-adapter');
 
   const a2 = buildAdapters({ useMock: false, useMeituanAdb: true, meituanRunner: async () => ({ stdout: '', stderr: '' }) });
   assert.equal(a2.meituan.name, 'meituan-adb-adapter');

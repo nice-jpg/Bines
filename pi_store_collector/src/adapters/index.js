@@ -2,7 +2,7 @@ const { createStubAdapter } = require('./base_stub_adapter');
 const { createMockAdapter } = require('./mock_adapter');
 const { createMeituanAdbAdapter } = require('./meituan_adb_adapter');
 
-function buildAdapters({ useMock = false, useMeituanAdb = false, artifactRoot = '', meituanRunner = null } = {}) {
+function buildAdapters({ useMock = false, useMeituanAdb = true, artifactRoot = '', meituanRunner = null } = {}) {
   if (useMock) {
     return {
       meituan: createMockAdapter('meituan'),

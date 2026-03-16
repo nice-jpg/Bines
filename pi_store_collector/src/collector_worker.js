@@ -101,7 +101,7 @@ async function main() {
   const args = parseArgs(process.argv);
   const serverUrl = args['server-url'] || process.env.PI_SERVER_URL || 'http://127.0.0.1:9080';
   const deviceId = args['device-id'] || process.env.DEVICE_ID || 'collector-device-01';
-  const accountId = args['account-id'] || process.env.ACCOUNT_ID || 'collector-account-01';
+  const accountId = args['account-id'] || process.env.ACCOUNT_ID || deviceId;
   const platforms = (args.platforms || process.env.PLATFORMS || 'meituan,dianping,douyin')
     .split(',')
     .map((x) => x.trim())
@@ -109,7 +109,7 @@ async function main() {
   const loop = String(args.loop || process.env.WORKER_LOOP || 'true') === 'true';
   const intervalMs = Number(args['interval-ms'] || process.env.WORKER_INTERVAL_MS || 3000);
   const useMock = String(args['use-mock-adapter'] || process.env.USE_MOCK_ADAPTER || 'false') === 'true';
-  const useMeituanAdb = String(args['use-meituan-adb'] || process.env.USE_MEITUAN_ADB || 'false') === 'true';
+  const useMeituanAdb = String(args['use-meituan-adb'] || process.env.USE_MEITUAN_ADB || 'true') !== 'false';
   const artifactRoot = args['artifact-root'] || process.env.COLLECTOR_ARTIFACT_ROOT || '';
 
   const out = await runWorker({
