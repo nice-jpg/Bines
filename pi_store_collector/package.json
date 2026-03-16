@@ -5,6 +5,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node src/server.js",
+    "collect:local": "node scripts/run_local_collect.js",
     "test": "node --test tests/*.test.js"
   }
 }
