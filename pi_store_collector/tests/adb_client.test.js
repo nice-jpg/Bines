@@ -17,6 +17,10 @@ test('ascii detection and escaping behave as expected', () => {
   assert.equal(escapeForAdbInputText('A (B)'), 'A%s\\(B\\)');
   assert.equal(shellQuote('/data/local/tmp/a.txt'), "'/data/local/tmp/a.txt'");
   assert.equal(stripUiAutomatorNoise('UI hierchary dumped to: /dev/tty\n<?xml version="1.0"?><hierarchy/>'), '<?xml version="1.0"?><hierarchy/>');
+  assert.equal(
+    stripUiAutomatorNoise('<?xml version="1.0"?><hierarchy></hierarchy>UI hierchary dumped to: /dev/tty'),
+    '<?xml version="1.0"?><hierarchy></hierarchy>',
+  );
 });
 
 test('convertDumpsysToXml extracts clickable nodes', () => {
@@ -101,6 +105,60 @@ test('dumpUiXml falls back from exec-out to tmp file', async () => {
   assert.ok(xml.includes('<hierarchy'));
   assert.ok(calls.some((x) => x.args.includes('/dev/tty')));
   assert.ok(calls.some((x) => x.args.includes('/data/local/tmp/pi_store_collector_ui.xml')));
+});
+
+test('dumpUiXml caches the first successful dump strategy', async () => {
+  const calls = [];
+  const adb = new AdbClient({
+    serial: 'device-05',
+    runner: async (bin, args) => {
+      calls.push({ bin, args });
+      if (args[2] === 'uiautomator' && args[3] === 'dump' && args[4] === '/dev/tty') {
+        throw new Error('exec-out dump failed');
+      }
+      if (args.includes('uiautomator') && args.includes('--compressed')) {
+        throw new Error('compressed dump failed');
+      }
+      if (args.includes('uiautomator') && args.includes('dump') && args.includes('/sdcard/pi_store_collector_ui.xml')) {
+        return { stdout: 'UI hierchary dumped', stderr: '' };
+      }
+      if (args.includes('exec-out') && args.includes('cat') && args.includes('/sdcard/pi_store_collector_ui.xml')) {
+        return { stdout: '<?xml version="1.0"?><hierarchy />', stderr: '' };
+      }
+      throw new Error(`unexpected call: ${args.join(' ')}`);
+    },
+  });
+
+  await adb.dumpUiXml('/sdcard/pi_store_collector_ui.xml');
+  const firstProbeCount = calls.length;
+  await adb.dumpUiXml('/sdcard/pi_store_collector_ui.xml');
+
+  const secondCallArgs = calls.slice(firstProbeCount).map((x) => x.args.join(' '));
+  assert.deepEqual(secondCallArgs, [
+    '-s device-05 shell uiautomator dump /sdcard/pi_store_collector_ui.xml',
+    '-s device-05 exec-out cat /sdcard/pi_store_collector_ui.xml',
+  ]);
+  assert.equal(calls.filter((x) => x.args.includes('/dev/tty')).length, 1);
+  assert.equal(calls.filter((x) => x.args.includes('--compressed')).length, 1);
+});
+
+test('probeUiDumpStrategy can be called before repeated dumps', async () => {
+  const calls = [];
+  const adb = new AdbClient({
+    runner: async (bin, args) => {
+      calls.push(args);
+      if (args[0] === 'exec-out' && args.includes('/dev/tty')) {
+        return { stdout: '<?xml version="1.0"?><hierarchy />', stderr: '' };
+      }
+      throw new Error(`unexpected call: ${args.join(' ')}`);
+    },
+  });
+
+  const probe = await adb.probeUiDumpStrategy();
+  assert.equal(probe.strategy, 'exec-out:/dev/tty');
+  await adb.dumpUiXml();
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1], ['exec-out', 'uiautomator', 'dump', '/dev/tty']);
 });
 
 test('dumpUiXml falls back to dumpsys conversion', async () => {

@@ -626,5 +626,3 @@ module.exports = {
   DEFAULT_HELPER_DEVICE_PATH,
   DEFAULT_REPLAY_MODE,
 };
-
-act('touch')

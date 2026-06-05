@@ -28,9 +28,19 @@ function shellQuote(text) {
 function stripUiAutomatorNoise(text) {
   const raw = String(text || '');
   const start = raw.indexOf('<?xml');
-  if (start >= 0) return raw.slice(start).trim();
+  if (start >= 0) {
+    const xml = raw.slice(start);
+    const end = xml.indexOf('</hierarchy>');
+    if (end >= 0) return xml.slice(0, end + '</hierarchy>'.length).trim();
+    return xml.trim();
+  }
   const hierarchyStart = raw.indexOf('<hierarchy');
-  if (hierarchyStart >= 0) return raw.slice(hierarchyStart).trim();
+  if (hierarchyStart >= 0) {
+    const xml = raw.slice(hierarchyStart);
+    const end = xml.indexOf('</hierarchy>');
+    if (end >= 0) return xml.slice(0, end + '</hierarchy>'.length).trim();
+    return xml.trim();
+  }
   return raw.trim();
 }
 
@@ -151,6 +161,8 @@ class AdbClient {
   constructor({ serial = '', runner = null } = {}) {
     this.serial = serial || '';
     this.runner = runner || this.defaultRunner.bind(this);
+    this.uiDumpStrategy = null;
+    this.uiDumpStrategyDevicePath = '';
   }
 
   async defaultRunner(bin, args) {
@@ -224,53 +236,89 @@ class AdbClient {
     await this.shell(['input', 'keyevent', String(code)]);
   }
 
-  async dumpUiXml(devicePath = '/sdcard/pi_store_collector_ui.xml') {
+  getUiDumpStrategies(devicePath = '/sdcard/pi_store_collector_ui.xml') {
+    return [
+      {
+        name: 'file:/data/local/tmp/pi_store_collector_ui.xml',
+        run: async () => {
+          const candidate = '/data/local/tmp/pi_store_collector_ui.xml';
+          await this.shell(['uiautomator', 'dump', candidate]);
+          const { stdout } = await this.runAdb(['exec-out', 'cat', candidate]);
+          return stripUiAutomatorNoise(stdout || '');
+        },
+      },
+      {
+        name: `file:${devicePath}`,
+        run: async () => {
+          await this.shell(['uiautomator', 'dump', devicePath]);
+          const { stdout } = await this.runAdb(['exec-out', 'cat', devicePath]);
+          return stripUiAutomatorNoise(stdout || '');
+        },
+      },
+      {
+        name: 'exec-out:/dev/tty',
+        run: async () => {
+          const { stdout, stderr } = await this.runAdb(['exec-out', 'uiautomator', 'dump', '/dev/tty']);
+          return stripUiAutomatorNoise(stdout || stderr || '');
+        },
+      },
+      {
+        name: `compressed:${devicePath}`,
+        run: async () => {
+          const { stdout, stderr } = await this.shell(['uiautomator', 'dump', '--compressed', devicePath]);
+          const maybeOutput = stripUiAutomatorNoise(stdout || stderr || '');
+          if (maybeOutput.includes('<hierarchy')) return maybeOutput;
+          const { stdout: pulled } = await this.runAdb(['exec-out', 'cat', devicePath]);
+          return stripUiAutomatorNoise(pulled || '');
+        },
+      },
+      {
+        name: 'dumpsys:activity top',
+        run: async () => {
+          const { stdout, stderr } = await this.shell(['dumpsys', 'activity', 'top', '-a']);
+          return convertDumpsysToXml(stdout || stderr || '') || '';
+        },
+      },
+    ];
+  }
+
+  async runUiDumpStrategy(strategy) {
+    const xml = await strategy.run();
+    if (xml && xml.includes('<hierarchy')) return xml;
+    throw new Error(`${strategy.name} returned no xml`);
+  }
+
+  async probeUiDumpStrategy(devicePath = '/sdcard/pi_store_collector_ui.xml') {
     const errors = [];
-
-    try {
-      const { stdout, stderr } = await this.runAdb(['exec-out', 'uiautomator', 'dump', '/dev/tty']);
-      const xml = stripUiAutomatorNoise(stdout || stderr || '');
-      if (xml.includes('<hierarchy')) return xml;
-      errors.push(`exec-out:/dev/tty returned no xml`);
-    } catch (err) {
-      errors.push(`exec-out:/dev/tty ${err.message || String(err)}`);
-    }
-
-    try {
-      const { stdout, stderr } = await this.shell(['uiautomator', 'dump', '--compressed', devicePath]);
-      const maybeOutput = stripUiAutomatorNoise(stdout || stderr || '');
-      if (maybeOutput.includes('<hierarchy')) return maybeOutput;
-      const { stdout: pulled } = await this.runAdb(['exec-out', 'cat', devicePath]);
-      const xml = stripUiAutomatorNoise(pulled || '');
-      if (xml.includes('<hierarchy')) return xml;
-      errors.push(`compressed:${devicePath} returned no xml`);
-    } catch (err) {
-      errors.push(`compressed:${devicePath} ${err.message || String(err)}`);
-    }
-
-    const candidates = [devicePath, '/data/local/tmp/pi_store_collector_ui.xml'];
-    for (const candidate of candidates) {
+    for (const strategy of this.getUiDumpStrategies(devicePath)) {
       try {
-        await this.shell(['uiautomator', 'dump', candidate]);
-        const { stdout } = await this.runAdb(['exec-out', 'cat', candidate]);
-        const xml = stripUiAutomatorNoise(stdout || '');
-        if (xml.includes('<hierarchy')) return xml;
-        errors.push(`file:${candidate} returned no xml`);
+        const xml = await this.runUiDumpStrategy(strategy);
+        this.uiDumpStrategy = strategy;
+        this.uiDumpStrategyDevicePath = devicePath;
+        return { strategy: strategy.name, xml };
       } catch (err) {
-        errors.push(`file:${candidate} ${err.message || String(err)}`);
+        errors.push(`${strategy.name} ${err.message || String(err)}`);
+      }
+    }
+    throw new Error(`UI_DUMP_FAILED: ${errors.join(' | ')}`);
+  }
+
+  clearUiDumpStrategy() {
+    this.uiDumpStrategy = null;
+    this.uiDumpStrategyDevicePath = '';
+  }
+
+  async dumpUiXml(devicePath = '/sdcard/pi_store_collector_ui.xml') {
+    if (this.uiDumpStrategy && this.uiDumpStrategyDevicePath === devicePath) {
+      try {
+        return await this.runUiDumpStrategy(this.uiDumpStrategy);
+      } catch {
+        this.clearUiDumpStrategy();
       }
     }
 
-    try {
-      const { stdout, stderr } = await this.shell(['dumpsys', 'activity', 'top', '-a']);
-      const xml = convertDumpsysToXml(stdout || stderr || '');
-      if (xml && xml.includes('<hierarchy')) return xml;
-      errors.push('dumpsys:activity top returned no convertible hierarchy');
-    } catch (err) {
-      errors.push(`dumpsys:activity top ${err.message || String(err)}`);
-    }
-
-    throw new Error(`UI_DUMP_FAILED: ${errors.join(' | ')}`);
+    const { xml } = await this.probeUiDumpStrategy(devicePath);
+    return xml;
   }
 
   async screenshotPng() {

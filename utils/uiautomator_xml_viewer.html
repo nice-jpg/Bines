@@ -1,0 +1,938 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UIAutomator XML Viewer</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d8dde6;
+      --muted: #687386;
+      --text: #172033;
+      --accent: #1363df;
+      --accent-soft: rgba(19, 99, 223, 0.14);
+      --ocr: #b65d00;
+      --ocr-soft: rgba(182, 93, 0, 0.14);
+      --node: #0f7b6c;
+      --node-soft: rgba(15, 123, 108, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .app {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      height: 100vh;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .toolbar h1 {
+      margin: 0 14px 0 0;
+      font-size: 15px;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .toolbar input[type="file"] {
+      width: 260px;
+      max-width: 30vw;
+      font-size: 13px;
+    }
+
+    .toolbar button {
+      height: 30px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .toolbar button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .stats {
+      margin-left: auto;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(360px, 1fr) minmax(420px, 1fr);
+      min-height: 0;
+    }
+
+    .pane {
+      min-width: 0;
+      min-height: 0;
+      background: var(--panel);
+    }
+
+    .canvas-pane {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      border-right: 1px solid var(--line);
+    }
+
+    .pane-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .legend {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-left: auto;
+    }
+
+    .canvas-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: 6px;
+    }
+
+    .icon-button {
+      display: inline-grid;
+      place-items: center;
+      width: 28px;
+      height: 26px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      font-size: 15px;
+      line-height: 1;
+      cursor: pointer;
+    }
+
+    .icon-button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .reset-button {
+      width: 36px;
+      font-size: 12px;
+    }
+
+    .zoom-value {
+      min-width: 42px;
+      color: var(--muted);
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .legend-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 2px;
+      border: 1px solid currentColor;
+    }
+
+    .node-swatch {
+      color: var(--node);
+      background: var(--node-soft);
+    }
+
+    .ocr-swatch {
+      color: var(--ocr);
+      background: var(--ocr-soft);
+    }
+
+    .canvas-scroll {
+      overflow: auto;
+      padding: 8px 16px 18px;
+      background:
+        linear-gradient(#eef1f6 1px, transparent 1px),
+        linear-gradient(90deg, #eef1f6 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+
+    .phone-frame {
+      position: relative;
+      margin: 0 auto;
+      width: max(260px, calc(66% * var(--canvas-zoom, 1)));
+      border: 1px solid #bac3d3;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 12px 36px rgba(23, 32, 51, 0.12);
+      overflow: hidden;
+    }
+
+    .empty {
+      display: grid;
+      place-items: center;
+      min-height: 340px;
+      padding: 24px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+      background: #fff;
+    }
+
+    .node-rect {
+      fill: var(--node-soft);
+      stroke: var(--node);
+      stroke-width: 1.5;
+      vector-effect: non-scaling-stroke;
+      cursor: pointer;
+    }
+
+    .ocr-rect {
+      fill: var(--ocr-soft);
+      stroke: var(--ocr);
+    }
+
+    .node-label {
+      fill: #111827;
+      paint-order: stroke;
+      stroke: rgba(255, 255, 255, 0.92);
+      stroke-width: 3px;
+      stroke-linejoin: round;
+      font-size: 22px;
+      pointer-events: none;
+    }
+
+    .ocr-label {
+      fill: #7a3a00;
+    }
+
+    .is-selected {
+      fill: var(--accent-soft);
+      stroke: var(--accent);
+      stroke-width: 3;
+    }
+
+    .selection-outline {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 4;
+      vector-effect: non-scaling-stroke;
+      pointer-events: none;
+    }
+
+    .xml-pane {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .xml-scroll {
+      overflow: auto;
+      background: #fbfcfe;
+    }
+
+    pre {
+      margin: 0;
+      padding: 12px 0 24px;
+      min-width: max-content;
+      font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #263044;
+      tab-size: 2;
+    }
+
+    .xml-line {
+      display: block;
+      min-height: 19px;
+      padding: 0 14px;
+      white-space: pre;
+      border-left: 3px solid transparent;
+    }
+
+    .xml-clickable {
+      cursor: pointer;
+    }
+
+    .xml-clickable:hover {
+      background: #eef5ff;
+    }
+
+    .xml-selected {
+      border-left-color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .xml-hidden {
+      color: #8b95a7;
+      background: #f0f2f5;
+      text-decoration: line-through;
+    }
+
+    .context-menu {
+      position: fixed;
+      z-index: 20;
+      min-width: 132px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      box-shadow: 0 12px 28px rgba(23, 32, 51, 0.18);
+    }
+
+    .context-menu[hidden] {
+      display: none;
+    }
+
+    .context-menu button {
+      display: block;
+      width: 100%;
+      padding: 7px 9px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .context-menu button:hover {
+      background: var(--accent-soft);
+      color: var(--accent);
+    }
+
+    .xml-tag {
+      color: #6a3fb2;
+    }
+
+    .xml-attr {
+      color: #1d6f5f;
+    }
+
+    .xml-value {
+      color: #9a4d00;
+    }
+
+    .drop-active .canvas-scroll,
+    .drop-active .xml-scroll {
+      outline: 3px solid var(--accent);
+      outline-offset: -3px;
+    }
+
+    @media (max-width: 900px) {
+      .workspace {
+        grid-template-columns: 1fr;
+        grid-template-rows: minmax(360px, 1fr) minmax(360px, 1fr);
+      }
+
+      .canvas-pane {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .toolbar {
+        flex-wrap: wrap;
+      }
+
+      .stats {
+        margin-left: 0;
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="app" id="app">
+    <header class="toolbar">
+      <h1>UIAutomator XML Viewer</h1>
+      <input id="fileInput" type="file" accept=".xml,text/xml,application/xml">
+      <button id="loadSample" type="button">加载 ../1.xml</button>
+      <span class="stats" id="stats">选择或拖入 XML 文件</span>
+    </header>
+
+    <section class="workspace">
+      <section class="pane canvas-pane">
+        <div class="pane-header">
+          <span id="screenInfo">页面布局</span>
+          <div class="legend">
+            <span class="legend-item"><span class="swatch node-swatch"></span>node</span>
+            <span class="legend-item"><span class="swatch ocr-swatch"></span>ocr-node</span>
+          </div>
+          <div class="canvas-controls" aria-label="缩放控制">
+            <button class="icon-button" id="zoomOut" type="button" title="缩小">-</button>
+            <span class="zoom-value" id="zoomValue">100%</span>
+            <button class="icon-button" id="zoomIn" type="button" title="放大">+</button>
+            <button class="icon-button reset-button" id="zoomReset" type="button" title="重置">1:1</button>
+          </div>
+        </div>
+        <div class="canvas-scroll" id="canvasScroll">
+          <div class="empty" id="canvasEmpty">左侧会按 bounds 还原手机页面结构，点击矩形可定位右侧 XML 节点。</div>
+          <div class="phone-frame" id="phoneFrame" hidden></div>
+        </div>
+      </section>
+
+      <section class="pane xml-pane">
+        <div class="pane-header">
+          <span>XML</span>
+          <span id="selectionInfo"></span>
+        </div>
+        <div class="xml-scroll" id="xmlScroll">
+          <pre id="xmlView"><span class="xml-line">右侧显示格式化后的 XML，点击 node 或 ocr-node 可高亮左侧布局。</span></pre>
+        </div>
+      </section>
+    </section>
+  </main>
+  <div class="context-menu" id="contextMenu" hidden></div>
+
+  <script>
+    const state = {
+      nodes: [],
+      layers: [],
+      hiddenNodeIds: new Set(),
+      doc: null,
+      sourceName: '',
+      selectedId: null,
+      xmlText: '',
+      screen: { width: 0, height: 0 },
+      zoom: 1,
+    };
+
+    const app = document.getElementById('app');
+    const fileInput = document.getElementById('fileInput');
+    const loadSample = document.getElementById('loadSample');
+    const stats = document.getElementById('stats');
+    const screenInfo = document.getElementById('screenInfo');
+    const selectionInfo = document.getElementById('selectionInfo');
+    const canvasEmpty = document.getElementById('canvasEmpty');
+    const phoneFrame = document.getElementById('phoneFrame');
+    const xmlView = document.getElementById('xmlView');
+    const xmlScroll = document.getElementById('xmlScroll');
+    const zoomOut = document.getElementById('zoomOut');
+    const zoomIn = document.getElementById('zoomIn');
+    const zoomReset = document.getElementById('zoomReset');
+    const zoomValue = document.getElementById('zoomValue');
+    const contextMenu = document.getElementById('contextMenu');
+
+    zoomOut.addEventListener('click', () => setZoom(state.zoom - 0.1));
+    zoomIn.addEventListener('click', () => setZoom(state.zoom + 0.1));
+    zoomReset.addEventListener('click', () => setZoom(1));
+    document.addEventListener('click', hideContextMenu);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hideContextMenu();
+    });
+    document.addEventListener('scroll', hideContextMenu, true);
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      await renderXml(await file.text(), file.name);
+    });
+
+    loadSample.addEventListener('click', async () => {
+      await loadXmlFromUrl('../1.xml');
+    });
+
+    const initialSrc = new URLSearchParams(window.location.search).get('src');
+    if (initialSrc) {
+      loadXmlFromUrl(initialSrc);
+    }
+
+    async function loadXmlFromUrl(url) {
+      try {
+        const response = await fetch(url, { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        await renderXml(await response.text(), url);
+      } catch (error) {
+        setError(`无法加载 ${url}。如果浏览器阻止本地 fetch，请直接拖入 XML 文件。`);
+      }
+    }
+
+    for (const eventName of ['dragenter', 'dragover']) {
+      document.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        app.classList.add('drop-active');
+      });
+    }
+
+    for (const eventName of ['dragleave', 'drop']) {
+      document.addEventListener(eventName, (event) => {
+        event.preventDefault();
+        app.classList.remove('drop-active');
+      });
+    }
+
+    document.addEventListener('drop', async (event) => {
+      const file = event.dataTransfer.files && event.dataTransfer.files[0];
+      if (!file) return;
+      await renderXml(await file.text(), file.name);
+    });
+
+    async function renderXml(xmlText, sourceName) {
+      state.xmlText = xmlText;
+      state.sourceName = sourceName;
+      state.nodes = [];
+      state.layers = [];
+      state.hiddenNodeIds = new Set();
+      state.selectedId = null;
+
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlText, 'application/xml');
+      const parseError = doc.querySelector('parsererror');
+      if (parseError) {
+        setError(parseError.textContent.trim() || 'XML 解析失败');
+        return;
+      }
+
+      const hierarchy = doc.documentElement && doc.documentElement.tagName === 'hierarchy'
+        ? doc.documentElement
+        : doc.querySelector('hierarchy');
+
+      if (!hierarchy) {
+        setError('未找到 hierarchy 根节点。');
+        return;
+      }
+
+      collectDrawableNodes(hierarchy);
+      state.doc = doc;
+      state.screen = inferScreenSize(state.nodes);
+
+      drawCanvas();
+      renderXmlLines(doc);
+      updateStats(sourceName);
+
+      const firstTextNode = state.nodes.find((node) => node.text);
+      if (firstTextNode) selectNode(firstTextNode.id, { scrollXml: true });
+    }
+
+    function collectDrawableNodes(root) {
+      let nextId = 1;
+      let nextLayerId = 1;
+
+      function visit(element, depth) {
+        if (element.nodeType !== Node.ELEMENT_NODE) return;
+
+        const tag = element.tagName;
+        if (tag === 'ocr-layer') {
+          element.setAttribute('data-viewer-layer-id', String(nextLayerId++));
+          state.layers.push({ id: element.getAttribute('data-viewer-layer-id'), element });
+        }
+
+        if (tag === 'node' || tag === 'ocr-node') {
+          const bounds = parseBounds(element.getAttribute('bounds'));
+          if (bounds) {
+            const item = {
+              id: String(nextId++),
+              tag,
+              element,
+              depth,
+              bounds,
+              text: element.getAttribute('text') || '',
+              className: element.getAttribute('class') || '',
+              resourceId: element.getAttribute('resource-id') || '',
+            };
+            element.setAttribute('data-viewer-id', item.id);
+            state.nodes.push(item);
+          }
+        }
+
+        for (const child of element.children) {
+          visit(child, depth + 1);
+        }
+      }
+
+      visit(root, 0);
+    }
+
+    function parseBounds(value) {
+      if (!value) return null;
+      const match = value.match(/^\[(\-?\d+),\s*(\-?\d+)\]\[(\-?\d+),\s*(\-?\d+)\]$/);
+      if (!match) return null;
+      const x1 = Number(match[1]);
+      const y1 = Number(match[2]);
+      const x2 = Number(match[3]);
+      const y2 = Number(match[4]);
+      const width = x2 - x1;
+      const height = y2 - y1;
+      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+      return { x1, y1, x2, y2, width, height };
+    }
+
+    function inferScreenSize(nodes) {
+      const rootLike = nodes.find((node) => node.bounds.x1 === 0 && node.bounds.y1 === 0);
+      const maxX = Math.max(...nodes.map((node) => node.bounds.x2), 1);
+      const maxY = Math.max(...nodes.map((node) => node.bounds.y2), 1);
+      return {
+        width: rootLike ? Math.max(rootLike.bounds.x2, maxX) : maxX,
+        height: rootLike ? Math.max(rootLike.bounds.y2, maxY) : maxY,
+      };
+    }
+
+    function drawCanvas() {
+      phoneFrame.hidden = false;
+      canvasEmpty.hidden = true;
+      phoneFrame.innerHTML = '';
+      phoneFrame.style.aspectRatio = `${state.screen.width} / ${state.screen.height}`;
+      applyZoom();
+
+      const svg = createSvg('svg');
+      svg.setAttribute('viewBox', `0 0 ${state.screen.width} ${state.screen.height}`);
+      svg.setAttribute('role', 'img');
+      svg.setAttribute('aria-label', 'Rendered Android UIAutomator bounds');
+
+      const rectLayer = createSvg('g');
+      const textLayer = createSvg('g');
+      const selectedLayer = createSvg('g');
+      selectedLayer.setAttribute('id', 'selectedLayer');
+      svg.append(rectLayer, textLayer, selectedLayer);
+
+      for (const node of state.nodes) {
+        const rect = createSvg('rect');
+        if (state.hiddenNodeIds.has(node.id)) continue;
+        rect.setAttribute('x', node.bounds.x1);
+        rect.setAttribute('y', node.bounds.y1);
+        rect.setAttribute('width', node.bounds.width);
+        rect.setAttribute('height', node.bounds.height);
+        rect.setAttribute('rx', '2');
+        rect.classList.add('node-rect');
+        if (node.tag === 'ocr-node') rect.classList.add('ocr-rect');
+        rect.dataset.viewerId = node.id;
+        rect.addEventListener('click', (event) => {
+          event.stopPropagation();
+          selectNode(node.id, { scrollXml: true });
+        });
+        rect.addEventListener('contextmenu', (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          showNodeContextMenu(event.clientX, event.clientY, node.id);
+        });
+        rectLayer.append(rect);
+
+        if (node.text) {
+          const text = createSvg('text');
+          const fontSize = Math.max(16, Math.min(30, node.bounds.height * 0.48));
+          text.setAttribute('x', node.bounds.x1 + 5);
+          text.setAttribute('y', node.bounds.y1 + Math.min(node.bounds.height - 4, fontSize + 3));
+          text.setAttribute('font-size', fontSize);
+          text.classList.add('node-label');
+          if (node.tag === 'ocr-node') text.classList.add('ocr-label');
+          text.textContent = compactText(node.text, Math.max(4, Math.floor(node.bounds.width / (fontSize * 0.55))));
+          textLayer.append(text);
+        }
+      }
+
+      phoneFrame.append(svg);
+    }
+
+    function renderXmlLines(doc) {
+      xmlView.innerHTML = '';
+      const lines = [];
+      lines.push({ html: '&lt;?xml version="1.0" encoding="UTF-8"?&gt;' });
+      appendElementLines(doc.documentElement, 0, lines);
+
+      for (const line of lines) {
+        const span = document.createElement('span');
+        span.className = 'xml-line';
+        if (line.hidden) span.classList.add('xml-hidden');
+        if (line.id) {
+          span.classList.add('xml-clickable');
+          span.dataset.viewerId = line.id;
+          span.addEventListener('click', () => selectNode(line.id, { scrollXml: false, scrollCanvas: true }));
+          span.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            showNodeContextMenu(event.clientX, event.clientY, line.id);
+          });
+        } else if (line.layerId) {
+          span.dataset.viewerLayerId = line.layerId;
+          span.addEventListener('contextmenu', (event) => {
+            event.preventDefault();
+            showLayerContextMenu(event.clientX, event.clientY, line.layerId);
+          });
+        }
+        span.innerHTML = line.html;
+        xmlView.append(span);
+      }
+    }
+
+    function appendElementLines(element, depth, lines) {
+      const indent = '  '.repeat(depth);
+      const id = element.getAttribute('data-viewer-id') || '';
+      const layerId = element.getAttribute('data-viewer-layer-id') || '';
+      const hidden = id ? state.hiddenNodeIds.has(id) : layerId ? isOcrLayerHidden(layerId) : false;
+      const children = Array.from(element.children);
+      const openTag = formatOpenTag(element);
+
+      if (children.length === 0) {
+        lines.push({ id, layerId, hidden, html: `${escapeHtml(indent)}${openTag} /&gt;` });
+        return;
+      }
+
+      lines.push({ id, layerId, hidden, html: `${escapeHtml(indent)}${openTag}&gt;` });
+      for (const child of children) {
+        appendElementLines(child, depth + 1, lines);
+      }
+      lines.push({ html: `${escapeHtml(indent)}<span class="xml-tag">&lt;/${escapeHtml(element.tagName)}&gt;</span>` });
+    }
+
+    function formatOpenTag(element) {
+      let html = `<span class="xml-tag">&lt;${escapeHtml(element.tagName)}</span>`;
+      for (const attr of element.attributes) {
+        if (attr.name.startsWith('data-')) continue;
+        html += ` <span class="xml-attr">${escapeHtml(attr.name)}</span>=<span class="xml-value">"${escapeHtml(attr.value)}"</span>`;
+      }
+      return html;
+    }
+
+    function selectNode(id, options) {
+      if (state.hiddenNodeIds.has(id)) return;
+      state.selectedId = id;
+      document.querySelectorAll('[data-viewer-id].is-selected').forEach((element) => {
+        element.classList.remove('is-selected');
+      });
+      document.querySelectorAll('.xml-selected').forEach((element) => {
+        element.classList.remove('xml-selected');
+      });
+
+      const node = state.nodes.find((item) => item.id === id);
+      if (!node) return;
+
+      const rect = document.querySelector(`rect[data-viewer-id="${id}"]`);
+      if (rect) {
+        rect.classList.add('is-selected');
+        if (options && options.scrollCanvas) {
+          rect.scrollIntoView({ block: 'center', inline: 'center' });
+        }
+      }
+      drawSelectionOutline(node);
+
+      const xmlLine = document.querySelector(`.xml-line[data-viewer-id="${id}"]`);
+      if (xmlLine) {
+        xmlLine.classList.add('xml-selected');
+        if (options && options.scrollXml) {
+          xmlLine.scrollIntoView({ block: 'center', inline: 'nearest' });
+        }
+      }
+
+      selectionInfo.textContent = `${node.tag} #${node.id} ${node.text ? `text="${node.text}"` : ''}`;
+    }
+
+    function drawSelectionOutline(node) {
+      const selectedLayer = document.getElementById('selectedLayer');
+      if (!selectedLayer) return;
+      selectedLayer.innerHTML = '';
+      const outline = createSvg('rect');
+      outline.setAttribute('x', node.bounds.x1);
+      outline.setAttribute('y', node.bounds.y1);
+      outline.setAttribute('width', node.bounds.width);
+      outline.setAttribute('height', node.bounds.height);
+      outline.setAttribute('rx', '3');
+      outline.classList.add('selection-outline');
+      selectedLayer.append(outline);
+    }
+
+    function updateStats(sourceName) {
+      const nodeCount = state.nodes.filter((node) => node.tag === 'node').length;
+      const ocrCount = state.nodes.filter((node) => node.tag === 'ocr-node').length;
+      const hiddenCount = state.hiddenNodeIds.size;
+      stats.textContent = `${sourceName} · ${nodeCount} node · ${ocrCount} ocr-node · 隐藏 ${hiddenCount}`;
+      screenInfo.textContent = `页面布局 ${state.screen.width} x ${state.screen.height}`;
+    }
+
+    function setError(message) {
+      stats.textContent = message;
+      screenInfo.textContent = '页面布局';
+      selectionInfo.textContent = '';
+      phoneFrame.hidden = true;
+      phoneFrame.innerHTML = '';
+      canvasEmpty.hidden = false;
+      canvasEmpty.textContent = message;
+      xmlView.innerHTML = `<span class="xml-line">${escapeHtml(message)}</span>`;
+    }
+
+    function hideNode(id) {
+      for (const nodeId of getNodeSubtreeIds(id)) {
+        state.hiddenNodeIds.add(nodeId);
+      }
+      if (state.selectedId && state.hiddenNodeIds.has(state.selectedId)) {
+        state.selectedId = null;
+        selectionInfo.textContent = '';
+      }
+      refreshViews();
+    }
+
+    function showNode(id) {
+      for (const nodeId of getNodeSubtreeIds(id)) {
+        state.hiddenNodeIds.delete(nodeId);
+      }
+      refreshViews();
+    }
+
+    function hideOcrLayer(layerId) {
+      const layer = state.layers.find((item) => item.id === layerId);
+      if (!layer) return;
+      for (const nodeId of getOcrLayerNodeIds(layer)) {
+        state.hiddenNodeIds.add(nodeId);
+      }
+      if (state.selectedId && state.hiddenNodeIds.has(state.selectedId)) {
+        state.selectedId = null;
+        selectionInfo.textContent = '';
+      }
+      refreshViews();
+    }
+
+    function showOcrLayer(layerId) {
+      const layer = state.layers.find((item) => item.id === layerId);
+      if (!layer) return;
+      for (const nodeId of getOcrLayerNodeIds(layer)) {
+        state.hiddenNodeIds.delete(nodeId);
+      }
+      refreshViews();
+    }
+
+    function isOcrLayerHidden(layerId) {
+      const layer = state.layers.find((item) => item.id === layerId);
+      if (!layer) return false;
+      const ids = getOcrLayerNodeIds(layer);
+      return ids.length > 0 && ids.every((id) => state.hiddenNodeIds.has(id));
+    }
+
+    function isNodeHidden(id) {
+      return getNodeSubtreeIds(id).every((nodeId) => state.hiddenNodeIds.has(nodeId));
+    }
+
+    function getNodeSubtreeIds(id) {
+      const node = state.nodes.find((item) => item.id === id);
+      if (!node) return [];
+      const ids = [];
+      if (node.element.getAttribute('data-viewer-id')) {
+        ids.push(node.element.getAttribute('data-viewer-id'));
+      }
+      for (const child of node.element.querySelectorAll('[data-viewer-id]')) {
+        ids.push(child.getAttribute('data-viewer-id'));
+      }
+      return Array.from(new Set(ids));
+    }
+
+    function getOcrLayerNodeIds(layer) {
+      return Array.from(layer.element.querySelectorAll('ocr-node[data-viewer-id]'))
+        .map((element) => element.getAttribute('data-viewer-id'));
+    }
+
+    function refreshViews() {
+      drawCanvas();
+      if (state.doc) renderXmlLines(state.doc);
+      updateStats(state.sourceName || '当前 XML');
+      if (state.selectedId && !state.hiddenNodeIds.has(state.selectedId)) {
+        selectNode(state.selectedId, {});
+      }
+    }
+
+    function showContextMenu(x, y, items) {
+      contextMenu.innerHTML = '';
+      for (const item of items) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = item.label;
+        button.addEventListener('click', () => {
+          hideContextMenu();
+          item.action();
+        });
+        contextMenu.append(button);
+      }
+
+      contextMenu.hidden = false;
+      const rect = contextMenu.getBoundingClientRect();
+      const left = Math.min(x, window.innerWidth - rect.width - 8);
+      const top = Math.min(y, window.innerHeight - rect.height - 8);
+      contextMenu.style.left = `${Math.max(8, left)}px`;
+      contextMenu.style.top = `${Math.max(8, top)}px`;
+    }
+
+    function showNodeContextMenu(x, y, id) {
+      const hidden = isNodeHidden(id);
+      showContextMenu(x, y, [
+        hidden
+          ? { label: '恢复显示', action: () => showNode(id) }
+          : { label: '隐藏节点', action: () => hideNode(id) },
+      ]);
+    }
+
+    function showLayerContextMenu(x, y, layerId) {
+      const hidden = isOcrLayerHidden(layerId);
+      showContextMenu(x, y, [
+        hidden
+          ? { label: '恢复 OCR 层', action: () => showOcrLayer(layerId) }
+          : { label: '隐藏 OCR 层', action: () => hideOcrLayer(layerId) },
+      ]);
+    }
+
+    function hideContextMenu() {
+      contextMenu.hidden = true;
+    }
+
+    function setZoom(nextZoom) {
+      state.zoom = Math.min(2.5, Math.max(0.5, Number(nextZoom.toFixed(2))));
+      applyZoom();
+    }
+
+    function applyZoom() {
+      phoneFrame.style.setProperty('--canvas-zoom', state.zoom);
+      zoomValue.textContent = `${Math.round(state.zoom * 100)}%`;
+    }
+
+    function compactText(value, maxLength) {
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      if (normalized.length <= maxLength) return normalized;
+      return `${normalized.slice(0, Math.max(1, maxLength - 1))}…`;
+    }
+
+    function createSvg(tagName) {
+      return document.createElementNS('http://www.w3.org/2000/svg', tagName);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+  </script>
+</body>
+</html>

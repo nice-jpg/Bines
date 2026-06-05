@@ -1,0 +1,114 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes'?>
+<hierarchy rotation="0">
+    <node index="0" text="" resource-id="" class="android.widget.FrameLayout"
+        package="com.taobao.taobao" content-desc="" checkable="false" checked="false"
+        clickable="false" enabled="true" focusable="false" focused="false" scrollable="false"
+        long-clickable="false" password="false" selected="false" bounds="[0,0][1080,2400]"
+        drawing-order="0" hint="">
+        <node index="0" text="" resource-id="android:id/decor_content_parent"
+            class="android.view.ViewGroup" package="com.taobao.taobao" content-desc=""
+            checkable="false" checked="false" clickable="false" enabled="true" focusable="false"
+            focused="false" scrollable="false" long-clickable="false" password="false"
+            selected="false" bounds="[0,0][1080,2337]" drawing-order="1" hint="">
+            <node index="0" text="" resource-id="android:id/action_bar_container"
+                class="android.widget.FrameLayout" package="com.taobao.taobao" content-desc=""
+                checkable="false" checked="false" clickable="false" enabled="true" focusable="false"
+                focused="false" scrollable="false" long-clickable="false" password="false"
+                selected="false" bounds="[0,132][1080,279]" drawing-order="2" hint="">
+                <node index="0" text="" resource-id="android:id/action_bar"
+                    class="android.view.ViewGroup" package="com.taobao.taobao" content-desc=""
+                    checkable="false" checked="false" clickable="false" enabled="true"
+                    focusable="false" focused="false" scrollable="false" long-clickable="false"
+                    password="false" selected="false" bounds="[0,132][1080,279]" drawing-order="1"
+                    hint="">
+                    <node index="0" text="淘宝" resource-id="" class="android.widget.TextView"
+                        package="com.taobao.taobao" content-desc="" checkable="false"
+                        checked="false" clickable="false" enabled="true" focusable="false"
+                        focused="false" scrollable="false" long-clickable="false" password="false"
+                        selected="false" bounds="[42,166][148,244]" drawing-order="1" hint="" />
+                </node>
+            </node>
+            <node index="1" text="" resource-id="android:id/content"
+                class="android.widget.FrameLayout" package="com.taobao.taobao" content-desc=""
+                checkable="false" checked="false" clickable="false" enabled="true" focusable="false"
+                focused="false" scrollable="false" long-clickable="false" password="false"
+                selected="false" bounds="[0,279][1080,2337]" drawing-order="1" hint="">
+                <node index="0" text="" resource-id="" class="android.widget.LinearLayout"
+                    package="com.taobao.taobao" content-desc="" checkable="false" checked="false"
+                    clickable="false" enabled="true" focusable="false" focused="false"
+                    scrollable="false" long-clickable="false" password="false" selected="false"
+                    bounds="[0,279][1080,2337]" drawing-order="1" hint="">
+                    <node index="0" text="" resource-id="" class="com.uc.webview.export.WebView"
+                        package="com.taobao.taobao" content-desc="" checkable="false"
+                        checked="false" clickable="false" enabled="true" focusable="true"
+                        focused="false" scrollable="false" long-clickable="false" password="false"
+                        selected="false" bounds="[0,279][1080,2337]" drawing-order="1" hint="">
+                        <node index="0" text="" resource-id="" class="android.widget.FrameLayout"
+                            package="com.taobao.taobao" content-desc="" checkable="false"
+                            checked="false" clickable="false" enabled="true" focusable="false"
+                            focused="false" scrollable="false" long-clickable="false"
+                            password="false" selected="false" bounds="[0,279][1080,2337]"
+                            drawing-order="1" hint="">
+                            <node index="0" text="" resource-id="" class="android.view.View"
+                                package="com.taobao.taobao" content-desc="" checkable="false"
+                                checked="false" clickable="false" enabled="true" focusable="false"
+                                focused="false" scrollable="false" long-clickable="false"
+                                password="false" selected="false" bounds="[0,279][1080,2337]"
+                                drawing-order="1" hint="" />
+                            <node index="1" text="" resource-id="" class="android.view.View"
+                                package="com.taobao.taobao" content-desc="" checkable="false"
+                                checked="false" clickable="false" enabled="true" focusable="false"
+                                focused="false" scrollable="false" long-clickable="false"
+                                password="false" selected="false" bounds="[0,279][1080,2337]"
+                                drawing-order="2" hint="" />
+                        </node>
+                        <node NAF="true" index="1" text="" resource-id=""
+                            class="com.uc.aosp.android.webkit.m0" package="com.taobao.taobao"
+                            content-desc="" checkable="false" checked="false" clickable="true"
+                            enabled="true" focusable="true" focused="false" scrollable="false"
+                            long-clickable="true" password="false" selected="false"
+                            bounds="[0,279][1080,2337]" drawing-order="2" hint="" />
+                    </node>
+                </node>
+                <node index="1" text=""
+                    resource-id="com.taobao.taobao:id/layermanager_penetrate_webview_container_id"
+                    class="android.widget.FrameLayout" package="com.taobao.taobao" content-desc=""
+                    checkable="false" checked="false" clickable="false" enabled="true"
+                    focusable="false" focused="false" scrollable="false" long-clickable="false"
+                    password="false" selected="false" bounds="[0,279][1080,2337]" drawing-order="2"
+                    hint="">
+                    <node index="0" text="" resource-id="" class="android.widget.FrameLayout"
+                        package="com.taobao.taobao" content-desc="" checkable="false"
+                        checked="false" clickable="false" enabled="true" focusable="false"
+                        focused="false" scrollable="false" long-clickable="false" password="false"
+                        selected="false" bounds="[0,279][1080,2337]" drawing-order="1" hint="">
+                        <node index="0" text="" resource-id="" class="android.widget.FrameLayout"
+                            package="com.taobao.taobao" content-desc="" checkable="false"
+                            checked="false" clickable="false" enabled="true" focusable="false"
+                            focused="false" scrollable="false" long-clickable="false"
+                            password="false" selected="false" bounds="[0,279][1080,2337]"
+                            drawing-order="1" hint="">
+                            <node index="0" text=""
+                                resource-id="com.taobao.taobao:id/poplayer_inner_view"
+                                class="android.view.View" package="com.taobao.taobao"
+                                content-desc="" checkable="false" checked="false" clickable="false"
+                                enabled="true" focusable="false" focused="false" scrollable="false"
+                                long-clickable="false" password="false" selected="false"
+                                bounds="[0,279][1080,2337]" drawing-order="1" hint="" />
+                        </node>
+                    </node>
+                </node>
+            </node>
+        </node>
+        <node index="1" text="" resource-id="android:id/statusBarBackground"
+            class="android.view.View" package="com.taobao.taobao" content-desc="" checkable="false"
+            checked="false" clickable="false" enabled="true" focusable="false" focused="false"
+            scrollable="false" long-clickable="false" password="false" selected="false"
+            bounds="[0,0][1080,132]" drawing-order="3" hint="" />
+        <node index="2" text="" resource-id="android:id/navigationBarBackground"
+            class="android.view.View" package="com.taobao.taobao" content-desc="" checkable="false"
+            checked="false" clickable="false" enabled="true" focusable="false" focused="false"
+            scrollable="false" long-clickable="false" password="false" selected="false"
+            bounds="[0,2337][1080,2400]" drawing-order="2" hint="" />
+    </node>
+</hierarchy>
