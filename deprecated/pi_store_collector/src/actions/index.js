@@ -164,6 +164,43 @@ function parseActionLog(logText, { timeScale = 1, maxDelayMs = null } = {}) {
   });
 }
 
+function normalizeCoordinateDelta(delta = null) {
+  if (delta === null || delta === undefined) return { x: 0, y: 0 };
+  if (typeof delta === 'number') return { x: delta, y: delta };
+
+  const x = Number(delta.x ?? delta.dx ?? 0);
+  const y = Number(delta.y ?? delta.dy ?? 0);
+  return {
+    x: Number.isFinite(x) ? x : 0,
+    y: Number.isFinite(y) ? y : 0,
+  };
+}
+
+function isXCoordinateEvent(event) {
+  return event.type === EVENT_TYPES.EV_ABS
+    && (event.code === EVENT_CODES.ABS_MT_POSITION_X || event.code === EVENT_CODES.ABS_X);
+}
+
+function isYCoordinateEvent(event) {
+  return event.type === EVENT_TYPES.EV_ABS
+    && (event.code === EVENT_CODES.ABS_MT_POSITION_Y || event.code === EVENT_CODES.ABS_Y);
+}
+
+function applyCoordinateDelta(events, delta = null) {
+  const { x, y } = normalizeCoordinateDelta(delta);
+  if (x === 0 && y === 0) return events;
+
+  return events.map((event) => {
+    if (isXCoordinateEvent(event)) {
+      return { ...event, value: event.value + x };
+    }
+    if (isYCoordinateEvent(event)) {
+      return { ...event, value: event.value + y };
+    }
+    return event;
+  });
+}
+
 function buildSendeventCommand({ devicePath, type, code, value, useRoot = true }) {
   const command = `sendevent ${devicePath} ${type} ${code} ${value}`;
   if (!useRoot) return command;
@@ -448,11 +485,13 @@ async function replayEvents(events, name, {
   eventStructBytes = DEFAULT_EVENT_STRUCT_BYTES,
   writeOverheadMs = DEFAULT_WRITE_OVERHEAD_MS,
   helperDevicePath = DEFAULT_HELPER_DEVICE_PATH,
+  delta = null,
 } = {}) {
+  const replayEventsList = applyCoordinateDelta(events, delta);
   const client = adb || new AdbClient({ serial, runner });
   const startedAt = Date.now();
   if (verbose) {
-    console.log(`Replaying action "${name}" with ${events.length} input events`);
+    console.log(`Replaying action "${name}" with ${replayEventsList.length} input events`);
   }
 
   if (replayMode === 'helper') {
@@ -460,7 +499,7 @@ async function replayEvents(events, name, {
     const localPacketPath = path.join(tmpDir, `${name}.piar`);
     const remotePacketPath = `/data/local/tmp/pi_store_action_${name}_${process.pid}.piar`;
     try {
-      fs.writeFileSync(localPacketPath, buildReplayPacket(events));
+      fs.writeFileSync(localPacketPath, buildReplayPacket(replayEventsList));
       await client.push(localPacketPath, remotePacketPath);
       const replayCommand = `${helperDevicePath} ${devicePath} ${remotePacketPath}`;
       const command = useRoot
@@ -478,7 +517,7 @@ async function replayEvents(events, name, {
     const remoteActionDir = deviceActionDir || `/data/local/tmp/pi_store_action_${name}_${process.pid}`;
     const remoteScriptPath = `${remoteActionDir}/replay.sh`;
     try {
-      const frames = writeFrameFiles(events, { localFrameDir, devicePath, eventStructBytes });
+      const frames = writeFrameFiles(replayEventsList, { localFrameDir, devicePath, eventStructBytes });
       const script = buildFrameReplayScript(frames, { remoteActionDir, eventStructBytes, writeOverheadMs });
       fs.writeFileSync(path.join(localActionDir, 'replay.sh'), script, 'utf8');
       await client.push(localActionDir, remoteActionDir);
@@ -494,7 +533,7 @@ async function replayEvents(events, name, {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-store-action-'));
     const localScriptPath = path.join(tmpDir, `${name}.sh`);
     const remoteScriptPath = deviceScriptPath || `/data/local/tmp/pi_store_action_${name}_${process.pid}.sh`;
-    const script = buildReplayScript(events, { devicePath });
+    const script = buildReplayScript(replayEventsList, { devicePath });
     fs.writeFileSync(localScriptPath, script, 'utf8');
     try {
       await client.push(localScriptPath, remoteScriptPath);
@@ -507,7 +546,7 @@ async function replayEvents(events, name, {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   } else if (replayMode === 'direct') {
-    for (const event of events) {
+    for (const event of replayEventsList) {
       if (event.delayMs > 0) await sleep(event.delayMs);
       const targetDevicePath = event.devicePath || devicePath;
       if (!targetDevicePath) {
@@ -527,7 +566,7 @@ async function replayEvents(events, name, {
 
   const result = {
     name,
-    eventCount: events.length,
+    eventCount: replayEventsList.length,
     durationMs: Date.now() - startedAt,
   };
   if (verbose) {
@@ -582,6 +621,7 @@ async function act(name, {
   eventStructBytes = DEFAULT_EVENT_STRUCT_BYTES,
   writeOverheadMs = DEFAULT_WRITE_OVERHEAD_MS,
   helperDevicePath = DEFAULT_HELPER_DEVICE_PATH,
+  delta = null,
 } = {}) {
   const actions = parse({ resourcesDir, timeScale, maxDelayMs });
   const action = actions[name];
@@ -603,6 +643,7 @@ async function act(name, {
     eventStructBytes,
     writeOverheadMs,
     helperDevicePath,
+    delta,
   });
 }
 
@@ -611,6 +652,8 @@ module.exports = {
   parse,
   parseActionLog,
   parseGeteventLine,
+  normalizeCoordinateDelta,
+  applyCoordinateDelta,
   buildSendeventCommand,
   buildReplayScript,
   buildBinaryReplayScript,
@@ -626,3 +669,5 @@ module.exports = {
   DEFAULT_HELPER_DEVICE_PATH,
   DEFAULT_REPLAY_MODE,
 };
+
+act('touch')

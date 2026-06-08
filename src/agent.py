@@ -17,6 +17,11 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnCon
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 
+try:
+    from src.tools import create_event_hub_tool
+except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+    from tools import create_event_hub_tool
+
 @dataclass(frozen=True)
 class AgentRunResult:
     """Normalized result returned by the LangChain agent harness."""
@@ -38,14 +43,30 @@ def build_agent(
     middlewares: list[AgentMiddleware] = []
     middlewares.append(TodoListMiddleware())
     middlewares.append(SummarizationMiddleware(model=model))
+    registered_tools = _with_event_hub_tool(tools)
 
     return create_agent(
         model=model,
-        tools=list(tools),
+        tools=registered_tools,
         system_prompt=system_prompt,
         name=name,
         middleware=middlewares,
     )
+
+
+def _with_event_hub_tool(tools: Sequence[Any]) -> list[Any]:
+    registered_tools = list(tools)
+    if not any(_tool_name(tool) == "event_hub" for tool in registered_tools):
+        registered_tools.append(create_event_hub_tool())
+    return registered_tools
+
+
+def _tool_name(tool: Any) -> str | None:
+    if isinstance(tool, Mapping):
+        value = tool.get("name")
+        return str(value) if value else None
+    value = getattr(tool, "name", None)
+    return str(value) if value else None
 
 def run_agent_loop(
     *,

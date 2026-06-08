@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 
 const {
   act,
+  applyCoordinateDelta,
   buildBinaryReplayScript,
   buildFrameReplayScript,
   buildInputEventBuffer,
@@ -13,6 +14,7 @@ const {
   buildReplayPacket,
   buildSendeventCommand,
   groupEventsBySynReport,
+  normalizeCoordinateDelta,
   parse,
   parseActionLog,
   parseGeteventLine,
@@ -88,6 +90,36 @@ test('parseActionLog preserves delays and sendevent payloads', () => {
   assert.ok(Math.abs(events[1].atSeconds - 0.025) < 0.000001);
   assert.equal(events[2].type, 0);
   assert.equal(events[2].code, 0);
+});
+
+test('applyCoordinateDelta offsets only touch coordinate events', () => {
+  assert.deepEqual(normalizeCoordinateDelta({ dx: 10, dy: -20 }), { x: 10, y: -20 });
+  assert.deepEqual(normalizeCoordinateDelta(7), { x: 7, y: 7 });
+
+  const events = parseActionLog(`
+[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_SLOT 00000000
+[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 000003a1
+[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_POSITION_Y 00000500
+[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_PRESSURE 00000024
+[ 1.000000] /dev/input/event2: EV_ABS ABS_X 00000064
+[ 1.000000] /dev/input/event2: EV_ABS ABS_Y 000000c8
+[ 1.000000] /dev/input/event2: EV_SYN SYN_REPORT 00000000
+`);
+
+  const shifted = applyCoordinateDelta(events, { x: 10, y: -20 });
+
+  assert.notEqual(shifted, events);
+  assert.equal(events[1].value, 929);
+  assert.equal(events[2].value, 1280);
+  assert.equal(events[4].value, 100);
+  assert.equal(events[5].value, 200);
+  assert.equal(shifted[0], events[0]);
+  assert.equal(shifted[1].value, 939);
+  assert.equal(shifted[2].value, 1260);
+  assert.equal(shifted[3].value, 36);
+  assert.equal(shifted[4].value, 110);
+  assert.equal(shifted[5].value, 180);
+  assert.equal(shifted[6], events[6]);
 });
 
 test('buildReplayScript keeps timestamp delays on device side', () => {
@@ -271,6 +303,50 @@ test('act replays pathless resource logs with fallback device path', async () =>
       "su -c 'sendevent /dev/input/event5 1 330 1'",
       "su -c 'sendevent /dev/input/event5 0 0 0'",
     ]);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('act applies coordinate delta during replay without reparsing the resource', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-actions-delta-'));
+  const calls = [];
+  const adb = {
+    shellCommand: async (command) => {
+      calls.push(command);
+    },
+  };
+
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, 'touch.log'),
+      [
+        '[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_POSITION_X 000003a1',
+        '[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_POSITION_Y 00000500',
+        '[ 1.000000] /dev/input/event2: EV_ABS ABS_MT_PRESSURE 00000024',
+        '[ 1.000000] /dev/input/event2: EV_SYN SYN_REPORT 00000000',
+      ].join('\n'),
+      'utf8',
+    );
+
+    parse({ resourcesDir: tmpDir });
+    fs.writeFileSync(path.join(tmpDir, 'touch.log'), '', 'utf8');
+
+    const result = await act('touch', {
+      adb,
+      resourcesDir: tmpDir,
+      replayMode: 'direct',
+      useRoot: false,
+      delta: { dx: 5, dy: -8 },
+    });
+
+    assert.deepEqual(calls, [
+      'sendevent /dev/input/event2 3 53 934',
+      'sendevent /dev/input/event2 3 54 1272',
+      'sendevent /dev/input/event2 3 58 36',
+      'sendevent /dev/input/event2 0 0 0',
+    ]);
+    assert.equal(result.eventCount, 4);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

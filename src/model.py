@@ -7,7 +7,6 @@ config = {
 }
 
 
-
 def build_model():
     return  ChatOpenAI(
         base_url = config["base_url"], 
