@@ -1,0 +1,2 @@
+class EventHub:
+    pass
