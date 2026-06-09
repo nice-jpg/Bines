@@ -487,7 +487,8 @@ async function replayEvents(events, name, {
   helperDevicePath = DEFAULT_HELPER_DEVICE_PATH,
   delta = null,
 } = {}) {
-  const replayEventsList = applyCoordinateDelta(events, delta);
+  const coordinateDelta = normalizeCoordinateDelta(delta);
+  const replayEventsList = replayMode === 'helper' ? events : applyCoordinateDelta(events, coordinateDelta);
   const client = adb || new AdbClient({ serial, runner });
   const startedAt = Date.now();
   if (verbose) {
@@ -501,7 +502,10 @@ async function replayEvents(events, name, {
     try {
       fs.writeFileSync(localPacketPath, buildReplayPacket(replayEventsList));
       await client.push(localPacketPath, remotePacketPath);
-      const replayCommand = `${helperDevicePath} ${devicePath} ${remotePacketPath}`;
+      const deltaArgs = coordinateDelta.x === 0 && coordinateDelta.y === 0
+        ? ''
+        : ` ${coordinateDelta.x} ${coordinateDelta.y}`;
+      const replayCommand = `${helperDevicePath} ${devicePath} ${remotePacketPath}${deltaArgs}`;
       const command = useRoot
         ? `su -c ${shellQuote(replayCommand)}`
         : replayCommand;
@@ -669,5 +673,3 @@ module.exports = {
   DEFAULT_HELPER_DEVICE_PATH,
   DEFAULT_REPLAY_MODE,
 };
-
-act('touch')

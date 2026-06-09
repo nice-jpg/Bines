@@ -29,5 +29,16 @@ await act('touch', {
   replayMode: 'helper',
   devicePath: '/dev/input/event3',
   helperDevicePath: '/data/local/tmp/pi_input_replay',
+  delta: { x: 100, y: 200 },
 });
 ```
+
+Manual native invocation:
+
+```bash
+adb shell su -c '/data/local/tmp/pi_input_replay /dev/input/event3 /data/local/tmp/touch.piar 100 200'
+```
+
+`delta_x` and `delta_y` are optional signed integer offsets. The helper applies
+them only to touch coordinate events (`ABS_MT_POSITION_X/Y` and `ABS_X/Y`) before
+writing each input frame.

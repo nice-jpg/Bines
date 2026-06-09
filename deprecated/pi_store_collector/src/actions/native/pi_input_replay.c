@@ -8,6 +8,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#define EV_ABS 3
+#define ABS_X 0
+#define ABS_Y 1
+#define ABS_MT_POSITION_X 53
+#define ABS_MT_POSITION_Y 54
+
 struct packed_event {
   uint16_t type;
   uint16_t code;
@@ -57,9 +63,39 @@ static void sleep_us(uint32_t delay_us) {
   while (nanosleep(&req, &req) < 0 && errno == EINTR) {}
 }
 
+static int parse_delta_arg(const char *text, int32_t *out) {
+  char *end = NULL;
+  long value = strtol(text, &end, 10);
+  if (end == text || *end != '\0') return -1;
+  if (value < INT32_MIN || value > INT32_MAX) return -1;
+  *out = (int32_t)value;
+  return 0;
+}
+
+static int32_t add_delta(int32_t value, int32_t delta) {
+  int64_t shifted = (int64_t)value + (int64_t)delta;
+  if (shifted < INT32_MIN) return INT32_MIN;
+  if (shifted > INT32_MAX) return INT32_MAX;
+  return (int32_t)shifted;
+}
+
+static int32_t shifted_event_value(uint16_t type, uint16_t code, int32_t value, int32_t delta_x, int32_t delta_y) {
+  if (type != EV_ABS) return value;
+  if (code == ABS_MT_POSITION_X || code == ABS_X) return add_delta(value, delta_x);
+  if (code == ABS_MT_POSITION_Y || code == ABS_Y) return add_delta(value, delta_y);
+  return value;
+}
+
 int main(int argc, char **argv) {
-  if (argc != 3) {
-    fprintf(stderr, "usage: %s /dev/input/eventX replay.piar\n", argv[0]);
+  if (argc != 3 && argc != 5) {
+    fprintf(stderr, "usage: %s /dev/input/eventX replay.piar [delta_x delta_y]\n", argv[0]);
+    return 2;
+  }
+
+  int32_t delta_x = 0;
+  int32_t delta_y = 0;
+  if (argc == 5 && (parse_delta_arg(argv[3], &delta_x) < 0 || parse_delta_arg(argv[4], &delta_y) < 0)) {
+    fprintf(stderr, "invalid delta. delta_x and delta_y must be signed 32-bit integers\n");
     return 2;
   }
 
@@ -128,7 +164,7 @@ int main(int argc, char **argv) {
       memset(&events[i], 0, sizeof(struct replay_input_event));
       events[i].type = packed[i].type;
       events[i].code = packed[i].code;
-      events[i].value = packed[i].value;
+      events[i].value = shifted_event_value(packed[i].type, packed[i].code, packed[i].value, delta_x, delta_y);
     }
     free(packed);
 

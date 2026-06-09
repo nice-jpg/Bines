@@ -446,3 +446,46 @@ test('act helper mode pushes one packet and runs native helper once by default',
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('act helper mode passes coordinate delta to native replay helper', async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-actions-helper-delta-'));
+  const calls = [];
+  const adb = {
+    push: async (localPath, devicePath) => {
+      calls.push({
+        kind: 'push',
+        devicePath,
+        packet: fs.readFileSync(localPath),
+      });
+    },
+    shellCommand: async (command) => {
+      calls.push({ kind: 'shell', command });
+    },
+  };
+
+  try {
+    fs.writeFileSync(
+      path.join(tmpDir, 'touch.log'),
+      [
+        '[ 1.000000] EV_ABS       ABS_MT_POSITION_X    000003a1',
+        '[ 1.000000] EV_ABS       ABS_MT_POSITION_Y    00000500',
+        '[ 1.000000] EV_SYN       SYN_REPORT           00000000',
+      ].join('\n'),
+      'utf8',
+    );
+
+    await act('touch', {
+      adb,
+      resourcesDir: tmpDir,
+      devicePath: '/dev/input/event5',
+      helperDevicePath: '/data/local/tmp/pi_input_replay',
+      delta: { x: 5, y: -8 },
+    });
+
+    assert.equal(calls[0].packet.readInt32LE(20), 929);
+    assert.equal(calls[0].packet.readInt32LE(28), 1280);
+    assert.match(calls[1].command, /^su -c '\/data\/local\/tmp\/pi_input_replay \/dev\/input\/event5 \/data\/local\/tmp\/pi_store_action_touch_\d+\.piar 5 -8'$/);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
