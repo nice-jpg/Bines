@@ -17,8 +17,6 @@ EVENT_HUB_TOOL_NAMES = (
     "tap",
     "swipe_up",
     "swipe_down",
-    "swipe_left",
-    "swipe_right",
     "screenshot",
     "uiautomate",
     "noop",
@@ -47,15 +45,13 @@ class EventHub:
 
         self._replay_recorded_action("swipe_down", x, y)
 
-    def swipe_left(self, x: int, y: int) -> None:
+    def swipe_back(self, x: int, y: int) -> None:
         """Replay the recorded left swipe action."""
 
-        self._replay_recorded_action("swipe_left", x, y)
+        self._replay_recorded_action("swipe_back", x, y)
 
-    def swipe_right(self, x: int, y: int) -> None:
-        """Replay the recorded right swipe action."""
-
-        self._replay_recorded_action("swipe_right", x, y)
+    def uiautomate(self) -> str:
+        return self.device.dump_ui()
 
     def noop(self, x: int, y: int) -> None:
         """Replay no operation while preserving the same tool input shape."""
@@ -69,8 +65,8 @@ class EventHub:
         Future code should map ``action_name`` to a recorded action asset and
         use ``x`` / ``y`` only as randomness input.
         """
-
-        _ = (action_name, x, y)
+        self.device.act(action_name = action_name, xy = (x, y))
+        # return self.device.dump_ui()
 
 
 def create_event_hub_tools(event_hub: EventHub | None = None) -> list[StructuredTool]:
@@ -78,12 +74,11 @@ def create_event_hub_tools(event_hub: EventHub | None = None) -> list[Structured
 
     hub = event_hub or EventHub()
     return [
-        _make_tool("tap", "Replay the recorded tap action.", hub.tap),
-        _make_tool("swipe_up", "Replay the recorded upward swipe action.", hub.swipe_up),
-        _make_tool("swipe_down", "Replay the recorded downward swipe action.", hub.swipe_down),
-        _make_tool("swipe_left", "Replay the recorded left swipe action.", hub.swipe_left),
-        _make_tool("swipe_right", "Replay the recorded right swipe action.", hub.swipe_right),
-        _make_tool("noop", "Replay no operation.", hub.noop),
+        _make_tool("tap", "tap (x, y).", hub.tap),
+        _make_tool("swipe_up", "swipe up from (x, y) for a short distance.", hub.swipe_up),
+        _make_tool("swipe_down", "swipe down from (x, y) for a short distance.", hub.swipe_down),
+        _make_tool("swipe_back", "return to the last page.", hub.swipe_left),
+        _make_tool("noop", "do nothing.", hub.noop),
     ]
 
 
@@ -104,4 +99,3 @@ def _make_tool(name: str, description: str, operation: Callable[[int, int], None
         description=f"{description} Provide random x/y coordinates. Returns no operation data.",
     )
 
-EventHub()

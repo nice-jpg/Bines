@@ -16,6 +16,8 @@ touch-action translation.
 
 - `translator.py`
   - Parses `getevent` logs from local action files.
+  - Normalizes the first recorded touch coordinate to `(0, 0)` before packet
+    generation, so replay-time `x/y` deltas place the gesture.
   - Converts parsed events into PIAR replay packets for the native helper.
   - Pushes missing translated actions to the device action directory.
 
@@ -62,8 +64,9 @@ Flow:
 1. Read local action filenames from `local_dir`.
 2. Compare them with `device.get_supported_actions(device_dir)`.
 3. For each missing action, call `translate(action_path, device, device_dir)`.
-4. `translate()` parses the getevent log, builds a PIAR packet, writes a
-   temporary same-name file, and calls `device.add_action()`.
+4. `translate()` parses the getevent log, shifts all X/Y touch coordinates by
+   the first recorded X/Y value, builds a PIAR packet, writes a temporary
+   same-name file, and calls `device.add_action()`.
 
 PIAR packet format:
 
@@ -80,6 +83,10 @@ PIAR packet format:
 The parser supports both pathless and device-path `getevent` lines, symbolic
 tokens such as `EV_ABS`, `ABS_MT_POSITION_X`, `BTN_TOUCH`, `DOWN`/`UP`, and
 signed hex values like `ffffffff -> -1`.
+
+Only touch coordinate events are shifted during origin normalization:
+`ABS_MT_POSITION_X`, `ABS_X`, `ABS_MT_POSITION_Y`, and `ABS_Y`. Pressure,
+tracking id, slot, key, and sync events remain unchanged.
 
 ## Tests
 

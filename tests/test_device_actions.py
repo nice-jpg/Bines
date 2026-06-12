@@ -13,6 +13,7 @@ from device.translator import (
     build_replay_packet,
     check_actions,
     group_events_by_syn_report,
+    normalize_events_to_origin,
     parse_action_log,
     parse_getevent_line,
 )
@@ -71,6 +72,25 @@ class DeviceActionTests(unittest.TestCase):
         self.assertEqual(frames[0]["delay_seconds"], 0)
         self.assertAlmostEqual(frames[1]["delay_seconds"], 0.006, places=6)
 
+    def test_normalize_events_to_origin_shifts_touch_coordinates_only(self) -> None:
+        events = parse_action_log(
+            """
+[ 1.000000] EV_ABS ABS_MT_POSITION_X 00000064
+[ 1.000000] EV_ABS ABS_MT_POSITION_Y 000000c8
+[ 1.000000] EV_ABS ABS_MT_PRESSURE 00000024
+[ 1.006000] EV_ABS ABS_MT_POSITION_X 0000006e
+[ 1.006000] EV_ABS ABS_MT_POSITION_Y 000000be
+"""
+        )
+
+        normalized = normalize_events_to_origin(events)
+
+        self.assertEqual(normalized[0].value, 0)
+        self.assertEqual(normalized[1].value, 0)
+        self.assertEqual(normalized[2].value, 36)
+        self.assertEqual(normalized[3].value, 10)
+        self.assertEqual(normalized[4].value, -10)
+
     def test_build_replay_packet_matches_helper_format(self) -> None:
         events = parse_action_log(
             """
@@ -111,7 +131,7 @@ class DeviceActionTests(unittest.TestCase):
                 "shell",
                 "su",
                 "-c",
-                "/sdcard/Documents/actions/act /dev/input/event3 /sdcard/Documents/actions/touch 7 -2",
+                "/data/local/tmp/pi_input_replay /dev/input/event3 /sdcard/Documents/actions/touch 7 -2",
             ],
             runner.calls,
         )

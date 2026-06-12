@@ -84,7 +84,7 @@ def translate(
 ) -> str:
     source_path = Path(action_path)
     log_text = source_path.read_text(encoding="utf-8")
-    events = parse_action_log(log_text)
+    events = normalize_events_to_origin(parse_action_log(log_text))
     packet = build_replay_packet(events)
 
     with tempfile.TemporaryDirectory(prefix="bines-action-") as tmp_dir:
@@ -203,6 +203,26 @@ def parse_getevent_number(token: str, signed: bool = False) -> int | None:
     return None
 
 
+def normalize_events_to_origin(events: Iterable[ParsedEvent]) -> list[ParsedEvent]:
+    """Move the recorded action's first touch coordinate to ``(0, 0)``."""
+
+    event_list = list(events)
+    origin_x = next((event.value for event in event_list if _is_x_coordinate_event(event)), None)
+    origin_y = next((event.value for event in event_list if _is_y_coordinate_event(event)), None)
+    if origin_x is None and origin_y is None:
+        return event_list
+
+    normalized: list[ParsedEvent] = []
+    for event in event_list:
+        if origin_x is not None and _is_x_coordinate_event(event):
+            normalized.append(replace(event, value=event.value - origin_x))
+        elif origin_y is not None and _is_y_coordinate_event(event):
+            normalized.append(replace(event, value=event.value - origin_y))
+        else:
+            normalized.append(event)
+    return normalized
+
+
 def group_events_by_syn_report(events: Iterable[ParsedEvent]) -> list[dict[str, object]]:
     frames: list[dict[str, object]] = []
     current: list[ParsedEvent] = []
@@ -256,3 +276,16 @@ def _clamp_delay_ms(delay_ms: int, max_delay_ms: int | None) -> int:
         return delay_ms
     return min(delay_ms, max_delay_ms)
 
+
+def _is_x_coordinate_event(event: ParsedEvent) -> bool:
+    return event.type == EVENT_TYPES["EV_ABS"] and event.code in {
+        EVENT_CODES["ABS_MT_POSITION_X"],
+        EVENT_CODES["ABS_X"],
+    }
+
+
+def _is_y_coordinate_event(event: ParsedEvent) -> bool:
+    return event.type == EVENT_TYPES["EV_ABS"] and event.code in {
+        EVENT_CODES["ABS_MT_POSITION_Y"],
+        EVENT_CODES["ABS_Y"],
+    }

@@ -673,3 +673,8 @@ module.exports = {
   DEFAULT_HELPER_DEVICE_PATH,
   DEFAULT_REPLAY_MODE,
 };
+
+act('touch', {
+  replayMode: 'helper',
+  delta: { x: 700, y: -200 },
+});
