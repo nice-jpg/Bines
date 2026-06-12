@@ -1,88 +1,107 @@
-"""Touch-operation control hub exposed as a LangChain tool.
+"""Recorded touch operations exposed as individual LangChain tools.
 
-Each operation is fire-and-forget: the agent provides an operation name and a
+Each operation is fire-and-forget: the agent calls a specific tool with a
 random ``(x, y)`` coordinate, then the hub replays the matching recorded action.
 The replay backend is intentionally left as a placeholder.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any
+from collections.abc import Callable
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel, Field
+from src.device.adapter import AndroidDevice
+from src.device.translator import check_actions
 
-
-class TouchAction(str, Enum):
-    TAP = "tap"
-    SWIPE_UP = "swipe_up"
-    SWIPE_DOWN = "swipe_down"
-    SWIPE_LEFT = "swipe_left"
-    SWIPE_RIGHT = "swipe_right"
-
-    NOOP = "noop"
-
-
-class EventHubInput(BaseModel):
-    """Input-only schema for a recorded touch operation."""
-
-    action: TouchAction = Field(description="Recorded operation to replay.")
-    x: int = Field(description="Random x coordinate used to vary the replay.")
-    y: int = Field(description="Random y coordinate used to vary the replay.")
-
-
-@dataclass(frozen=True)
-class EventCommand:
-    """Input command consumed by the control hub."""
-
-    action: TouchAction
-    x: int
-    y: int
+EVENT_HUB_TOOL_NAMES = (
+    "tap",
+    "swipe_up",
+    "swipe_down",
+    "swipe_left",
+    "swipe_right",
+    "screenshot",
+    "uiautomate",
+    "noop",
+)
 
 
 class EventHub:
-    """Central router for recorded touch-operation replay."""
+    """Central owner for recorded touch-operation replay."""
 
-    def handle(self, command: EventCommand) -> None:
-        """Replay the recorded action for the requested operation."""
+    def __init__(self) -> None:
+        self.device = AndroidDevice()
+        check_actions(self.device)
 
-        self._replay_recorded_action(command)
+    def tap(self, x: int, y: int) -> None:
+        """Replay the recorded tap action."""
 
-    def _replay_recorded_action(self, command: EventCommand) -> None:
+        self._replay_recorded_action("tap", x, y)
+
+    def swipe_up(self, x: int, y: int) -> None:
+        """Replay the recorded upward swipe action."""
+
+        self._replay_recorded_action("swipe_up", x, y)
+
+    def swipe_down(self, x: int, y: int) -> None:
+        """Replay the recorded downward swipe action."""
+
+        self._replay_recorded_action("swipe_down", x, y)
+
+    def swipe_left(self, x: int, y: int) -> None:
+        """Replay the recorded left swipe action."""
+
+        self._replay_recorded_action("swipe_left", x, y)
+
+    def swipe_right(self, x: int, y: int) -> None:
+        """Replay the recorded right swipe action."""
+
+        self._replay_recorded_action("swipe_right", x, y)
+
+    def noop(self, x: int, y: int) -> None:
+        """Replay no operation while preserving the same tool input shape."""
+
+        self._replay_recorded_action("noop", x, y)
+
+    def _replay_recorded_action(self, action_name: str, x: int, y: int) -> None:
         """Replay a recorded action with coordinate jitter input.
 
         The concrete replay implementation is intentionally empty for now.
-        Future code should map ``command.action`` to a recorded action asset and
-        use ``command.x`` / ``command.y`` only as randomness input.
+        Future code should map ``action_name`` to a recorded action asset and
+        use ``x`` / ``y`` only as randomness input.
         """
 
-        _ = command
+        _ = (action_name, x, y)
 
 
-def create_event_hub_tool(event_hub: EventHub | None = None) -> StructuredTool:
-    """Create the input-only LangChain tool registered with the agent."""
+def create_event_hub_tools(event_hub: EventHub | None = None) -> list[StructuredTool]:
+    """Create one input-only LangChain tool per recorded operation."""
 
     hub = event_hub or EventHub()
-
-    def event_hub_tool(**kwargs: Any) -> None:
-        parsed = EventHubInput(**kwargs)
-        hub.handle(EventCommand(**parsed.model_dump()))
-
-    return StructuredTool.from_function(
-        func=event_hub_tool,
-        name="event_hub",
-        description=(
-            "Fire-and-forget control hub for recorded touch operations. "
-            "Choose an action and provide a random x/y coordinate. The tool "
-            "does not return operation data."
-        ),
-        args_schema=EventHubInput,
-    )
+    return [
+        _make_tool("tap", "Replay the recorded tap action.", hub.tap),
+        _make_tool("swipe_up", "Replay the recorded upward swipe action.", hub.swipe_up),
+        _make_tool("swipe_down", "Replay the recorded downward swipe action.", hub.swipe_down),
+        _make_tool("swipe_left", "Replay the recorded left swipe action.", hub.swipe_left),
+        _make_tool("swipe_right", "Replay the recorded right swipe action.", hub.swipe_right),
+        _make_tool("noop", "Replay no operation.", hub.noop),
+    ]
 
 
 def build_tools() -> list[StructuredTool]:
-    """Return the default touch-control tools for agent registration."""
+    """Return the default recorded touch-operation tools."""
 
-    return [create_event_hub_tool()]
+    return create_event_hub_tools()
+
+
+def _make_tool(name: str, description: str, operation: Callable[[int, int], None]) -> StructuredTool:
+    def tool_func(x: int, y: int) -> None:
+        operation(x, y)
+
+    tool_func.__name__ = name
+    return StructuredTool.from_function(
+        func=tool_func,
+        name=name,
+        description=f"{description} Provide random x/y coordinates. Returns no operation data.",
+    )
+
+EventHub()

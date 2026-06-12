@@ -18,9 +18,9 @@ from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 
 try:
-    from src.tools import create_event_hub_tool
+    from src.tools import create_event_hub_tools
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    from tools import create_event_hub_tool
+    from tools import create_event_hub_tools
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -43,7 +43,7 @@ def build_agent(
     middlewares: list[AgentMiddleware] = []
     middlewares.append(TodoListMiddleware())
     middlewares.append(SummarizationMiddleware(model=model))
-    registered_tools = _with_event_hub_tool(tools)
+    registered_tools = _with_event_hub_tools(tools)
 
     return create_agent(
         model=model,
@@ -54,10 +54,12 @@ def build_agent(
     )
 
 
-def _with_event_hub_tool(tools: Sequence[Any]) -> list[Any]:
+def _with_event_hub_tools(tools: Sequence[Any]) -> list[Any]:
     registered_tools = list(tools)
-    if not any(_tool_name(tool) == "event_hub" for tool in registered_tools):
-        registered_tools.append(create_event_hub_tool())
+    existing_names = {_tool_name(tool) for tool in registered_tools}
+    for tool in create_event_hub_tools():
+        if _tool_name(tool) not in existing_names:
+            registered_tools.append(tool)
     return registered_tools
 
 
