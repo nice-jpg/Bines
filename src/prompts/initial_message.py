@@ -101,11 +101,11 @@ class _Config:
 
 
 def _read_config(config_path: Path) -> _Config:
-    if not config_path.exists() or not config_path.read_text(encoding="utf-8").strip():
+    if not config_path.exists():
         return _Config()
 
     try:
-        root = ET.parse(config_path).getroot()
+        root = _parse_config_root(config_path)
     except ET.ParseError:
         return _Config()
 
@@ -113,9 +113,43 @@ def _read_config(config_path: Path) -> _Config:
         application_name=_node_value(root, ["package", "应用名称", "app_name", "application_name", "application", "app", "name"]),
         city=_node_value(root, ["city", "城市"]),
         address=_node_value(root, ["address", "地址"]),
-        range_text=_node_value(root, ["range", "范围", "radius", "scope"], attribute_names=["size", "name", "value"]),
+        range_text=_format_range_text(
+            _node_value(root, ["range", "范围", "radius", "scope"], attribute_names=["size", "name", "value"])
+        ),
         secondary_pages=_secondary_pages(root),
     )
+
+
+def _parse_config_root(config_path: Path) -> ET.Element:
+    text = config_path.read_text(encoding="utf-8")
+    if not text.strip():
+        raise ET.ParseError("empty config")
+    try:
+        return ET.fromstring(text)
+    except ET.ParseError as original_error:
+        clipped = _clip_first_xml_root(text)
+        if clipped is None:
+            raise original_error
+        return ET.fromstring(clipped)
+
+
+def _clip_first_xml_root(text: str) -> str | None:
+    root_match = re.search(r"<([^\s>/!?]+)(?:\s[^>]*)?>", text)
+    if root_match is None:
+        return None
+    root_name = root_match.group(1)
+    end_tag = f"</{root_name}>"
+    end_index = text.find(end_tag, root_match.end())
+    if end_index == -1:
+        return None
+    return text[root_match.start() : end_index + len(end_tag)]
+
+
+def _format_range_text(range_text: str) -> str:
+    value = range_text.strip()
+    if value != "未配置" and re.fullmatch(r"\d+(?:\.\d+)?", value):
+        return f"{value}米"
+    return value or "未配置"
 
 
 def _node_value(root: ET.Element, names: list[str], attribute_names: list[str] | None = None) -> str:
