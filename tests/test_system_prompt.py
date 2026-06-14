@@ -11,6 +11,7 @@ from prompts import SYSTEM_PROMPT
 
 class SystemPromptTests(unittest.TestCase):
     def test_prompt_requires_scrolling_list_pages_until_terminal_condition(self) -> None:
+        self.assertIn("run_package：按应用包名打开指定应用", SYSTEM_PROMPT)
         self.assertIn("调用 swipe_up 上滑加载下一屏", SYSTEM_PROMPT)
         self.assertIn("连续 2 次上滑后 XML/商家集合没有新增", SYSTEM_PROMPT)
         self.assertIn("不允许因为首屏商家少", SYSTEM_PROMPT)

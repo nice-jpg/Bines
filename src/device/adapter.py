@@ -61,6 +61,14 @@ class AndroidDevice:
         self.shell(["screencap", "-p", device_path])
         return device_path
 
+    def run_package(self, package_name: str) -> str:
+        """Start an installed Android package through its launcher activity."""
+
+        package = package_name.strip()
+        if not package:
+            raise ValueError("package_name must not be empty")
+        return self.shell(["monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"])
+
     def execute_file(
         self,
         device_file_path: str,

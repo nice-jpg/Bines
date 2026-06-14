@@ -143,6 +143,32 @@ class DeviceActionTests(unittest.TestCase):
         self.assertEqual(device.screenshot(), "/sdcard/window.png")
         self.assertIn(["adb", "shell", "screencap", "-p", "/sdcard/window.png"], runner.calls)
 
+    def test_android_device_run_package_uses_launcher_monkey_command(self) -> None:
+        runner = RecordingRunner()
+        device = AndroidDevice(runner=runner)
+
+        device.run_package("com.sankuai.meituan")
+
+        self.assertIn(
+            [
+                "adb",
+                "shell",
+                "monkey",
+                "-p",
+                "com.sankuai.meituan",
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+            runner.calls,
+        )
+
+    def test_android_device_run_package_rejects_empty_package_name(self) -> None:
+        device = AndroidDevice(runner=RecordingRunner())
+
+        with self.assertRaises(ValueError):
+            device.run_package("  ")
+
     def test_check_actions_translates_missing_local_actions(self) -> None:
         class FakeDevice:
             def __init__(self) -> None:
