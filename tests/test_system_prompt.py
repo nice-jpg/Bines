@@ -26,6 +26,19 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("全部评价数量、好评数量", SYSTEM_PROMPT)
         self.assertIn("立即以店铺为单位整理采集结果并追加写入 Excel", SYSTEM_PROMPT)
 
+    def test_prompt_describes_page_specific_operation_strategy(self) -> None:
+        self.assertIn("优先使用 run_package 工具", SYSTEM_PROMPT)
+        self.assertIn("不得使用 y=0 或 y=2400", SYSTEM_PROMPT)
+        self.assertIn("一级页面操作逻辑：直接查找并点击上下文指定的二级页面入口", SYSTEM_PROMPT)
+        self.assertIn("从上到下依次为搜索框、金刚区、商家列表", SYSTEM_PROMPT)
+        self.assertIn("优先在商家列表区域执行上下滑动", SYSTEM_PROMPT)
+        self.assertIn("距离合适则点击进入商家", SYSTEM_PROMPT)
+        self.assertIn("上半部分为商家基本信息", SYSTEM_PROMPT)
+        self.assertIn("左侧是可单独上下滑动的品类列表", SYSTEM_PROMPT)
+        self.assertIn("右侧是该品类下的商品列表", SYSTEM_PROMPT)
+        self.assertIn("通过 swipe_back 工具返回上一页", SYSTEM_PROMPT)
+        self.assertIn("不确定下一步如何操作时，调用 screenshot", SYSTEM_PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()

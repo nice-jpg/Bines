@@ -29,22 +29,22 @@ class ToolSpec:
 
 TOOL_SPECS = (
     ToolSpec("run_package", "Open an Android application by package name.", "run_package", ("package_name",)),
-    ToolSpec("tap", "tap (x, y). Provide random x/y coordinates. Returns no operation data.", "tap", ("x", "y")),
+    ToolSpec("tap", "tap (x, y). Provide x/y coordinates. Returns no operation data.", "tap", ("x", "y")),
     ToolSpec(
         "swipe_up",
-        "swipe up from (x, y) for a short distance. Provide random x/y coordinates. Returns no operation data.",
+        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns no operation data.",
         "swipe_up",
         ("x", "y"),
     ),
     ToolSpec(
         "swipe_down",
-        "swipe down from (x, y) for a short distance. Provide random x/y coordinates. Returns no operation data.",
+        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns no operation data.",
         "swipe_down",
         ("x", "y"),
     ),
     ToolSpec(
         "swipe_back",
-        "return to the last page. Provide random x/y coordinates. Returns no operation data.",
+        "return to the last page. Provide x/y coordinates. Returns no operation data.",
         "swipe_back",
         ("x", "y"),
     ),
@@ -105,8 +105,8 @@ class EventHub:
         use ``x`` / ``y`` only as randomness input.
         """
         self._ensure_actions_checked()
+        print('%s on (%d, %d)' % (action_name, x, y))
         self.device.act(action_name = action_name, xy = (x, y))
-        # return self.device.dump_ui()
 
     def _ensure_actions_checked(self) -> None:
         if self._actions_checked:

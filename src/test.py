@@ -4,7 +4,7 @@ from device.adapter import AndroidDevice
 device = AndroidDevice()
 check_actions(device)
 
-device.act('slide_up', (0, 0))
+device.act('swipe_up', (0, 0))
 device.act('tap', (0, 0))
 ui = device.dump_ui()
 print(ui)
