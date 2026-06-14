@@ -18,11 +18,11 @@ from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 
 try:
-    from src.tools import create_event_hub_tools
-    from src.prompts import SYSTEM_PROMPT, build_initial_message
+    from src.tools import collect_tools
+    from src.prompts import SYSTEM_PROMPT, build_initial_messages
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    from tools import create_event_hub_tools
-    from prompts import SYSTEM_PROMPT, build_initial_message
+    from tools import collect_tools
+    from prompts import SYSTEM_PROMPT, build_initial_messages
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -44,7 +44,7 @@ def build_agent(
     middlewares: list[AgentMiddleware] = []
     middlewares.append(TodoListMiddleware())
     middlewares.append(SummarizationMiddleware(model=model))
-    registered_tools = _with_event_hub_tools(tools)
+    registered_tools = _with_collected_tools(tools)
 
     return create_agent(
         model=model,
@@ -55,10 +55,10 @@ def build_agent(
     )
 
 
-def _with_event_hub_tools(tools: Sequence[Any]) -> list[Any]:
+def _with_collected_tools(tools: Sequence[Any]) -> list[Any]:
     registered_tools = list(tools)
     existing_names = {_tool_name(tool) for tool in registered_tools}
-    for tool in create_event_hub_tools():
+    for tool in collect_tools():
         if _tool_name(tool) not in existing_names:
             registered_tools.append(tool)
     return registered_tools
@@ -88,7 +88,9 @@ def run_agent_loop(
                         tools=tools, 
                         name=name)
     messages = list(history or [])
-    messages.append({"role": "user", "content": build_initial_message()})
+    envs = build_initial_messages()
+    for content in envs:
+        messages.append({"role": "user", "content": content})
     state = agent.invoke(
         {"messages": messages},
         config={"recursion_limit": max_iterations},

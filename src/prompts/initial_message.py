@@ -11,6 +11,28 @@ DEFAULT_SHELL = "zsh"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 
+def build_initial_messages(
+    workspace_dir: str | Path | None = None,
+    *,
+    shell: str = DEFAULT_SHELL,
+    current_date: str | None = None,
+    timezone: str = DEFAULT_TIMEZONE,
+) -> list[str]:
+    """Build the first message sent to the agent."""
+
+    workspace_path = Path(workspace_dir) if workspace_dir is not None else _default_workspace_dir()
+    config_path = workspace_path / "config.xml"
+    return [
+        _build_environment_context(
+            cwd=workspace_path,
+            shell=shell,
+            current_date=current_date or date.today().isoformat(),
+            timezone=timezone,
+        ),
+        _build_config_context(config_path),
+    ]
+
+
 def build_initial_message(
     workspace_dir: str | Path | None = None,
     *,
@@ -18,21 +40,15 @@ def build_initial_message(
     current_date: str | None = None,
     timezone: str = DEFAULT_TIMEZONE,
 ) -> str:
-    """Build the first message sent to the agent."""
+    """Build the initial messages as one text block for legacy callers."""
 
-    workspace_path = Path(workspace_dir) if workspace_dir is not None else _default_workspace_dir()
-    config_path = workspace_path / "config.xml"
-    return "\n".join(
-        [
-            _build_environment_context(
-                cwd=workspace_path,
-                shell=shell,
-                current_date=current_date or date.today().isoformat(),
-                timezone=timezone,
-            ),
-            "",
-            _build_config_context(config_path),
-        ]
+    return "\n\n".join(
+        build_initial_messages(
+            workspace_dir,
+            shell=shell,
+            current_date=current_date,
+            timezone=timezone,
+        )
     )
 
 

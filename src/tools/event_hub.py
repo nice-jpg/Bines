@@ -33,7 +33,7 @@ class EventHub:
 
     def __init__(self) -> None:
         self.device = AndroidDevice()
-        check_actions(self.device)
+        self._actions_checked = False
 
     def tap(self, x: int, y: int) -> None:
         """Replay the recorded tap action."""
@@ -72,8 +72,15 @@ class EventHub:
         Future code should map ``action_name`` to a recorded action asset and
         use ``x`` / ``y`` only as randomness input.
         """
+        self._ensure_actions_checked()
         self.device.act(action_name = action_name, xy = (x, y))
         # return self.device.dump_ui()
+
+    def _ensure_actions_checked(self) -> None:
+        if self._actions_checked:
+            return
+        check_actions(self.device)
+        self._actions_checked = True
 
 
 def create_event_hub_tools(event_hub: EventHub | None = None) -> list[StructuredTool]:
