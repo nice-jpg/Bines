@@ -1,0 +1,10 @@
+<package name="com.sankuai.meituan">
+    <city name="安徽省宿州市">
+        <args>
+            <address name="万成哈弗国际A区1栋"/>
+            <range size="1000"/>
+        </args>
+        <subpage name="美食"/>
+        <subpage name="外卖"/>
+    </city>
+</package>

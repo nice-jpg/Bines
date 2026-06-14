@@ -19,10 +19,10 @@ from langchain.agents.middleware.types import AgentMiddleware
 
 try:
     from src.tools import create_event_hub_tools
-    from src.prompts import SYSTEM_PROMPT
+    from src.prompts import SYSTEM_PROMPT, build_initial_message
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from tools import create_event_hub_tools
-    from prompts import SYSTEM_PROMPT
+    from prompts import SYSTEM_PROMPT, build_initial_message
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -88,6 +88,7 @@ def run_agent_loop(
                         tools=tools, 
                         name=name)
     messages = list(history or [])
+    messages.append({"role": "user", "content": build_initial_message()})
     state = agent.invoke(
         {"messages": messages},
         config={"recursion_limit": max_iterations},
