@@ -19,8 +19,10 @@ from langchain.agents.middleware.types import AgentMiddleware
 
 try:
     from src.tools import create_event_hub_tools
+    from src.prompts import SYSTEM_PROMPT
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from tools import create_event_hub_tools
+    from prompts import SYSTEM_PROMPT
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -35,7 +37,6 @@ def build_agent(
     *,
     model: str | BaseChatModel,
     tools: Sequence[Any],
-    system_prompt: str | BaseMessage | None = None,
     name: str | None = None,
 ):
     """Create a standard LangChain agent with ``langchain.agents.create_agent``."""
@@ -48,7 +49,7 @@ def build_agent(
     return create_agent(
         model=model,
         tools=registered_tools,
-        system_prompt=system_prompt,
+        system_prompt=SYSTEM_PROMPT,
         name=name,
         middleware=middlewares,
     )
@@ -74,8 +75,6 @@ def run_agent_loop(
     *,
     model: str | BaseChatModel,
     tools: Sequence[Any],
-    user_input: str,
-    system_prompt: str | BaseMessage | None = None,
     history: Iterable[BaseMessage | Mapping[str, Any]] | None = None,
     max_iterations: int = 8,
     name: str | None = None,
@@ -87,10 +86,8 @@ def run_agent_loop(
 
     agent = build_agent(model=model, 
                         tools=tools, 
-                        system_prompt=system_prompt, 
                         name=name)
     messages = list(history or [])
-    messages.append({"role": "user", "content": user_input})
     state = agent.invoke(
         {"messages": messages},
         config={"recursion_limit": max_iterations},

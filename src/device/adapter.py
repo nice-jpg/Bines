@@ -12,6 +12,7 @@ from typing import Callable, Sequence
 DEFAULT_ACTION_DIR = "/sdcard/Documents/actions/"
 DEFAULT_INPUT_DEVICE = "/dev/input/event3"
 DEFAULT_UI_DUMP_PATH = "/sdcard/window_dump.xml"
+DEFAULT_SCREENSHOT_PATH = "/sdcard/window.png"
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,10 @@ class AndroidDevice:
         self.shell(["uiautomator", "dump", DEFAULT_UI_DUMP_PATH])
         raw_xml = self.shell(["cat", DEFAULT_UI_DUMP_PATH])
         return _strip_uiautomator_noise(raw_xml)
+
+    def screenshot(self, device_path: str = DEFAULT_SCREENSHOT_PATH) -> str:
+        self.shell(["screencap", "-p", device_path])
+        return device_path
 
     def execute_file(
         self,
@@ -155,4 +160,3 @@ def _strip_uiautomator_noise(text: str) -> str:
                 return xml[: end + len("</hierarchy>")].strip()
             return xml.strip()
     return raw.strip()
-

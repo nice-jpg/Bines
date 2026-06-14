@@ -10,16 +10,21 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from langchain_core.tools import StructuredTool
-from src.device.adapter import AndroidDevice
-from src.device.translator import check_actions
+
+try:
+    from src.device.adapter import AndroidDevice
+    from src.device.translator import check_actions
+except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+    from device.adapter import AndroidDevice
+    from device.translator import check_actions
 
 EVENT_HUB_TOOL_NAMES = (
     "tap",
     "swipe_up",
     "swipe_down",
+    "swipe_back",
     "screenshot",
     "uiautomate",
-    "noop",
 )
 
 
@@ -46,17 +51,19 @@ class EventHub:
         self._replay_recorded_action("swipe_down", x, y)
 
     def swipe_back(self, x: int, y: int) -> None:
-        """Replay the recorded left swipe action."""
+        """Replay the recorded back action."""
 
         self._replay_recorded_action("swipe_back", x, y)
 
     def uiautomate(self) -> str:
+        """Return the current UIAutomator XML hierarchy."""
+
         return self.device.dump_ui()
 
-    def noop(self, x: int, y: int) -> None:
-        """Replay no operation while preserving the same tool input shape."""
+    def screenshot(self) -> str:
+        """Capture a screenshot on the device and return the remote path."""
 
-        self._replay_recorded_action("noop", x, y)
+        return self.device.screenshot()
 
     def _replay_recorded_action(self, action_name: str, x: int, y: int) -> None:
         """Replay a recorded action with coordinate jitter input.
@@ -77,8 +84,9 @@ def create_event_hub_tools(event_hub: EventHub | None = None) -> list[Structured
         _make_tool("tap", "tap (x, y).", hub.tap),
         _make_tool("swipe_up", "swipe up from (x, y) for a short distance.", hub.swipe_up),
         _make_tool("swipe_down", "swipe down from (x, y) for a short distance.", hub.swipe_down),
-        _make_tool("swipe_back", "return to the last page.", hub.swipe_left),
-        _make_tool("noop", "do nothing.", hub.noop),
+        _make_tool("swipe_back", "return to the last page.", hub.swipe_back),
+        _make_zero_arg_tool("uiautomate", "Get the current UIAutomator XML hierarchy.", hub.uiautomate),
+        _make_zero_arg_tool("screenshot", "Capture the current screen and return the remote image path.", hub.screenshot),
     ]
 
 
@@ -99,3 +107,14 @@ def _make_tool(name: str, description: str, operation: Callable[[int, int], None
         description=f"{description} Provide random x/y coordinates. Returns no operation data.",
     )
 
+
+def _make_zero_arg_tool(name: str, description: str, operation: Callable[[], str]) -> StructuredTool:
+    def tool_func() -> str:
+        return operation()
+
+    tool_func.__name__ = name
+    return StructuredTool.from_function(
+        func=tool_func,
+        name=name,
+        description=description,
+    )

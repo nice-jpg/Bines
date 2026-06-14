@@ -136,6 +136,13 @@ class DeviceActionTests(unittest.TestCase):
             runner.calls,
         )
 
+    def test_android_device_screenshot_captures_remote_png_path(self) -> None:
+        runner = RecordingRunner()
+        device = AndroidDevice(runner=runner)
+
+        self.assertEqual(device.screenshot(), "/sdcard/window.png")
+        self.assertIn(["adb", "shell", "screencap", "-p", "/sdcard/window.png"], runner.calls)
+
     def test_check_actions_translates_missing_local_actions(self) -> None:
         class FakeDevice:
             def __init__(self) -> None:

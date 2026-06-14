@@ -24,23 +24,14 @@ def current_utc_time() -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a LangChain create_agent tool-calling harness.")
-    parser.add_argument("prompt", help="User prompt to send to the agent.")
-    parser.add_argument(
-        "--system-prompt",
-        default="You are a concise assistant. Use tools when they are useful.",
-        help="System prompt for the agent.",
-    )
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
     model = build_model()
     result = run_agent_loop(
         model=model,
         tools=[current_utc_time],
-        user_input=args.prompt,
-        system_prompt=args.system_prompt,
         max_iterations=1000,
     )
     print(result.output)
