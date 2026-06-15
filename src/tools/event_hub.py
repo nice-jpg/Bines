@@ -85,7 +85,7 @@ class EventHub:
     def swipe_back(self, x: int, y: int) -> str | ErrorResult:
         """Replay the recorded back action."""
 
-        return self._replay_recorded_action("swipe_back", x, y)
+        return self._replay_recorded_action("swipe_back", 0, y)
 
     def uiautomate(self) -> str | ErrorResult:
         """Return the current UIAutomator XML hierarchy."""

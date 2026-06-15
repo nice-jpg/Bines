@@ -11,33 +11,48 @@ from prompts import SYSTEM_PROMPT
 
 class SystemPromptTests(unittest.TestCase):
     def test_prompt_requires_scrolling_list_pages_until_terminal_condition(self) -> None:
-        self.assertIn("run_package：按应用包名打开指定应用", SYSTEM_PROMPT)
-        self.assertIn("调用 swipe_up 上滑加载下一屏", SYSTEM_PROMPT)
-        self.assertIn("连续 2 次上滑后 XML/商家集合没有新增", SYSTEM_PROMPT)
-        self.assertIn("不允许因为首屏商家少", SYSTEM_PROMPT)
-        self.assertIn("出现范围外商家就直接返回", SYSTEM_PROMPT)
+        self.assertIn("run_package: open the target app by Android package name", SYSTEM_PROMPT)
+        self.assertIn("call swipe_up to load the next screen", SYSTEM_PROMPT)
+        self.assertIn("2 consecutive swipe_up attempts add no new XML or merchant set", SYSTEM_PROMPT)
+        self.assertIn("Do not return just because the first screen has few merchants", SYSTEM_PROMPT)
+        self.assertIn("an out-of-range merchant is not a stop condition", SYSTEM_PROMPT)
 
     def test_prompt_requires_range_filtering_and_detail_scanning(self) -> None:
-        self.assertIn("未确认范围生效前不得开始批量采集", SYSTEM_PROMPT)
-        self.assertIn("1000 表示 1000 米", SYSTEM_PROMPT)
-        self.assertIn("500m、1.2km、约800米", SYSTEM_PROMPT)
-        self.assertIn("没有距离信息的商家不能直接丢弃", SYSTEM_PROMPT)
-        self.assertIn("商品列表执行滚动扫描", SYSTEM_PROMPT)
-        self.assertIn("全部评价数量、好评数量", SYSTEM_PROMPT)
-        self.assertIn("立即以店铺为单位整理采集结果并追加写入 Excel", SYSTEM_PROMPT)
+        self.assertIn("Do not start bulk collection until the range is confirmed to be active", SYSTEM_PROMPT)
+        self.assertIn("1000 means 1000 meters", SYSTEM_PROMPT)
+        self.assertIn("500m, 1.2km, and about 800 meters", SYSTEM_PROMPT)
+        self.assertIn("Merchants without distance information must not be discarded immediately", SYSTEM_PROMPT)
+        self.assertIn("Run a scrolling scan over the product list", SYSTEM_PROMPT)
+        self.assertIn("total review count and positive review count", SYSTEM_PROMPT)
+        self.assertIn("immediately organize the collected data by merchant and append it to the Excel file", SYSTEM_PROMPT)
 
     def test_prompt_describes_page_specific_operation_strategy(self) -> None:
-        self.assertIn("优先使用 run_package 工具", SYSTEM_PROMPT)
-        self.assertIn("不得使用 y=0 或 y=2400", SYSTEM_PROMPT)
-        self.assertIn("一级页面操作逻辑：直接查找并点击上下文指定的二级页面入口", SYSTEM_PROMPT)
-        self.assertIn("从上到下依次为搜索框、金刚区、商家列表", SYSTEM_PROMPT)
-        self.assertIn("优先在商家列表区域执行上下滑动", SYSTEM_PROMPT)
-        self.assertIn("距离合适则点击进入商家", SYSTEM_PROMPT)
-        self.assertIn("上半部分为商家基本信息", SYSTEM_PROMPT)
-        self.assertIn("左侧是可单独上下滑动的品类列表", SYSTEM_PROMPT)
-        self.assertIn("右侧是该品类下的商品列表", SYSTEM_PROMPT)
-        self.assertIn("通过 swipe_back 工具返回上一页", SYSTEM_PROMPT)
-        self.assertIn("不确定下一步如何操作时，调用 screenshot", SYSTEM_PROMPT)
+        self.assertIn("Prefer the run_package tool", SYSTEM_PROMPT)
+        self.assertIn("Do not use y=0 or y=2400", SYSTEM_PROMPT)
+        self.assertIn("First-level page logic: directly find and tap the secondary page entry", SYSTEM_PROMPT)
+        self.assertIn("top to bottom into a search box, a service icon grid, and a merchant list", SYSTEM_PROMPT)
+        self.assertIn("prefer swiping within the merchant list area", SYSTEM_PROMPT)
+        self.assertIn("tap the merchant icon or title to enter the merchant", SYSTEM_PROMPT)
+        self.assertIn("basic merchant information in the upper area", SYSTEM_PROMPT)
+        self.assertIn("left side is a separately scrollable category list", SYSTEM_PROMPT)
+        self.assertIn("right side is the product list", SYSTEM_PROMPT)
+        self.assertIn("use swipe_back to return to the previous page", SYSTEM_PROMPT)
+        self.assertIn("you are unsure what to do next", SYSTEM_PROMPT)
+
+    def test_prompt_requires_human_like_safe_clicking_and_unexpected_page_recovery(self) -> None:
+        self.assertIn("Before tapping, judge the target element's position and visibility", SYSTEM_PROMPT)
+        self.assertIn("first use swipe_up/swipe_down to move it fully into view", SYSTEM_PROMPT)
+        self.assertIn("Merchant cards are complex", SYSTEM_PROMPT)
+        self.assertIn("prefer tapping the merchant icon, merchant avatar, or merchant title", SYSTEM_PROMPT)
+        self.assertIn("Do not tap coupon, delivery, campaign, product preview, favorite, or review areas", SYSTEM_PROMPT)
+        self.assertIn("tap the merchant icon or title to enter the merchant", SYSTEM_PROMPT)
+        self.assertIn("not the target merchant detail page", SYSTEM_PROMPT)
+        self.assertIn("immediately use swipe_back to return to the previous level", SYSTEM_PROMPT)
+
+    def test_prompt_requires_aggressive_collection_until_no_new_information(self) -> None:
+        self.assertIn("you must scroll to the bottom", SYSTEM_PROMPT)
+        self.assertIn("Do not stop early just because a lot of data has already been collected", SYSTEM_PROMPT)
+        self.assertIn("Continue collecting new data unless 3 consecutive swipe_up attempts add no new information", SYSTEM_PROMPT)
 
 
 if __name__ == "__main__":

@@ -42,7 +42,7 @@ def build_agent(
     """Create a standard LangChain agent with ``langchain.agents.create_agent``."""
 
     middlewares: list[AgentMiddleware] = []
-    middlewares.append(TodoListMiddleware())
+    # middlewares.append(TodoListMiddleware())
     middlewares.append(SummarizationMiddleware(model=model))
     registered_tools = _with_collected_tools(tools)
 
