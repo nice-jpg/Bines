@@ -18,9 +18,11 @@ from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 
 try:
+    from src.middleware import DeviceContextCompressionMiddleware
     from src.tools import collect_tools
     from src.prompts import SYSTEM_PROMPT, build_initial_messages
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+    from middleware import DeviceContextCompressionMiddleware
     from tools import collect_tools
     from prompts import SYSTEM_PROMPT, build_initial_messages
 
@@ -43,6 +45,7 @@ def build_agent(
 
     middlewares: list[AgentMiddleware] = []
     # middlewares.append(TodoListMiddleware())
+    middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(SummarizationMiddleware(model=model))
     registered_tools = _with_collected_tools(tools)
 
