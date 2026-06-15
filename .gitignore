@@ -6,5 +6,7 @@ data/
 .vscode
 deprecated
 .DS_Store
+.env
 
 workspace
+src/test.py
