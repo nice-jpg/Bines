@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -143,6 +145,28 @@ class DeviceActionTests(unittest.TestCase):
         self.assertEqual(device.screenshot(), "/sdcard/window.png")
         self.assertIn(["adb", "shell", "screencap", "-p", "/sdcard/window.png"], runner.calls)
 
+    def test_android_device_dump_ui_disables_animations_before_uiautomator_dump(self) -> None:
+        runner = RecordingRunner(
+            {
+                ("adb", "shell", "cat", "/sdcard/window_dump.xml"): (
+                    "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n"
+                    "<hierarchy rotation=\"0\"></hierarchy>\n"
+                ),
+            }
+        )
+        device = AndroidDevice(runner=runner)
+
+        self.assertEqual(device.dump_ui(), "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n<hierarchy rotation=\"0\"></hierarchy>")
+        self.assertEqual(
+            runner.calls[:4],
+            [
+                ["adb", "shell", "settings", "put", "global", "window_animation_scale", "0"],
+                ["adb", "shell", "settings", "put", "global", "transition_animation_scale", "0"],
+                ["adb", "shell", "settings", "put", "global", "animator_duration_scale", "0"],
+                ["adb", "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"],
+            ],
+        )
+
     def test_android_device_run_package_uses_launcher_monkey_command(self) -> None:
         runner = RecordingRunner()
         device = AndroidDevice(runner=runner)
@@ -163,11 +187,58 @@ class DeviceActionTests(unittest.TestCase):
             runner.calls,
         )
 
-    def test_android_device_run_package_rejects_empty_package_name(self) -> None:
+    def test_android_device_run_package_returns_error_for_empty_package_name(self) -> None:
         device = AndroidDevice(runner=RecordingRunner())
 
-        with self.assertRaises(ValueError):
-            device.run_package("  ")
+        result = device.run_package("  ")
+
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["error_type"], "validation_error")
+        self.assertIn("package_name must not be empty", result["message"])
+
+    def test_default_runner_returns_error_result_for_adb_error_output(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["adb", "shell", "some-command"],
+            returncode=0,
+            stdout="ERROR could not get idle state.\n",
+            stderr="",
+        )
+        device = AndroidDevice()
+
+        with patch("device.adapter.subprocess.run", return_value=completed):
+            result = device.shell(["some-command"])
+
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["error_type"], "command_error")
+        self.assertIn("ERROR could not get idle state.", result["message"])
+
+    def test_default_runner_returns_error_result_for_stderr_error_output(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["adb", "shell", "some-command"],
+            returncode=0,
+            stdout="",
+            stderr="Permission denied\n",
+        )
+        device = AndroidDevice()
+
+        with patch("device.adapter.subprocess.run", return_value=completed):
+            result = device.shell(["some-command"])
+
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["error_type"], "command_error")
+        self.assertIn("Permission denied", result["message"])
+
+    def test_default_runner_preserves_successful_output_containing_error_word_inside_text(self) -> None:
+        completed = subprocess.CompletedProcess(
+            args=["adb", "shell", "some-command"],
+            returncode=0,
+            stdout="last_error_count=0\n",
+            stderr="",
+        )
+        device = AndroidDevice()
+
+        with patch("device.adapter.subprocess.run", return_value=completed):
+            self.assertEqual(device.shell(["some-command"]), "last_error_count=0\n")
 
     def test_check_actions_translates_missing_local_actions(self) -> None:
         class FakeDevice:

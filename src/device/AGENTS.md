@@ -7,8 +7,9 @@ touch-action translation.
 
 - `adapter.py`
   - `AndroidDevice` is the adb-backed device facade.
-  - `CommandResult` wraps raw subprocess output and raises through
-    `check_returncode()`.
+  - `CommandResult` wraps raw subprocess output. Public device helpers return
+    normal success values on success and a structured `{ok: false, ...}` error
+    result on failure instead of raising command exceptions.
   - Default paths:
     - actions directory: `/sdcard/Documents/actions/`
     - input device: `/dev/input/event3`
@@ -35,17 +36,21 @@ touch-action translation.
 Use `AndroidDevice(serial="", adb_path="adb", runner=None)` for device access.
 The optional `runner` makes tests independent of real adb.
 
-Core operations:
+Core operations return the documented success value or an error result:
 
-- `shell(command, root=False) -> str`
+- `shell(command, root=False) -> str | ErrorResult`
 - `shell_raw(command, root=False) -> CommandResult`
-- `dump_ui() -> str`
-- `execute_file(device_file_path, args=None, root=False) -> str`
-- `list_files(device_dir) -> list[str]`
-- `push_file(local_path, device_dir) -> str`
-- `get_supported_actions(device_dir=DEFAULT_ACTION_DIR) -> list[str]`
-- `add_action(local_path, device_dir=DEFAULT_ACTION_DIR) -> str`
-- `act(action_name, xy, device_dir=DEFAULT_ACTION_DIR, input_device=DEFAULT_INPUT_DEVICE) -> str`
+- `dump_ui() -> str | ErrorResult`
+- `execute_file(device_file_path, args=None, root=False) -> str | ErrorResult`
+- `list_files(device_dir) -> list[str] | ErrorResult`
+- `push_file(local_path, device_dir) -> str | ErrorResult`
+- `get_supported_actions(device_dir=DEFAULT_ACTION_DIR) -> list[str] | ErrorResult`
+- `add_action(local_path, device_dir=DEFAULT_ACTION_DIR) -> str | ErrorResult`
+- `act(action_name, xy, device_dir=DEFAULT_ACTION_DIR, input_device=DEFAULT_INPUT_DEVICE) -> str | ErrorResult`
+
+`dump_ui()` disables window, transition, and animator scales before running
+`uiautomator dump` to reduce `ERROR: could not get idle state.` failures on
+dynamic pages.
 
 Current `act()` behavior:
 

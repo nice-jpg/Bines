@@ -11,8 +11,10 @@ from typing import Iterable
 
 try:
     from .adapter import AndroidDevice, DEFAULT_ACTION_DIR
+    from .results import is_error_result
 except ImportError:  # Supports direct PYTHONPATH=src imports.
     from device.adapter import AndroidDevice, DEFAULT_ACTION_DIR
+    from device.results import is_error_result
 
 
 EVENT_TYPES = {
@@ -67,7 +69,10 @@ def check_actions(
     if not local_path.exists():
         return []
 
-    supported_actions = set(device.get_supported_actions(device_dir))
+    supported_action_result = device.get_supported_actions(device_dir)
+    if is_error_result(supported_action_result):
+        return []
+    supported_actions = set(supported_action_result)
     translated: list[str] = []
     for action_path in sorted(path for path in local_path.iterdir() if path.is_file()):
         if action_path.name in supported_actions:
