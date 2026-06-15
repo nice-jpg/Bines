@@ -61,7 +61,7 @@ class AndroidDevice:
         animation_result = self._disable_animations()
         if is_error_result(animation_result):
             return animation_result
-        dump_result = self.shell(["uiautomator", "dump", DEFAULT_UI_DUMP_PATH])
+        dump_result = self.shell(["/data/local/tmp/project", "-d", DEFAULT_UI_DUMP_PATH])
         if is_error_result(dump_result):
             return dump_result
         raw_xml = self.shell(["cat", DEFAULT_UI_DUMP_PATH])
