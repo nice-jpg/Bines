@@ -32,7 +32,9 @@ class ToolsRegistryTests(unittest.TestCase):
         tool_names = [tool.name for tool in collect_tools()]
 
         self.assertIn("think", tool_names)
+        self.assertIn("query_manual", tool_names)
         self.assertLess(tool_names.index("think"), tool_names.index("tap"))
+        self.assertLess(tool_names.index("query_manual"), tool_names.index("tap"))
 
 
 if __name__ == "__main__":

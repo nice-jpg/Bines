@@ -22,6 +22,7 @@ def build_initial_messages(
 
     workspace_path = Path(workspace_dir) if workspace_dir is not None else _default_workspace_dir()
     config_path = workspace_path / "config.xml"
+    config = _read_config(config_path)
     return [
         _build_environment_context(
             cwd=workspace_path,
@@ -29,7 +30,7 @@ def build_initial_messages(
             current_date=current_date or date.today().isoformat(),
             timezone=timezone,
         ),
-        _build_config_context(config_path),
+        _build_config_context(config),
     ]
 
 
@@ -65,8 +66,7 @@ def _build_environment_context(cwd: Path, shell: str, current_date: str, timezon
     )
 
 
-def _build_config_context(config_path: Path) -> str:
-    config = _read_config(config_path)
+def _build_config_context(config: "_Config") -> str:
     lines = [
         "<config_context>",
         f"  - 应用名称：{config.application_name}",

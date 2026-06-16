@@ -60,7 +60,8 @@ class AndroidDevice:
     def dump_ui(self) -> str | ErrorResult:
         animation_result = self._disable_animations()
         if is_error_result(animation_result):
-            return animation_result
+            return animation_result or ''
+        # use customized ui dump tool, do not change this
         dump_result = self.shell(["/data/local/tmp/project", "-d", DEFAULT_UI_DUMP_PATH])
         if is_error_result(dump_result):
             return dump_result
