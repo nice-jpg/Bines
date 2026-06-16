@@ -36,21 +36,21 @@ TOOL_SPECS = (
     ToolSpec("tap", "tap (x, y). Provide x/y coordinates. Returns no operation data.", "tap", ("x", "y")),
     ToolSpec(
         "swipe_up",
-        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns no operation data.",
+        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_up",
         ("x", "y"),
     ),
     ToolSpec(
         "swipe_down",
-        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns no operation data.",
+        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_down",
         ("x", "y"),
     ),
     ToolSpec(
         "swipe_back",
-        "return to the last page. Provide x/y coordinates. Returns no operation data.",
+        "return to the last page. Returns current UIAutomator XML hierarchy.",
         "swipe_back",
-        ("x", "y"),
+        (),
     ),
     ToolSpec("uiautomate", "Get the current UIAutomator XML hierarchy.", "uiautomate", ()),
     ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot", ()),
@@ -82,10 +82,10 @@ class EventHub:
 
         return self._replay_recorded_action("swipe_down", x, y)
 
-    def swipe_back(self, x: int, y: int) -> str | ErrorResult:
+    def swipe_back(self) -> str | ErrorResult:
         """Replay the recorded back action."""
 
-        return self._replay_recorded_action("swipe_back", 0, y)
+        return self._replay_recorded_action("swipe_back", 0, 2000)
 
     def uiautomate(self) -> str | ErrorResult:
         """Return the current UIAutomator XML hierarchy."""
