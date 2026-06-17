@@ -2,3 +2,6 @@ build/
 dist/
 
 dump/
+__pycache__/
+*.py[cod]
+.pytest_cache/
