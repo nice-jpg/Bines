@@ -17,9 +17,88 @@ The optimizer must be deterministic and must only transform the input string.
 
 from __future__ import annotations
 
+import html
+import re
+import xml.etree.ElementTree as ET
+
+
+TRUE_KEYS = ("clickable", "long-clickable", "scrollable", "focusable", "selected")
+TEXT_KEYS = ("text", "content-desc")
+KEEP_RESOURCE_HINTS = ("tab", "search", "button", "btn", "entry", "channel", "nav", "menu")
+
 
 def optimize(xml_text: str) -> str:
-    return xml_text
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return re.sub(r">\\s+<", "><", xml_text).strip()
+
+    nodes = []
+    for elem in root.iter():
+        if elem.tag == "hierarchy":
+            continue
+        attrs = elem.attrib
+        bounds = attrs.get("bounds", "").strip()
+        if not _positive_bounds(bounds):
+            continue
+        label = _label(attrs)
+        resource_id = attrs.get("resource-id", "").strip()
+        class_name = attrs.get("class", "").strip()
+        true_flags = {key: "true" for key in TRUE_KEYS if attrs.get(key) == "true"}
+        if not (label or true_flags or _useful_resource(resource_id) or _useful_class(class_name)):
+            continue
+        out = {"bounds": bounds}
+        for key in TEXT_KEYS:
+            value = attrs.get(key, "").strip()
+            if value:
+                out[key] = re.sub(r"\\s+", " ", value)
+        if resource_id and (label or _useful_resource(resource_id)):
+            out["resource-id"] = resource_id.rsplit("/", 1)[-1]
+        if _useful_class(class_name):
+            out["class"] = class_name.rsplit(".", 1)[-1]
+        out.update(true_flags)
+        nodes.append(out)
+
+    header_attrs = []
+    if root.tag == "hierarchy":
+        for key in ("rotation", "source"):
+            value = root.attrib.get(key)
+            if value:
+                header_attrs.append((key, value))
+    header = "<hierarchy" + _attrs(header_attrs) + ">"
+    body = "".join("<node" + _attrs(node.items()) + "/>" for node in nodes)
+    return header + body + "</hierarchy>"
+
+
+def _attrs(items) -> str:
+    parts = []
+    for key, value in items:
+        if value is None or value == "":
+            continue
+        parts.append(f' {key}="{html.escape(str(value), quote=True)}"')
+    return "".join(parts)
+
+
+def _label(attrs: dict[str, str]) -> str:
+    return " ".join(attrs.get(key, "").strip() for key in TEXT_KEYS if attrs.get(key, "").strip()).strip()
+
+
+def _positive_bounds(value: str) -> bool:
+    match = re.match(r"^\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]$", value)
+    if not match:
+        return False
+    left, top, right, bottom = (int(part) for part in match.groups())
+    return right > left and bottom > top
+
+
+def _useful_resource(value: str) -> bool:
+    lowered = value.lower()
+    return any(hint in lowered for hint in KEEP_RESOURCE_HINTS)
+
+
+def _useful_class(value: str) -> bool:
+    lowered = value.lower()
+    return any(hint in lowered for hint in ("button", "edittext", "tab", "checkbox", "switch"))
 '''
 
 

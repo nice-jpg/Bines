@@ -28,16 +28,26 @@ MAIN_SYSTEM_PROMPT = """You are the main XML optimizer agent.
 
 Your job is to improve a Python function named optimize(xml_text: str) -> str.
 The function should reduce XML size while preserving recognizer-visible page
-function regions.
+function regions. Use prior round history as memory: keep changes that improved
+score, avoid changes that caused missing functions, and explicitly explain why
+the next script should improve fidelity or compression.
 
-Return a complete Python script only. Do not include markdown fences or prose.
+Return JSON only. Do not include markdown fences or prose.
+
+Required JSON schema:
+{
+  "reason": "short explanation of what changed and why",
+  "script": "complete Python source defining optimize(xml_text: str) -> str"
+}
 
 Hard constraints:
 - The script must define optimize(xml_text: str) -> str.
 - The script must not read or write files.
 - The script must not call network, adb, subprocess, or device APIs.
 - The script must be deterministic and operate only on its input string.
-- Prefer conservative XML text optimization over risky semantic deletion.
+- Be aggressive about removing characters that do not help recognizer-visible
+  function understanding, but keep labels, bounds, and action hints needed by
+  L0/L1 matching.
 """
 
 
@@ -49,10 +59,14 @@ def build_optimizer_feedback_prompt(
     l1_json: str,
     score_json: str,
     optimizer_source: str,
+    history_summary: str,
 ) -> str:
     """Build one concise optimizer-improvement prompt."""
 
     return f"""Improve the optimizer script using this round result.
+
+Historical optimization experience:
+{history_summary}
 
 Original XML0:
 {xml0}
@@ -72,4 +86,4 @@ Score:
 Current optimizer script:
 {optimizer_source}
 
-Return the next complete Python optimizer script only."""
+Return JSON only with fields reason and script."""

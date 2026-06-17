@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -12,9 +13,10 @@ from dotenv import load_dotenv
 
 from .dumper import DumperConfig, dump_full_xml
 from .middleware import OptimizerTrace, OptimizerTraceMiddleware, RecognizerCommunicationMiddleware
-from .models import OptimizationRound, OptimizerRunResult, RecognizerResult
-from .optimizer_script import load_optimizer, read_optimizer_source, write_optimizer_source
+from .models import OptimizationRound, OptimizerProposal, OptimizerRunResult, RecognizerResult
+from .optimizer_script import ensure_optimizer_script, load_optimizer, read_optimizer_source, write_optimizer_source
 from .prompts import MAIN_SYSTEM_PROMPT, build_optimizer_feedback_prompt
+from .provenance import commit_initial_optimizer, commit_round
 from .scorer import score_regions
 
 
@@ -40,6 +42,9 @@ def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
     trace = OptimizerTrace()
     recognizer_bridge = RecognizerCommunicationMiddleware(model)
     main_agent = build_main_agent(model, trace, recognizer_bridge)
+    workspace_dir = config.output.parent
+    ensure_optimizer_script(config.output)
+    commit_initial_optimizer(workspace_dir, config.output)
 
     xml0 = dump_full_xml(
         DumperConfig(
@@ -62,7 +67,7 @@ def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
         l1 = recognizer_bridge.call_recognizer(xml1)
         _require_recognizer_ok("L1", l1)
         score = score_regions(xml0, xml1, l0, l1)
-        suggestion = request_optimizer_source(
+        proposal = request_optimizer_proposal(
             main_agent=main_agent,
             xml0=xml0,
             xml1=xml1,
@@ -70,6 +75,7 @@ def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
             l1=l1,
             score=score,
             optimizer_source=optimizer_source,
+            history_summary=trace.summary(),
         )
         round_result = OptimizationRound(
             index=index,
@@ -78,7 +84,8 @@ def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
             l0_count=len(l0.functions),
             l1_count=len(l1.functions),
             score=score,
-            suggestion=suggestion,
+            reason=proposal.reason,
+            suggestion=proposal.source,
         )
         trace.append(round_result)
 
@@ -90,10 +97,11 @@ def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
         else:
             stale_count = 0
 
-        if suggestion.strip() and suggestion.strip() != optimizer_source.strip():
-            write_optimizer_source(config.output, suggestion)
+        if proposal.source.strip() and proposal.source.strip() != optimizer_source.strip():
+            write_optimizer_source(config.output, proposal.source)
         else:
             stale_count += 1
+        commit_round(workspace_dir=workspace_dir, optimizer_path=config.output, round_result=round_result)
         if stale_count >= config.stale_rounds:
             break
 
@@ -133,7 +141,7 @@ def build_model(model_name: str | None = None) -> Any:
     raise RuntimeError("Missing model. Provide --model or OPENAI/DEEPSEEK environment settings.")
 
 
-def request_optimizer_source(
+def request_optimizer_proposal(
     *,
     main_agent: Any,
     xml0: str,
@@ -142,7 +150,8 @@ def request_optimizer_source(
     l1: RecognizerResult,
     score: Any,
     optimizer_source: str,
-) -> str:
+    history_summary: str = "No optimizer rounds have completed yet.",
+) -> OptimizerProposal:
     prompt = build_optimizer_feedback_prompt(
         xml0=xml0,
         xml1=xml1,
@@ -150,12 +159,42 @@ def request_optimizer_source(
         l1_json=_recognizer_json(l1),
         score_json=json.dumps(asdict(score), ensure_ascii=False, indent=2),
         optimizer_source=optimizer_source,
+        history_summary=history_summary,
     )
     try:
         state = main_agent.invoke({"messages": [{"role": "user", "content": prompt}]})
     except Exception:  # noqa: BLE001 - keep the current optimizer when the LLM is unavailable.
-        return optimizer_source
-    return _latest_text(state)
+        return OptimizerProposal(
+            reason="LLM optimizer proposal failed; keeping current script for traceability.",
+            source=optimizer_source,
+        )
+    return parse_optimizer_proposal(_latest_text(state), optimizer_source)
+
+
+def request_optimizer_source(**kwargs: Any) -> str:
+    """Compatibility wrapper returning only the proposed source."""
+
+    return request_optimizer_proposal(**kwargs).source
+
+
+def parse_optimizer_proposal(raw_output: str, fallback_source: str) -> OptimizerProposal:
+    """Parse model output as a reasoned optimizer proposal."""
+
+    raw = str(raw_output or "").strip()
+    if not raw:
+        return OptimizerProposal(reason="Model returned empty proposal; keeping current script.", source=fallback_source)
+    try:
+        parsed = json.loads(_extract_json(raw))
+    except json.JSONDecodeError:
+        return OptimizerProposal(reason="Model returned legacy script without JSON reason.", source=_strip_fence(raw))
+    if not isinstance(parsed, Mapping):
+        return OptimizerProposal(reason="Model proposal was not a JSON object; keeping current script.", source=fallback_source)
+    reason = str(parsed.get("reason") or "").strip() or "Model did not provide a reason."
+    source = str(parsed.get("script") or "").strip()
+    if not source:
+        source = fallback_source
+        reason = reason + " No script was provided, so the current script is kept."
+    return OptimizerProposal(reason=reason, source=_strip_fence(source))
 
 
 def _recognizer_json(result: RecognizerResult) -> str:
@@ -176,3 +215,24 @@ def _latest_text(state: Mapping[str, Any]) -> str:
     if content is None and isinstance(latest, Mapping):
         content = latest.get("content")
     return content if isinstance(content, str) else str(content or "")
+
+
+def _extract_json(raw: str) -> str:
+    if raw.startswith("```"):
+        raw = _strip_fence(raw)
+    if raw.startswith("{"):
+        return raw
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    return match.group(0) if match else raw
+
+
+def _strip_fence(raw: str) -> str:
+    text = str(raw or "").strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()

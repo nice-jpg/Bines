@@ -47,7 +47,14 @@ class OptimizationRound:
     l0_count: int
     l1_count: int
     score: ScoreResult
+    reason: str
     suggestion: str
+
+
+@dataclass(frozen=True)
+class OptimizerProposal:
+    reason: str
+    source: str
 
 
 @dataclass(frozen=True)

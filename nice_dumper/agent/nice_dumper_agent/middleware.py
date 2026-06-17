@@ -24,9 +24,11 @@ def _base_middleware():
 @dataclass
 class OptimizerTrace:
     rounds: list[OptimizationRound] = field(default_factory=list)
+    lessons: list[str] = field(default_factory=list)
 
     def append(self, round_result: OptimizationRound) -> None:
         self.rounds.append(round_result)
+        self.lessons.append(_round_lesson(round_result))
 
     def summary(self) -> str:
         if not self.rounds:
@@ -42,10 +44,18 @@ class OptimizerTrace:
                 "fidelity": round(item.score.fidelity, 4),
                 "compression": round(item.score.compression, 4),
                 "missing_count": item.score.missing_count,
+                "reason": item.reason,
             }
             for item in self.rounds
         ]
-        return json.dumps(compact, ensure_ascii=False)
+        return json.dumps(
+            {
+                "rounds": compact,
+                "lessons": self.lessons[-6:],
+                "best_score": round(max(item.score.score for item in self.rounds), 4),
+            },
+            ensure_ascii=False,
+        )
 
 
 class OptimizerTraceMiddleware(_base_middleware()):
@@ -117,3 +127,21 @@ class RecognizerCommunicationMiddleware(_base_middleware()):
 
 def round_to_json(round_result: OptimizationRound) -> str:
     return json.dumps(asdict(round_result), ensure_ascii=False, indent=2)
+
+
+def _round_lesson(round_result: OptimizationRound) -> str:
+    score = round_result.score
+    if score.missing_count:
+        return (
+            f"round {round_result.index}: {score.missing_count} baseline functions were missing; "
+            "future scripts must preserve labels and bounds for those regions before compressing harder."
+        )
+    if score.compression < 0.2:
+        return (
+            f"round {round_result.index}: fidelity was acceptable but compression was weak; "
+            "remove more non-recognizer attributes, hierarchy noise, and decorative nodes."
+        )
+    return (
+        f"round {round_result.index}: no missing functions with compression "
+        f"{score.compression:.3f}; this direction is usable."
+    )

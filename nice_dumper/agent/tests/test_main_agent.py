@@ -1,4 +1,4 @@
-from nice_dumper_agent.main_agent import request_optimizer_source
+from nice_dumper_agent.main_agent import parse_optimizer_proposal, request_optimizer_source
 from nice_dumper_agent.models import FunctionRegion, RecognizerResult, ScoreResult
 
 
@@ -21,3 +21,12 @@ def test_request_optimizer_source_keeps_current_script_on_llm_failure() -> None:
     )
 
     assert result == source
+
+
+def test_parse_optimizer_proposal_reads_reason_and_script() -> None:
+    raw = '{"reason":"drop unused attributes","script":"def optimize(xml_text: str) -> str:\\n    return xml_text.strip()"}'
+
+    proposal = parse_optimizer_proposal(raw, "fallback")
+
+    assert proposal.reason == "drop unused attributes"
+    assert "return xml_text.strip()" in proposal.source
