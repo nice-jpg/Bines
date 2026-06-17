@@ -5,19 +5,19 @@ from __future__ import annotations
 import json
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from dotenv import load_dotenv
 
-from .dumper import DumperConfig, dump_full_xml
-from .middleware import OptimizerTrace, OptimizerTraceMiddleware, RecognizerCommunicationMiddleware
-from .models import OptimizationRound, OptimizerProposal, OptimizerRunResult, RecognizerResult
-from .optimizer_script import ensure_optimizer_script, load_optimizer, read_optimizer_source, write_optimizer_source
-from .prompts import MAIN_SYSTEM_PROMPT, build_optimizer_feedback_prompt
-from .provenance import commit_initial_optimizer, commit_round
-from .scorer import score_regions
+from .dumper import DumperConfig
+from .middleware import OptimizerTrace, OptimizerTraceMiddleware, SubagentLifecycleMiddleware
+from .models import OptimizerProposal, OptimizerRunResult
+from .optimizer_script import ensure_optimizer_script
+from .prompts import MAIN_SYSTEM_PROMPT
+from .provenance import commit_initial_optimizer
+from .runtime import OptimizerRuntime
 
 
 @dataclass(frozen=True)
@@ -34,93 +34,51 @@ class OptimizerConfig:
 
 
 def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
-    """Run capture, recognition, scoring, and optimizer-script iteration."""
+    """Run the optimizer through one complete main-agent invocation."""
 
     if config.max_rounds < 1:
         raise ValueError("max_rounds must be >= 1")
     model = build_model(config.model)
     trace = OptimizerTrace()
-    recognizer_bridge = RecognizerCommunicationMiddleware(model)
-    main_agent = build_main_agent(model, trace, recognizer_bridge)
     workspace_dir = config.output.parent
     ensure_optimizer_script(config.output)
     commit_initial_optimizer(workspace_dir, config.output)
-
-    xml0 = dump_full_xml(
-        DumperConfig(
+    runtime = OptimizerRuntime(
+        model=model,
+        dumper_config=DumperConfig(
             adb=config.adb,
             remote_output=config.remote_output,
             timeout_ms=config.timeout_ms,
             fixture_xml=config.fixture_xml,
-        )
+        ),
+        output=config.output,
+        trace=trace,
+        max_rounds=config.max_rounds,
+        min_growth=config.min_growth,
+        stale_rounds=config.stale_rounds,
     )
-    l0 = recognizer_bridge.call_recognizer(xml0)
-    _require_recognizer_ok("L0", l0)
-
-    best_score = float("-inf")
-    stale_count = 0
-
-    for index in range(1, config.max_rounds + 1):
-        optimizer = load_optimizer(config.output)
-        optimizer_source = read_optimizer_source(config.output)
-        xml1 = str(optimizer(xml0))
-        l1 = recognizer_bridge.call_recognizer(xml1)
-        _require_recognizer_ok("L1", l1)
-        score = score_regions(xml0, xml1, l0, l1)
-        proposal = request_optimizer_proposal(
-            main_agent=main_agent,
-            xml0=xml0,
-            xml1=xml1,
-            l0=l0,
-            l1=l1,
-            score=score,
-            optimizer_source=optimizer_source,
-            history_summary=trace.summary(),
-        )
-        round_result = OptimizationRound(
-            index=index,
-            xml0_length=len(xml0),
-            xml1_length=len(xml1),
-            l0_count=len(l0.functions),
-            l1_count=len(l1.functions),
-            score=score,
-            reason=proposal.reason,
-            suggestion=proposal.source,
-        )
-        trace.append(round_result)
-
-        growth = score.score - best_score if best_score != float("-inf") else score.score
-        if score.score > best_score:
-            best_score = score.score
-        if growth < config.min_growth:
-            stale_count += 1
-        else:
-            stale_count = 0
-
-        if proposal.source.strip() and proposal.source.strip() != optimizer_source.strip():
-            write_optimizer_source(config.output, proposal.source)
-        else:
-            stale_count += 1
-        commit_round(workspace_dir=workspace_dir, optimizer_path=config.output, round_result=round_result)
-        if stale_count >= config.stale_rounds:
-            break
+    main_agent = build_main_agent(model, trace, runtime)
+    main_agent.invoke(
+        {"messages": [{"role": "user", "content": _build_main_run_prompt(config)}]},
+        config={"recursion_limit": max(50, config.max_rounds * 15 + 20)},
+    )
 
     return OptimizerRunResult(
         optimizer_path=str(config.output),
-        best_score=best_score,
+        best_score=runtime.best_score,
         rounds=list(trace.rounds),
     )
 
 
-def build_main_agent(model: Any, trace: OptimizerTrace, recognizer_bridge: RecognizerCommunicationMiddleware):
+def build_main_agent(model: Any, trace: OptimizerTrace, runtime: OptimizerRuntime):
     from langchain.agents import create_agent
 
     return create_agent(
         model=model,
-        tools=[],
+        tools=runtime.build_tools(),
         system_prompt=MAIN_SYSTEM_PROMPT,
         name="xml_optimizer",
-        middleware=[OptimizerTraceMiddleware(trace), recognizer_bridge],
+        middleware=[OptimizerTraceMiddleware(trace), SubagentLifecycleMiddleware(runtime)],
     )
 
 
@@ -139,42 +97,6 @@ def build_model(model_name: str | None = None) -> Any:
     if selected_model:
         return selected_model
     raise RuntimeError("Missing model. Provide --model or OPENAI/DEEPSEEK environment settings.")
-
-
-def request_optimizer_proposal(
-    *,
-    main_agent: Any,
-    xml0: str,
-    xml1: str,
-    l0: RecognizerResult,
-    l1: RecognizerResult,
-    score: Any,
-    optimizer_source: str,
-    history_summary: str = "No optimizer rounds have completed yet.",
-) -> OptimizerProposal:
-    prompt = build_optimizer_feedback_prompt(
-        xml0=xml0,
-        xml1=xml1,
-        l0_json=_recognizer_json(l0),
-        l1_json=_recognizer_json(l1),
-        score_json=json.dumps(asdict(score), ensure_ascii=False, indent=2),
-        optimizer_source=optimizer_source,
-        history_summary=history_summary,
-    )
-    try:
-        state = main_agent.invoke({"messages": [{"role": "user", "content": prompt}]})
-    except Exception:  # noqa: BLE001 - keep the current optimizer when the LLM is unavailable.
-        return OptimizerProposal(
-            reason="LLM optimizer proposal failed; keeping current script for traceability.",
-            source=optimizer_source,
-        )
-    return parse_optimizer_proposal(_latest_text(state), optimizer_source)
-
-
-def request_optimizer_source(**kwargs: Any) -> str:
-    """Compatibility wrapper returning only the proposed source."""
-
-    return request_optimizer_proposal(**kwargs).source
 
 
 def parse_optimizer_proposal(raw_output: str, fallback_source: str) -> OptimizerProposal:
@@ -197,24 +119,28 @@ def parse_optimizer_proposal(raw_output: str, fallback_source: str) -> Optimizer
     return OptimizerProposal(reason=reason, source=_strip_fence(source))
 
 
-def _recognizer_json(result: RecognizerResult) -> str:
-    return json.dumps({"functions": [asdict(item) for item in result.functions]}, ensure_ascii=False, indent=2)
+def _build_main_run_prompt(config: OptimizerConfig) -> str:
+    return f"""Run the XML optimizer workflow now.
 
+Required workflow:
+1. Call dump_full_xml once to create XML0.
+2. Call spawn with role="recognizer".
+3. Call the recognizer subagent with XML0 to create L0.
+4. Repeat optimization rounds until should_stop returns stop=true:
+   - call optimize_xml with XML0 to create the next XML result;
+   - call the recognizer subagent with that XML result to create the next L result;
+   - call score_round with XML0, the latest XML result, L0, and the latest L result;
+   - inspect get_optimizer_source and propose a more aggressive optimizer script;
+   - call apply_optimizer with score_ref, a concrete reason, and the complete script.
+5. Call kill for the recognizer subagent before finishing.
 
-def _require_recognizer_ok(name: str, result: RecognizerResult) -> None:
-    if not result.ok:
-        raise RuntimeError(f"{name} recognizer failed: {result.error}\n{result.raw_output}")
+Limits:
+- max_rounds={config.max_rounds}
+- min_growth={config.min_growth}
+- stale_rounds={config.stale_rounds}
 
-
-def _latest_text(state: Mapping[str, Any]) -> str:
-    messages = state.get("messages") if isinstance(state, Mapping) else None
-    if not messages:
-        return ""
-    latest = messages[-1]
-    content = getattr(latest, "content", None)
-    if content is None and isinstance(latest, Mapping):
-        content = latest.get("content")
-    return content if isinstance(content, str) else str(content or "")
+Final response should summarize best score, rounds completed, and optimizer path {config.output}.
+"""
 
 
 def _extract_json(raw: str) -> str:

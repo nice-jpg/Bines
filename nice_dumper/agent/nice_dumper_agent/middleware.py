@@ -125,6 +125,41 @@ class RecognizerCommunicationMiddleware(_base_middleware()):
         return {"messages": messages}
 
 
+class SubagentLifecycleMiddleware(_base_middleware()):
+    """Inject subagent lifecycle state maintained by the single main run loop."""
+
+    def __init__(self, runtime: Any) -> None:
+        super().__init__()
+        self.runtime = runtime
+
+    def before_model(self, state: Mapping[str, Any], runtime: Any | None = None) -> dict[str, Any] | None:
+        messages = list(state.get("messages") or []) if isinstance(state, Mapping) else []
+        if not messages:
+            return None
+        active = [
+            {"subagent_id": subagent_id, "role": role}
+            for subagent_id, role in sorted(self.runtime._subagent_roles.items())
+        ]
+        calls = [
+            {
+                "recognition_ref": key,
+                "function_count": len(value.functions),
+                "ok": value.ok,
+                "error": value.error,
+            }
+            for key, value in sorted(self.runtime.recognition_store.items())
+        ][-6:]
+        messages.insert(
+            0,
+            {
+                "role": "system",
+                "content": "Subagent lifecycle summary: "
+                + json.dumps({"active": active, "recognitions": calls}, ensure_ascii=False),
+            },
+        )
+        return {"messages": messages}
+
+
 def round_to_json(round_result: OptimizationRound) -> str:
     return json.dumps(asdict(round_result), ensure_ascii=False, indent=2)
 

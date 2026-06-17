@@ -10,15 +10,30 @@ adb shell su -c '/data/local/tmp/project -d /sdcard/nice-dumper-agent/full.xml'
 adb shell su -c 'cat /sdcard/nice-dumper-agent/full.xml'
 ```
 
-The agent system does not reimplement UI dumping. It only orchestrates:
+The agent system does not reimplement UI dumping. The main workflow is one
+complete `create_agent(...).invoke(...)`; iteration happens inside LangChain's
+tool-calling run loop, with middleware injecting compact state before each model
+step. It orchestrates:
 
 1. capture full XML as `XML0`;
-2. ask a recognizer sub-agent for function regions `L0`;
-3. run `workspace/optimize_xml.py` to produce `XML1`;
-4. ask the recognizer for `L1`;
-5. score fidelity and compression;
-6. ask the main LLM for the next optimizer script;
-7. repeat until score growth stalls.
+2. spawn a recognizer sub-agent with the `spawn` tool;
+3. call the recognizer sub-agent with `call` for function regions `L0`;
+4. run `workspace/optimize_xml.py` through `optimize_xml` to produce `XML1`;
+5. call the recognizer sub-agent again for `L1`;
+6. score fidelity and compression with `score_round`;
+7. apply a reasoned script proposal with `apply_optimizer`;
+8. repeat until `should_stop` says to stop, then `kill` the sub-agent.
+
+The sub-agent lifecycle tools exposed to the main agent are:
+
+```text
+spawn(role="recognizer") -> subagent_id
+call(subagent_id, xml_ref) -> recognition_ref
+kill(subagent_id) -> killed
+```
+
+Every optimizer change is committed under `workspace/.git` with a round report
+in `workspace/rounds/`.
 
 ## Install
 

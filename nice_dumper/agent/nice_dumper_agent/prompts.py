@@ -40,6 +40,18 @@ Required JSON schema:
   "script": "complete Python source defining optimize(xml_text: str) -> str"
 }
 
+Runtime architecture:
+- There is exactly one complete main-agent invocation. Do all iteration by
+  calling tools inside this run.
+- Manage recognizer as a subagent yourself with spawn, call, and kill.
+- Use dump_full_xml once to create XML0.
+- Use call on the recognizer subagent to create L0 and each later L result.
+- Use optimize_xml, score_round, get_optimizer_source, and apply_optimizer for
+  every optimization round.
+- Call should_stop after each applied proposal and stop when it says stop=true.
+- apply_optimizer requires a reason and a complete script; the reason is stored
+  in workspace git history for traceability.
+
 Hard constraints:
 - The script must define optimize(xml_text: str) -> str.
 - The script must not read or write files.
