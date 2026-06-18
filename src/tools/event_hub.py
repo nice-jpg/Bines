@@ -22,6 +22,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from device.results import ErrorResult, is_error_result, make_error_result
     from device.translator import check_actions
     from tools.event_logger import WorkspaceEventLogger
+    from tools.optimize_xml import optimize
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -89,8 +90,11 @@ class EventHub:
 
     def uiautomate(self) -> str | ErrorResult:
         """Return the current UIAutomator XML hierarchy."""
-
-        return self._run_device_operation("uiautomate", self.device.dump_ui, inspect_page=True)
+        result = self._run_device_operation("uiautomate", self.device.dump_ui, inspect_page=True)
+        if type(result) is ErrorResult:
+            return result
+        assert(isinstance(result, str))
+        return optimize(result)
 
     def screenshot(self) -> str | ErrorResult:
         """Capture a screenshot on the device and return the remote path."""
