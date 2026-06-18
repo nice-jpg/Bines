@@ -1,5 +1,10 @@
 # Meituan Home Page
 
+## Canonical Manual Path
+- Current page: `meituan`.
+- Next secondary pages use their configured page type paths, for example `meituan/美食` and `meituan/外卖`.
+- Do not query `meituan/首页` or `美团/首页`; the home manual path is the app path itself.
+
 ## Structure
 - The home page contains entry points for secondary pages such as `美食` and `外卖`.
 - Page content may be represented imperfectly in UIAutomator XML, so use screenshots when XML and visible layout are hard to match.

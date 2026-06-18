@@ -1,5 +1,10 @@
 # Meituan `外卖` Page
 
+## Canonical Manual Path
+- Current page: `meituan/外卖`.
+- After entering any merchant detail page from this list, use `meituan/外卖/商家` as the next manual path.
+- Do not use a concrete merchant name in the manual path; merchant names are collection data, not manual paths.
+
 ## Structure
 - The page is usually divided from top to bottom into a search box, a service icon grid, and a merchant list.
 - After filters are confirmed, the merchant list is the primary collection area.

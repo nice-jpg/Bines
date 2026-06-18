@@ -29,6 +29,15 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("valid targets, safe clickable areas, and expected next page", SYSTEM_PROMPT)
         self.assertNotIn("<page_mechanism_context>", SYSTEM_PROMPT)
 
+    def test_prompt_requires_canonical_manual_paths(self) -> None:
+        self.assertIn("Manual paths are typed operation paths", SYSTEM_PROMPT)
+        self.assertIn("do not query `美团/首页`", SYSTEM_PROMPT)
+        self.assertIn("Whenever the page level changes, call query_manual", SYSTEM_PROMPT)
+        self.assertIn("use the generic merchant manual path", SYSTEM_PROMPT)
+        self.assertIn("Do not use a specific merchant name", SYSTEM_PROMPT)
+        self.assertIn("If query_manual returns manual_error", SYSTEM_PROMPT)
+        self.assertIn("Keep notify_user.next_path and query_manual.current_path aligned", SYSTEM_PROMPT)
+
     def test_prompt_keeps_generic_range_and_output_requirements(self) -> None:
         self.assertIn("1000 means 1000 meters", SYSTEM_PROMPT)
         self.assertIn("500m, 1.2km, and about 800 meters", SYSTEM_PROMPT)

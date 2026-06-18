@@ -1,5 +1,10 @@
 # Meituan `美食` Merchant Page
 
+## Canonical Manual Path
+- Current page: `meituan/美食/商家`.
+- This manual applies to any concrete merchant entered from `meituan/美食`.
+- Do not replace `商家` with a concrete merchant name in query_manual.
+
 ## Structure
 - The upper area usually contains basic merchant information and may hide after scrolling.
 - The middle area usually contains tab titles.
@@ -13,5 +18,6 @@
 - Run a scrolling scan over the right-side product list. In each round, read XML, track already-seen products, and collect product name, price, and sales.
 - Record product sales as 0 when missing.
 - Use `swipe_up` inside the right-side product list area to load more products. Do not mistake scrolling the left-side category list for paging through products.
-- End product collection only after 2 consecutive `swipe_up` attempts and view is not changed, or a product-list terminal marker appears.
+- End product collection **only** after 2 consecutive `swipe_up` attempts and view is not changed, or a product-list terminal marker appears.
+- PRETTY data is not enough. What we want is ALL data. Make sure you have swpied enough distance.
 - After all products for the merchant have been recorded, use `swipe_back` to return to the previous page.

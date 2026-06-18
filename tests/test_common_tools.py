@@ -112,6 +112,7 @@ class CommonToolTests(unittest.TestCase):
 
             result = ManualTool(root).query_manual("com.sankuai.meituan/外卖/商家")
 
+        self.assertIn('canonical_path="meituan/外卖/商家"', result)
         self.assertNotIn('path="meituan/PAGE.md"', result)
         self.assertNotIn("Home manual", result)
         self.assertNotIn('path="meituan/外卖/PAGE.md"', result)
@@ -129,6 +130,7 @@ class CommonToolTests(unittest.TestCase):
 
             result = ManualTool(root).query_manual("美团")
 
+        self.assertIn('canonical_path="meituan"', result)
         self.assertIn('path="meituan/PAGE.md"', result)
         self.assertIn("Home manual", result)
 
@@ -136,7 +138,65 @@ class CommonToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             result = ManualTool(tmp_dir).query_manual("meituan/酒店")
 
-        self.assertEqual(result, "No manual found for path: meituan/酒店")
+        self.assertIn("<manual_error>", result)
+        self.assertIn("<attempted_path>meituan/酒店</attempted_path>", result)
+        self.assertIn("No manual found for the canonical path.", result)
+
+    def test_query_manual_does_not_map_home_keyword(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            for relative_path, content in {
+                "meituan/PAGE.md": "Home manual",
+                "meituan/外卖/PAGE.md": "Waimai manual",
+                "meituan/美食/PAGE.md": "Food manual",
+            }.items():
+                path = root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            result = ManualTool(root).query_manual("美团/首页")
+
+        self.assertIn("<manual_error>", result)
+        self.assertIn("<input_path>美团/首页</input_path>", result)
+        self.assertIn("<attempted_path>meituan/首页</attempted_path>", result)
+        self.assertIn("<path>meituan</path>", result)
+        self.assertIn("<path>meituan/美食</path>", result)
+
+    def test_query_manual_does_not_map_concrete_merchant_name(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            for relative_path, content in {
+                "meituan/美食/PAGE.md": "Food manual",
+                "meituan/美食/商家/PAGE.md": "Food merchant manual",
+            }.items():
+                path = root / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+
+            result = ManualTool(root).query_manual("美团/美食/老乡鸡")
+
+        self.assertIn("<manual_error>", result)
+        self.assertIn("<attempted_path>meituan/美食/老乡鸡</attempted_path>", result)
+        self.assertIn("<available_child_paths>", result)
+        self.assertIn("<path>meituan/美食/商家</path>", result)
+
+    def test_query_manual_returns_error_for_path_escape_attempts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            path = root / "meituan" / "PAGE.md"
+            path.parent.mkdir(parents=True)
+            path.write_text("Home manual", encoding="utf-8")
+
+            parent_result = ManualTool(root).query_manual("../meituan")
+            folded_parent_result = ManualTool(root).query_manual("meituan/../secret")
+            absolute_result = ManualTool(root).query_manual("/meituan")
+
+        self.assertIn("<manual_error>", parent_result)
+        self.assertIn("must not contain '..'", parent_result)
+        self.assertIn("<manual_error>", folded_parent_result)
+        self.assertIn("must not contain '..'", folded_parent_result)
+        self.assertIn("<manual_error>", absolute_result)
+        self.assertIn("must be relative", absolute_result)
 
 
 if __name__ == "__main__":

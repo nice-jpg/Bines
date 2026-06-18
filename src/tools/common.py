@@ -104,15 +104,18 @@ class ManualTool:
     def query_manual(self, current_path: str) -> str:
         """Return PAGE.md content for the current app or operation path."""
 
-        parts = _normalize_manual_path(current_path)
+        raw_path = str(current_path or "")
+        parts, error = _normalize_manual_path(raw_path)
+        if error:
+            return self._manual_error(raw_path, "", error)
         if not parts:
-            return "No manual path was provided."
+            return self._manual_error(raw_path, "", "No manual path was provided.")
 
-        doc = self._manual_doc_for_path(parts)
+        doc, canonical_path = self._manual_doc_for_path(parts)
         if doc is None:
-            return f"No manual found for path: {'/'.join(parts)}"
+            return self._manual_error(raw_path, canonical_path, "No manual found for the canonical path.")
 
-        lines = ["<manual_context>"]
+        lines = [f"<manual_context canonical_path=\"{_escape_attr(canonical_path)}\">"]
         relative_path = doc.relative_to(self.page_mechanism_dir)
         lines.append(f"<page path=\"{relative_path.as_posix()}\">")
         lines.append(doc.read_text(encoding="utf-8"))
@@ -120,15 +123,68 @@ class ManualTool:
         lines.append("</manual_context>")
         return "\n".join(lines)
 
-    def _manual_doc_for_path(self, parts: list[str]) -> Path | None:
+    def _manual_doc_for_path(self, parts: list[str]) -> tuple[Path | None, str]:
         app_slug = _app_slug(parts[0])
         path_parts = [app_slug, *parts[1:]]
+        canonical_path = "/".join(path_parts)
         candidate = self.page_mechanism_dir.joinpath(*path_parts, "PAGE.md").resolve()
         if not _is_relative_to(candidate, self.page_mechanism_dir):
-            return None
+            return None, canonical_path
         if candidate.exists():
-            return candidate
-        return None
+            return candidate, canonical_path
+        return None, canonical_path
+
+    def _manual_error(self, raw_path: str, attempted_path: str, message: str) -> str:
+        available_paths = self._available_manual_paths()
+        child_paths = self._child_manual_paths(attempted_path)
+        lines = [
+            "<manual_error>",
+            f"<message>{_escape_text(message)}</message>",
+            f"<input_path>{_escape_text(raw_path)}</input_path>",
+            f"<attempted_path>{_escape_text(attempted_path)}</attempted_path>",
+            "<available_paths>",
+        ]
+        for path in available_paths:
+            lines.append(f"<path>{_escape_text(path)}</path>")
+        lines.append("</available_paths>")
+        if child_paths:
+            lines.append("<available_child_paths>")
+            for path in child_paths:
+                lines.append(f"<path>{_escape_text(path)}</path>")
+            lines.append("</available_child_paths>")
+        lines.append("</manual_error>")
+        return "\n".join(lines)
+
+    def _available_manual_paths(self) -> list[str]:
+        paths: list[str] = []
+        for doc in self.page_mechanism_dir.rglob("PAGE.md"):
+            if not doc.is_file():
+                continue
+            try:
+                relative_parent = doc.parent.relative_to(self.page_mechanism_dir)
+            except ValueError:
+                continue
+            paths.append(relative_parent.as_posix())
+        return sorted(paths)
+
+    def _child_manual_paths(self, attempted_path: str) -> list[str]:
+        if not attempted_path:
+            return []
+        parent_path = attempted_path.rsplit("/", 1)[0] if "/" in attempted_path else attempted_path
+        parent_dir = self.page_mechanism_dir.joinpath(*parent_path.split("/")).resolve()
+        if not _is_relative_to(parent_dir, self.page_mechanism_dir) or not parent_dir.exists():
+            return []
+
+        child_paths: list[str] = []
+        for doc in parent_dir.glob("*/PAGE.md"):
+            if not doc.is_file():
+                continue
+            try:
+                relative_parent = doc.parent.relative_to(self.page_mechanism_dir)
+            except ValueError:
+                continue
+            child_paths.append(relative_parent.as_posix())
+        return sorted(child_paths)
 
 
 def create_common_tools(
@@ -168,10 +224,13 @@ def create_common_tools(
             func=manual.query_manual,
             name="query_manual",
             description=(
-                "Read app/page operation guidance. Input current_path as an "
-                "application name or operation path, such as 'com.sankuai.meituan', 'meituan/外卖', "
-                "or 'meituan/外卖/商家'. The tool returns only the PAGE.md manual for the "
-                "current page path."
+                "Read app/page operation guidance. Input current_path must be a manual canonical "
+                "path, not a UI breadcrumb, display title, or merchant name. Use an application "
+                "path such as 'com.sankuai.meituan' or 'meituan' for the home manual; do not use "
+                "'美团/首页'. Use typed page paths such as 'meituan/外卖' or "
+                "'meituan/外卖/商家' for lower-level pages; do not use a concrete merchant name "
+                "such as 'meituan/外卖/老乡鸡'. The tool returns only the PAGE.md manual for "
+                "the current page path, or manual_error with available canonical paths."
             ),
         ),
     ]
@@ -183,11 +242,23 @@ def build_tools() -> list[StructuredTool]:
     return create_common_tools()
 
 
-def _normalize_manual_path(current_path: str) -> list[str]:
-    normalized = posixpath.normpath(str(current_path or "").replace("\\", "/")).strip("/")
-    if normalized in {"", "."} or normalized.startswith("../") or normalized == "..":
-        return []
-    return [part for part in normalized.split("/") if part and part != "."]
+def _normalize_manual_path(current_path: str) -> tuple[list[str], str | None]:
+    raw_path = str(current_path or "").strip().replace("\\", "/")
+    if not raw_path:
+        return [], None
+    if raw_path.startswith("/"):
+        return [], "Manual path must be relative, not absolute."
+    if any(part == ".." for part in raw_path.split("/")):
+        return [], "Manual path must not contain '..'."
+
+    normalized = posixpath.normpath(raw_path).strip("/")
+    if normalized in {"", "."}:
+        return [], None
+
+    parts = [part for part in normalized.split("/") if part and part != "."]
+    if normalized.startswith("../") or normalized == "..":
+        return [], "Manual path must not contain '..'."
+    return parts, None
 
 
 def _app_slug(application_name: str) -> str:

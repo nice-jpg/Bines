@@ -1,5 +1,10 @@
 # Meituan `外卖` Merchant Page
 
+## Canonical Manual Path
+- Current page: `meituan/外卖/商家`.
+- This manual applies to any concrete merchant entered from `meituan/外卖`.
+- Do not replace `商家` with a concrete merchant name in query_manual.
+
 ## Structure
 - The upper area usually contains basic merchant information and may hide after scrolling.
 - The middle area usually contains tab titles.
