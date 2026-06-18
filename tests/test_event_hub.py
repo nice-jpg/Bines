@@ -36,6 +36,14 @@ class FakeLogger:
         self.records.append((category, message, details or {}))
 
 
+class FakeSleeper:
+    def __init__(self) -> None:
+        self.calls: list[float] = []
+
+    def __call__(self, seconds: float) -> None:
+        self.calls.append(seconds)
+
+
 class FakeDevice:
     def __init__(self, act_result="", ui_result="<hierarchy></hierarchy>") -> None:
         self.act_result = act_result
@@ -54,20 +62,23 @@ class FakeDevice:
 class EventHubTests(unittest.TestCase):
     def test_touch_action_returns_uiautomate_result_after_success(self) -> None:
         logger = FakeLogger()
-        hub = EventHub(logger=logger)
-        hub.device = FakeDevice(ui_result="<hierarchy>验证码 优惠券</hierarchy>")
+        sleeper = FakeSleeper()
+        hub = EventHub(logger=logger, sleep_func=sleeper)
+        hub.device = FakeDevice(ui_result='<hierarchy><node text="验证码 优惠券" bounds="[0,0][10,10]" /></hierarchy>')
         hub._actions_checked = True
 
         result = hub.tap(11, 22)
 
-        self.assertEqual(result, "<hierarchy>验证码 优惠券</hierarchy>")
+        self.assertIn("验证码", result)
+        self.assertEqual(sleeper.calls, [1.2])
         self.assertEqual(hub.device.calls, [("act", "tap", (11, 22)), ("dump_ui",)])
         self.assertIn(("captcha", "Detected captcha signal in UI hierarchy", {"source": "uiautomate"}), logger.records)
         self.assertIn(("popup", "Detected popup signal in UI hierarchy", {"source": "uiautomate"}), logger.records)
 
     def test_touch_action_returns_and_logs_error_result_after_failure(self) -> None:
         logger = FakeLogger()
-        hub = EventHub(logger=logger)
+        sleeper = FakeSleeper()
+        hub = EventHub(logger=logger, sleep_func=sleeper)
         error = make_error_result("command_error", "adb failed", details={"args": ["adb"]})
         hub.device = FakeDevice(act_result=error)
         hub._actions_checked = True
@@ -75,8 +86,20 @@ class EventHubTests(unittest.TestCase):
         result = hub.swipe_up(10, 100)
 
         self.assertEqual(result, error)
+        self.assertEqual(sleeper.calls, [])
         self.assertEqual(hub.device.calls, [("act", "swipe_up", (10, 100))])
         self.assertEqual(logger.records, [("command_error", "adb failed", {"args": ["adb"]})])
+
+    def test_uiautomate_does_not_sleep_when_called_directly(self) -> None:
+        sleeper = FakeSleeper()
+        hub = EventHub(sleep_func=sleeper)
+        hub.device = FakeDevice(ui_result="<hierarchy></hierarchy>")
+
+        result = hub.uiautomate()
+
+        self.assertEqual(result, "<h></h>")
+        self.assertEqual(sleeper.calls, [])
+        self.assertEqual(hub.device.calls, [("dump_ui",)])
 
 
 if __name__ == "__main__":

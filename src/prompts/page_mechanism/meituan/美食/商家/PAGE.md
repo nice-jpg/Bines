@@ -13,5 +13,5 @@
 - Run a scrolling scan over the right-side product list. In each round, read XML, track already-seen products, and collect product name, price, and sales.
 - Record product sales as 0 when missing.
 - Use `swipe_up` inside the right-side product list area to load more products. Do not mistake scrolling the left-side category list for paging through products.
-- End product collection only after 2 consecutive `swipe_up` attempts add no new products, or a product-list terminal marker appears.
+- End product collection only after 2 consecutive `swipe_up` attempts and view is not changed, or a product-list terminal marker appears.
 - After all products for the merchant have been recorded, use `swipe_back` to return to the previous page.
