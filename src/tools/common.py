@@ -2,12 +2,86 @@
 
 from __future__ import annotations
 
+from collections import deque
 from pathlib import Path
 import posixpath
+from typing import Any
 
 from langchain_core.tools import StructuredTool
 
+try:
+    from src.tools.event_logger import WorkspaceEventLogger
+except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+    from tools.event_logger import WorkspaceEventLogger
+
 PAGE_MECHANISM_DIR = Path(__file__).resolve().parents[1] / "prompts" / "page_mechanism"
+
+
+class OperationNoticeTool:
+    """Record user-visible operation notices before external actions."""
+
+    def __init__(
+        self,
+        logger: WorkspaceEventLogger | None = None,
+        max_entries: int = 30,
+    ) -> None:
+        self.logger = logger or WorkspaceEventLogger()
+        self.max_entries = max(1, int(max_entries))
+        self._entries: deque[dict[str, str]] = deque(maxlen=self.max_entries)
+
+    def notify_user(
+        self,
+        operation: str,
+        current_path: str,
+        reason: str = "",
+        next_page: str = "",
+        next_path: str = "",
+    ) -> str:
+        """Record the next external operation and return recent operation context."""
+
+        normalized_operation = str(operation or "").strip()
+        if not normalized_operation:
+            return "No operation notice was recorded because the operation input was empty."
+
+        entry = {
+            "operation": normalized_operation,
+            "current_path": str(current_path or "").strip(),
+            "reason": str(reason or "").strip(),
+            "next_page": str(next_page or "").strip(),
+            "next_path": str(next_path or "").strip(),
+        }
+        self._entries.append(entry)
+        self.logger.log(
+            "operation_notice",
+            entry["operation"],
+            details={
+                "current_path": entry["current_path"],
+                "reason": entry["reason"],
+                "next_page": entry["next_page"],
+                "next_path": entry["next_path"],
+            },
+        )
+        return self._format_log()
+
+    def _format_log(self) -> str:
+        lines = ["<operation_log>"]
+        lines.append(f"<recent_entries count=\"{len(self._entries)}\" max=\"{self.max_entries}\">")
+        for index, entry in enumerate(self._entries, start=1):
+            lines.append(
+                "<entry "
+                f"index=\"{index}\" "
+                f"current_path=\"{_escape_attr(entry['current_path'])}\" "
+                f"next_page=\"{_escape_attr(entry['next_page'])}\" "
+                f"next_path=\"{_escape_attr(entry['next_path'])}\""
+                ">"
+            )
+            lines.append(f"<operation>{_escape_text(entry['operation'])}</operation>")
+            if entry["reason"]:
+                lines.append(f"<reason>{_escape_text(entry['reason'])}</reason>")
+            lines.append("</entry>")
+        lines.append("</recent_entries>")
+        lines.append("</operation_log>")
+        return "\n".join(lines)
 
 
 class ThinkingTool:
@@ -58,14 +132,27 @@ class ManualTool:
 
 
 def create_common_tools(
+    operation_notice_tool: OperationNoticeTool | None = None,
     thinking_tool: ThinkingTool | None = None,
     manual_tool: ManualTool | None = None,
 ) -> list[StructuredTool]:
     """Create shared reasoning tools for the LangChain agent."""
 
+    operation_notice = operation_notice_tool or OperationNoticeTool()
     thinking = thinking_tool or ThinkingTool()
     manual = manual_tool or ManualTool()
     return [
+        StructuredTool.from_function(
+            func=operation_notice.notify_user,
+            name="notify_user",
+            description=(
+                "Notify the user before any external device or Excel operation and record "
+                "the operation in the live operation log. Inputs: operation, current_path, "
+                "optional reason, optional next_page, optional next_path. If the operation "
+                "will enter a lower-level page, include next_page and next_path. The returned "
+                "operation_log is context for later decisions."
+            ),
+        ),
         StructuredTool.from_function(
             func=thinking.think,
             name="think",
@@ -115,3 +202,16 @@ def _app_slug(application_name: str) -> str:
 
 def _is_relative_to(path: Path, root: Path) -> bool:
     return path == root or root in path.parents
+
+
+def _escape_text(value: Any) -> str:
+    return (
+        str(value)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _escape_attr(value: Any) -> str:
+    return _escape_text(value).replace('"', "&quot;")

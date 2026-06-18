@@ -12,6 +12,7 @@ from prompts import SYSTEM_PROMPT
 class SystemPromptTests(unittest.TestCase):
     def test_prompt_keeps_generic_tool_and_scanning_rules(self) -> None:
         self.assertIn("run_package: open the target app by Android package name", SYSTEM_PROMPT)
+        self.assertIn("notify_user: tell the user what external operation", SYSTEM_PROMPT)
         self.assertIn("think: reflect on complex tool outputs", SYSTEM_PROMPT)
         self.assertIn("query_manual: read the PAGE.md manual", SYSTEM_PROMPT)
         self.assertIn("Prefer uiautomate for XML analysis", SYSTEM_PROMPT)
@@ -42,6 +43,14 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Every operation must serve a clear goal", SYSTEM_PROMPT)
         self.assertIn("If the page is clearly not the expected detail page", SYSTEM_PROMPT)
         self.assertIn("immediately use swipe_back to return to the previous level", SYSTEM_PROMPT)
+
+    def test_prompt_requires_operation_notice_before_external_actions(self) -> None:
+        self.assertIn("Before every device tool call, call notify_user", SYSTEM_PROMPT)
+        self.assertIn("Before every Excel output tool call, call notify_user", SYSTEM_PROMPT)
+        self.assertIn("notify_user must include next_page and next_path", SYSTEM_PROMPT)
+        self.assertIn("Use the returned operation_log as live context", SYSTEM_PROMPT)
+        self.assertIn("You do not need to call notify_user before think, query_manual, or notify_user itself", SYSTEM_PROMPT)
+        self.assertIn("that goal must be readable in notify_user", SYSTEM_PROMPT)
 
     def test_prompt_does_not_include_page_specific_meituan_details(self) -> None:
         self.assertNotIn("service icon grid", SYSTEM_PROMPT)

@@ -31,8 +31,10 @@ class ToolsRegistryTests(unittest.TestCase):
     def test_collect_tools_includes_thinking_tool(self) -> None:
         tool_names = [tool.name for tool in collect_tools()]
 
+        self.assertIn("notify_user", tool_names)
         self.assertIn("think", tool_names)
         self.assertIn("query_manual", tool_names)
+        self.assertLess(tool_names.index("notify_user"), tool_names.index("tap"))
         self.assertLess(tool_names.index("think"), tool_names.index("tap"))
         self.assertLess(tool_names.index("query_manual"), tool_names.index("tap"))
 
