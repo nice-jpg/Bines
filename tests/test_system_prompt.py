@@ -72,6 +72,11 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("All agents that operate the device must run serially", SYSTEM_PROMPT)
         self.assertIn("prefer delegating each single merchant's information collection", SYSTEM_PROMPT)
         self.assertIn("wait for the returned subagent_result before doing any further device operation", SYSTEM_PROMPT)
+        self.assertIn("keep instructions and task text focused on the task goal", SYSTEM_PROMPT)
+        self.assertIn("Do not pass merchant introductions, product summaries, copied page text", SYSTEM_PROMPT)
+        self.assertIn("subagent can read itself from query_manual, uiautomate, or screenshot", SYSTEM_PROMPT)
+        self.assertIn("The subagent must use query_manual", SYSTEM_PROMPT)
+        self.assertIn("receive a final fork directive", SYSTEM_PROMPT)
 
     def test_prompt_does_not_include_page_specific_meituan_details(self) -> None:
         self.assertNotIn("service icon grid", SYSTEM_PROMPT)

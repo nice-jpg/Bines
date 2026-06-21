@@ -24,7 +24,7 @@ try:
     from src.prompts import SYSTEM_PROMPT, build_initial_messages
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
-    from src.subagents_manager import SubagentManager
+    from subagents_manager import SubagentManager
     from tools import collect_tools
     from prompts import SYSTEM_PROMPT, build_initial_messages
 

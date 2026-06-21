@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from subagents import SubagentManager
+from subagents_manager import FORK_BOILERPLATE_TAG, SubagentManager
 
 
 class FakeTool:
@@ -31,7 +31,14 @@ class SubagentManagerTests(unittest.TestCase):
             parent_context_provider=kwargs.get("parent_context_provider", lambda: []),
             tool_factory=kwargs.get(
                 "tool_factory",
-                lambda: [FakeTool("tap"), FakeTool("uiautomate"), FakeTool("append_excel_rows")],
+                lambda: [
+                    FakeTool("notify_user"),
+                    FakeTool("think"),
+                    FakeTool("query_manual"),
+                    FakeTool("tap"),
+                    FakeTool("uiautomate"),
+                    FakeTool("append_excel_rows"),
+                ],
             ),
             system_prompt="system",
             create_agent_factory=kwargs.get("create_agent_factory", lambda **_: FakeAgent()),
@@ -57,14 +64,14 @@ class SubagentManagerTests(unittest.TestCase):
             'code="unknown_tool"',
             manager.spawn_subagent("x", "independent", "task", tool_names="missing_tool"),
         )
-        self.assertIn(
-            'code="forbidden_tool"',
-            manager.spawn_subagent("x", "independent", "task", tool_names="spawn_subagent"),
-        )
+        self.assertIn('id="subagent-', manager.spawn_subagent("x", "independent", "task", tool_names="spawn_subagent"))
 
-    def test_spawn_filters_subagent_tools_from_child_tool_set(self) -> None:
+    def test_spawn_keeps_forbidden_subagent_tool_schemas_in_child_tool_set(self) -> None:
         manager = self.make_manager(
             tool_factory=lambda: [
+                FakeTool("notify_user"),
+                FakeTool("think"),
+                FakeTool("query_manual"),
                 FakeTool("tap"),
                 FakeTool("spawn_subagent"),
                 FakeTool("call_subagent"),
@@ -75,7 +82,24 @@ class SubagentManagerTests(unittest.TestCase):
         manager.spawn_subagent("solver", "independent", "Solve independently.")
 
         tool_names = [tool.name for tool in manager._records["subagent-1"].tools]
-        self.assertEqual(tool_names, ["tap"])
+        self.assertEqual(
+            tool_names,
+            ["notify_user", "think", "query_manual", "tap", "spawn_subagent", "call_subagent", "kill_subagent"],
+        )
+        spawn_tool = next(tool for tool in manager._records["subagent-1"].tools if tool.name == "spawn_subagent")
+        self.assertIn("subagent_delegation_forbidden", spawn_tool.func("x", "delegated", "task"))
+
+    def test_explicit_tool_names_auto_include_required_reasoning_tools(self) -> None:
+        manager = self.make_manager()
+
+        manager.spawn_subagent("merchant", "delegated", "Collect merchant.", tool_names="tap,uiautomate")
+
+        tool_names = [tool.name for tool in manager._records["subagent-1"].tools]
+        self.assertIn("notify_user", tool_names)
+        self.assertIn("think", tool_names)
+        self.assertIn("query_manual", tool_names)
+        self.assertIn("tap", tool_names)
+        self.assertIn("uiautomate", tool_names)
 
     def test_independent_subagent_preserves_its_own_history(self) -> None:
         manager = self.make_manager()
@@ -91,11 +115,14 @@ class SubagentManagerTests(unittest.TestCase):
     def test_delegated_subagent_uses_parent_context_copy_without_writeback(self) -> None:
         parent_messages = [{"role": "user", "content": "parent context"}]
         seen_messages = []
+        captured_create_agent_kwargs = []
 
         def create_agent_factory(**_):
+            captured_create_agent_kwargs.append(_)
+
             class CapturingAgent:
                 def invoke(self, state, config=None):
-                    seen_messages.append(state["messages"])
+                    seen_messages.append(list(state["messages"]))
                     state["messages"].append({"role": "assistant", "content": "delegated done"})
                     return state
 
@@ -113,6 +140,24 @@ class SubagentManagerTests(unittest.TestCase):
         self.assertEqual(parent_messages, [{"role": "user", "content": "parent context"}])
         self.assertEqual(manager._records["subagent-1"].messages, [])
         self.assertEqual(seen_messages[0][0]["content"], "parent context")
+        self.assertIn(FORK_BOILERPLATE_TAG, seen_messages[0][-1]["content"])
+        self.assertIn("Collect merchant.", seen_messages[0][-1]["content"])
+        self.assertIn("collect current merchant", seen_messages[0][-1]["content"])
+        self.assertEqual(captured_create_agent_kwargs[0]["system_prompt"], "system")
+
+    def test_independent_subagent_keeps_rules_in_system_prompt(self) -> None:
+        captured_create_agent_kwargs = []
+
+        def create_agent_factory(**kwargs):
+            captured_create_agent_kwargs.append(kwargs)
+            return FakeAgent()
+
+        manager = self.make_manager(create_agent_factory=create_agent_factory)
+        manager.spawn_subagent("solver", "independent", "Solve independently.")
+        manager.call_subagent("subagent-1", "first task")
+
+        self.assertIn("Subagent rules:", captured_create_agent_kwargs[0]["system_prompt"])
+        self.assertIn("Solve independently.", captured_create_agent_kwargs[0]["system_prompt"])
 
     def test_kill_subagent_removes_registry_entry(self) -> None:
         manager = self.make_manager()

@@ -9,8 +9,22 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Callable, Mapping, Sequence
 
+try:
+    from langchain_core.tools import StructuredTool
+except ModuleNotFoundError:  # Lightweight fallback for unit tests without LangChain installed.
+    class StructuredTool:  # type: ignore[no-redef]
+        @classmethod
+        def from_function(cls, **kwargs):
+            instance = cls()
+            instance.name = kwargs["name"]
+            instance.description = kwargs["description"]
+            instance.func = kwargs["func"]
+            return instance
+
 
 SUBAGENT_TOOL_NAMES = {"spawn_subagent", "call_subagent", "kill_subagent"}
+REQUIRED_SUBAGENT_TOOL_NAMES = {"notify_user", "think", "query_manual"}
+FORK_BOILERPLATE_TAG = "fork_subagent_boilerplate"
 SUBAGENT_RULES = """
 
 Subagent rules:
@@ -152,43 +166,44 @@ class SubagentManager:
     def active_agent_id(self) -> str | None:
         return self._active_agent_id
 
-    def _select_tools(self, available_tools: Sequence[Any], tool_names: str) -> tuple[list[Any], str | None]:
+    def _select_tools(
+        self,
+        available_tools: Sequence[Any],
+        tool_names: str,
+    ) -> tuple[list[Any], str | None]:
         tool_map = {_tool_name(tool): tool for tool in available_tools if _tool_name(tool)}
-        forbidden = SUBAGENT_TOOL_NAMES & set(tool_map)
-        if forbidden:
-            tool_map = {name: tool for name, tool in tool_map.items() if name not in forbidden}
+        ordinary_tool_map = {
+            name: tool for name, tool in tool_map.items() if name not in SUBAGENT_TOOL_NAMES
+        }
 
         requested_names = _parse_tool_names(tool_names)
         if not requested_names:
-            return list(tool_map.values()), None
+            selected_names = list(ordinary_tool_map)
+        else:
+            selected_names = [
+                name for name in requested_names if name not in SUBAGENT_TOOL_NAMES
+            ]
 
-        forbidden_requested = SUBAGENT_TOOL_NAMES & set(requested_names)
-        if forbidden_requested:
-            return [], _error_result(
-                "forbidden_tool",
-                "Subagents cannot receive subagent delegation tools.",
-                details={"tool_names": sorted(forbidden_requested)},
-            )
+        selected_name_set = set(selected_names)
+        selected_name_set.update(name for name in REQUIRED_SUBAGENT_TOOL_NAMES if name in ordinary_tool_map)
+        selected_names = [name for name in ordinary_tool_map if name in selected_name_set]
 
-        unknown = [name for name in requested_names if name not in tool_map]
+        unknown = [name for name in selected_name_set if name not in ordinary_tool_map]
         if unknown:
             return [], _error_result(
                 "unknown_tool",
                 "Requested subagent tool is not available.",
-                details={"tool_names": unknown, "available_tools": sorted(tool_map)},
+                details={"tool_names": sorted(unknown), "available_tools": sorted(ordinary_tool_map)},
             )
 
-        return [tool_map[name] for name in requested_names], None
+        selected_tools = [ordinary_tool_map[name] for name in selected_names]
+        selected_tools.extend(_forbidden_subagent_tools())
+        return selected_tools, None
 
     def _messages_for_call(self, record: SubagentRecord, task: str) -> list[Any]:
         task_message = {
             "role": "user",
-            "content": (
-                "<subagent_task>\n"
-                f"<instructions>{_escape_text(record.instructions)}</instructions>\n"
-                f"<task>{_escape_text(task)}</task>\n"
-                "</subagent_task>"
-            ),
+            "content": _build_child_message(record.instructions, task, fork=record.agent_type == "delegated"),
         }
         if record.agent_type == "delegated":
             return [*copy.deepcopy(list(self.parent_context_provider())), task_message]
@@ -202,7 +217,7 @@ class SubagentManager:
         return create_agent(
             model=self.model,
             tools=list(record.tools),
-            system_prompt=f"{self.system_prompt}{SUBAGENT_RULES}\n\nMain-agent instructions:\n{record.instructions}",
+            system_prompt=_system_prompt_for_subagent(self.system_prompt, record),
             name=record.name,
         )
 
@@ -212,6 +227,80 @@ def _parse_tool_names(tool_names: str) -> list[str]:
     if not raw:
         return []
     return [part for part in re.split(r"[\s,]+", raw) if part]
+
+
+def _system_prompt_for_subagent(system_prompt: str, record: SubagentRecord) -> str:
+    if record.agent_type == "delegated":
+        return system_prompt
+    return f"{system_prompt}{SUBAGENT_RULES}\n\nMain-agent instructions:\n{record.instructions}"
+
+
+def _build_child_message(instructions: str, task: str, *, fork: bool) -> str:
+    if not fork:
+        return (
+            "<subagent_task>\n"
+            f"<instructions>{_escape_text(instructions)}</instructions>\n"
+            f"<task>{_escape_text(task)}</task>\n"
+            "</subagent_task>"
+        )
+
+    return (
+        f"<{FORK_BOILERPLATE_TAG}>\n"
+        "STOP. READ THIS FIRST.\n\n"
+        "You are a delegated subagent forked from the main agent. You are not the main agent.\n\n"
+        "Rules:\n"
+        "1. Do not create, spawn, call, or delegate to any other subagent.\n"
+        "2. Use query_manual for the current canonical page path before page-specific operations.\n"
+        "3. Use uiautomate first; use screenshot only when XML is insufficient or misleading.\n"
+        "4. Do not rely on merchant descriptions or page summaries from the main agent; inspect the current page yourself.\n"
+        "5. Stay strictly within the assigned task and return one concise factual result.\n"
+        "6. Device operations are serial. Finish and report before the main agent continues.\n\n"
+        "<instructions>\n"
+        f"{_escape_text(instructions)}\n"
+        "</instructions>\n"
+        "<task>\n"
+        f"{_escape_text(task)}\n"
+        "</task>\n"
+        f"</{FORK_BOILERPLATE_TAG}>"
+    )
+
+
+def _forbidden_subagent_tools() -> list[StructuredTool]:
+    return [
+        StructuredTool.from_function(
+            func=_forbidden_spawn_subagent,
+            name="spawn_subagent",
+            description="Forbidden inside subagents. Subagents cannot create nested subagents.",
+        ),
+        StructuredTool.from_function(
+            func=_forbidden_call_subagent,
+            name="call_subagent",
+            description="Forbidden inside subagents. Subagents cannot call nested subagents.",
+        ),
+        StructuredTool.from_function(
+            func=_forbidden_kill_subagent,
+            name="kill_subagent",
+            description="Forbidden inside subagents. Subagents cannot manage nested subagents.",
+        ),
+    ]
+
+
+def _forbidden_spawn_subagent(
+    name: str,
+    agent_type: str,
+    instructions: str,
+    tool_names: str = "",
+    max_iterations: int = 80,
+) -> str:
+    return _error_result("subagent_delegation_forbidden", "Subagents cannot spawn nested subagents.")
+
+
+def _forbidden_call_subagent(agent_id: str, task: str) -> str:
+    return _error_result("subagent_delegation_forbidden", "Subagents cannot call nested subagents.")
+
+
+def _forbidden_kill_subagent(agent_id: str) -> str:
+    return _error_result("subagent_delegation_forbidden", "Subagents cannot manage nested subagents.")
 
 
 def _tool_name(tool: Any) -> str | None:

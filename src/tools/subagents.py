@@ -7,7 +7,7 @@ from langchain_core.tools import StructuredTool
 try:
     from src.subagents_manager import SubagentManager
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
-    from subagents import SubagentManager
+    from subagents_manager import SubagentManager
 
 
 def create_subagent_tools(manager: SubagentManager) -> list[StructuredTool]:
@@ -21,7 +21,11 @@ def create_subagent_tools(manager: SubagentManager) -> list[StructuredTool]:
                 "Create a synchronous child agent. Inputs: name, agent_type "
                 "('independent' or 'delegated'), instructions, optional tool_names, "
                 "optional max_iterations. Independent subagents solve with their own "
-                "context. Delegated subagents receive a copy of the main agent runtime context."
+                "context. Delegated subagents receive a copy of the main agent runtime context. "
+                "Keep instructions focused on the goal, known constraints, output requirements, "
+                "and allowed tool scope; do not include merchant descriptions, product summaries, "
+                "or page details that the subagent can obtain with query_manual, uiautomate, "
+                "or screenshot."
             ),
         ),
         StructuredTool.from_function(
