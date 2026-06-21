@@ -18,11 +18,13 @@ from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 
 try:
-    from src.middleware import DeviceContextCompressionMiddleware
+    from src.middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
+    from src.subagents_manager import SubagentManager
     from src.tools import collect_tools
     from src.prompts import SYSTEM_PROMPT, build_initial_messages
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    from middleware import DeviceContextCompressionMiddleware
+    from middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
+    from src.subagents_manager import SubagentManager
     from tools import collect_tools
     from prompts import SYSTEM_PROMPT, build_initial_messages
 
@@ -43,11 +45,30 @@ def build_agent(
 ):
     """Create a standard LangChain agent with ``langchain.agents.create_agent``."""
 
+    runtime_messages: list[Any] = []
+
+    def set_runtime_messages(messages: Sequence[Any]) -> None:
+        runtime_messages.clear()
+        runtime_messages.extend(messages)
+
+    def parent_context_provider() -> list[Any]:
+        return list(runtime_messages)
+
+    subagent_manager = SubagentManager(
+        model=model,
+        parent_context_provider=parent_context_provider,
+        tool_factory=lambda: collect_tools(include_subagents=False),
+        system_prompt=SYSTEM_PROMPT,
+    )
     middlewares: list[AgentMiddleware] = []
     # middlewares.append(TodoListMiddleware())
     middlewares.append(DeviceContextCompressionMiddleware())
+    middlewares.append(RuntimeContextCaptureMiddleware(set_runtime_messages))
     middlewares.append(SummarizationMiddleware(model=model))
-    registered_tools = _with_collected_tools(tools)
+    registered_tools = _with_collected_tools(
+        tools,
+        collect_tools(include_subagents=True, subagent_manager=subagent_manager),
+    )
 
     return create_agent(
         model=model,
@@ -58,10 +79,10 @@ def build_agent(
     )
 
 
-def _with_collected_tools(tools: Sequence[Any]) -> list[Any]:
+def _with_collected_tools(tools: Sequence[Any], collected_tools: Sequence[Any] | None = None) -> list[Any]:
     registered_tools = list(tools)
     existing_names = {_tool_name(tool) for tool in registered_tools}
-    for tool in collect_tools():
+    for tool in collected_tools if collected_tools is not None else collect_tools():
         if _tool_name(tool) not in existing_names:
             registered_tools.append(tool)
     return registered_tools

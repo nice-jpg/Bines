@@ -15,6 +15,9 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("notify_user: tell the user what external operation", SYSTEM_PROMPT)
         self.assertIn("think: reflect on complex tool outputs", SYSTEM_PROMPT)
         self.assertIn("query_manual: read the PAGE.md manual", SYSTEM_PROMPT)
+        self.assertIn("spawn_subagent: create an independent or delegated synchronous subagent", SYSTEM_PROMPT)
+        self.assertIn("call_subagent: call an existing subagent and wait", SYSTEM_PROMPT)
+        self.assertIn("kill_subagent: remove a subagent", SYSTEM_PROMPT)
         self.assertIn("Prefer uiautomate for XML analysis", SYSTEM_PROMPT)
         self.assertIn("Use screenshot when the XML lacks useful information", SYSTEM_PROMPT)
         self.assertIn("Do not use y=0 or y=2400", SYSTEM_PROMPT)
@@ -56,10 +59,19 @@ class SystemPromptTests(unittest.TestCase):
     def test_prompt_requires_operation_notice_before_external_actions(self) -> None:
         self.assertIn("Before every device tool call, call notify_user", SYSTEM_PROMPT)
         self.assertIn("Before every Excel output tool call, call notify_user", SYSTEM_PROMPT)
+        self.assertIn("Before spawning, calling, or killing a subagent, call notify_user", SYSTEM_PROMPT)
         self.assertIn("notify_user must include next_page and next_path", SYSTEM_PROMPT)
         self.assertIn("Use the returned operation_log as live context", SYSTEM_PROMPT)
         self.assertIn("You do not need to call notify_user before think, query_manual, or notify_user itself", SYSTEM_PROMPT)
         self.assertIn("that goal must be readable in notify_user", SYSTEM_PROMPT)
+
+    def test_prompt_guides_subagent_delegation(self) -> None:
+        self.assertIn("Independent subagents solve standalone analysis tasks", SYSTEM_PROMPT)
+        self.assertIn("Delegated subagents receive a copy of your current runtime context", SYSTEM_PROMPT)
+        self.assertIn("Subagents cannot create or call other subagents", SYSTEM_PROMPT)
+        self.assertIn("All agents that operate the device must run serially", SYSTEM_PROMPT)
+        self.assertIn("prefer delegating each single merchant's information collection", SYSTEM_PROMPT)
+        self.assertIn("wait for the returned subagent_result before doing any further device operation", SYSTEM_PROMPT)
 
     def test_prompt_does_not_include_page_specific_meituan_details(self) -> None:
         self.assertNotIn("service icon grid", SYSTEM_PROMPT)

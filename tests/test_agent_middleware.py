@@ -107,15 +107,22 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         sys.modules.pop("agent", None)
 
         agent = importlib.import_module("agent")
-        agent.collect_tools = lambda: []
+        collect_calls = []
+
+        def collect_tools(**kwargs):
+            collect_calls.append(kwargs)
+            return []
+
+        agent.collect_tools = collect_tools
 
         agent.build_agent(model="model", tools=[])
 
         middleware_names = [type(middleware).__name__ for middleware in captured["middleware"]]
         self.assertEqual(
             middleware_names,
-            ["DeviceContextCompressionMiddleware", "SummarizationMiddleware"],
+            ["DeviceContextCompressionMiddleware", "RuntimeContextCaptureMiddleware", "SummarizationMiddleware"],
         )
+        self.assertTrue(any(call.get("include_subagents") is True for call in collect_calls))
 
 
 if __name__ == "__main__":
