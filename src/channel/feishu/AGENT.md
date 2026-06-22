@@ -46,14 +46,15 @@ python -m src.run_agent
 2. `messages.py` parses text messages while preserving IDs, timestamps, sender IDs,
    mentions, and raw event/message/sender objects.
 3. `dedup.py` filters repeated `message_id` values before any agent callback is invoked.
-4. `src/run_agent.py` receives `IncomingMessage`, injects message metadata into the agent
-   context, and sends the final output through `FeishuChannelRuntime.send_text(...)`.
+4. `src/run_agent.py` receives `IncomingMessage`, passes only user-visible text into the
+   agent, and sends the final output through `FeishuChannelRuntime.send_text(...)`.
 5. `notify_user` operation notices are sent through a notifier built by the channel.
 
 ## Initial Scope
 
 - Supported: plain text receive and plain text send/reply.
-- Preserved for future use: mentions, timestamps, sender IDs, and raw Feishu event data.
+- Preserved for channel use: mentions, timestamps, sender IDs, and raw Feishu event data.
+- Channel metadata is not directly exposed to the LLM prompt.
 - Not supported yet: images, files, rich text, interactive cards, concurrent session queues,
   persistent chat memory, or HTTP callback mode.
 - De-duplication is based on Feishu `message_id`, with in-memory LRU state and optional JSONL

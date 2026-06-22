@@ -40,6 +40,8 @@ class RunAgentEntrypointTests(unittest.TestCase):
 
         class FakeMessage:
             def __init__(self, chat_id):
+                self.chat_id = chat_id
+                self.text = f"text from {chat_id}"
                 self.target = FakeTarget(chat_id)
 
         class FakeChannel:
@@ -61,8 +63,8 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 calls["runtime_init"] += 1
                 self.tools = tools
 
-            def run_turn(self, messages, *, max_iterations):
-                calls["run_turn"].append((messages, max_iterations))
+            def run_turn(self, messages, *, session_id=None, max_iterations):
+                calls["run_turn"].append((messages, session_id, max_iterations))
                 operation_notice = self.tools[0]
                 operation_notice.notifier("notice")
                 return types.SimpleNamespace(output=f"output_{len(calls['run_turn'])}")
@@ -73,7 +75,6 @@ class RunAgentEntrypointTests(unittest.TestCase):
 
         fake_agent = types.ModuleType("src.agent")
         fake_agent.AgentRuntime = FakeRuntime
-        fake_agent.format_feishu_message_context = lambda message: f"context:{message.target.chat_id}"
         fake_channel = types.ModuleType("src.channel.feishu")
         fake_channel.FeishuChannelRuntime = FakeChannel
         fake_channel.load_feishu_config = lambda: "config"
@@ -99,7 +100,10 @@ class RunAgentEntrypointTests(unittest.TestCase):
 
         self.assertEqual(calls["runtime_init"], 1)
         self.assertEqual(len(calls["run_turn"]), 2)
-        self.assertEqual([item[1] for item in calls["run_turn"]], [1000, 1000])
+        self.assertEqual([item[1] for item in calls["run_turn"]], ["feishu:chat_1", "feishu:chat_2"])
+        self.assertEqual([item[2] for item in calls["run_turn"]], [1000, 1000])
+        self.assertEqual(calls["run_turn"][0][0], [{"role": "user", "content": "text from chat_1"}])
+        self.assertNotIn("chat_id", str(calls["run_turn"][0][0]))
         self.assertEqual(calls["sent"], [("chat_1", "output_1"), ("chat_2", "output_2")])
         self.assertEqual(calls["notices"], [("chat_1", "notice"), ("chat_2", "notice")])
 

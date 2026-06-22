@@ -115,7 +115,12 @@ class AgentRuntimeTests(unittest.TestCase):
         class FakeAgent:
             def invoke(self, payload, config=None):
                 captured["invocations"].append(payload["messages"])
-                return {"messages": [{"role": "assistant", "content": "agent output"}]}
+                return {
+                    "messages": [
+                        *payload["messages"],
+                        {"role": "assistant", "content": "agent output"},
+                    ]
+                }
 
         def create_agent(**_kwargs):
             captured["create_count"] += 1
@@ -141,6 +146,38 @@ class AgentRuntimeTests(unittest.TestCase):
         sys.modules["langchain_core.language_models.chat_models"] = langchain_core_chat_models
         sys.modules["langchain_core.messages"] = langchain_core_messages
         sys.modules["langchain_core.tools"] = langchain_core_tools
+
+    def test_agent_runtime_preserves_history_per_session(self) -> None:
+        captured = {"create_count": 0, "invocations": []}
+        self._install_langchain_stubs(captured)
+        sys.modules.pop("agent", None)
+        agent = importlib.import_module("agent")
+        agent.collect_tools = lambda **_kwargs: []
+
+        runtime = agent.AgentRuntime(model="model", tools=[], name="runtime")
+        runtime.run_turn([{"role": "user", "content": "first"}], session_id="s1")
+        runtime.run_turn([{"role": "user", "content": "second"}], session_id="s1")
+        runtime.run_turn([{"role": "user", "content": "other"}], session_id="s2")
+
+        self.assertEqual([message["content"] for message in captured["invocations"][1]], ["first", "agent output", "second"])
+        self.assertEqual([message["content"] for message in captured["invocations"][2]], ["other"])
+
+    def test_app_probe_context_only_uses_current_turn_not_session_history(self) -> None:
+        captured = {"create_count": 0, "invocations": []}
+        self._install_langchain_stubs(captured)
+        sys.modules.pop("agent", None)
+        agent = importlib.import_module("agent")
+        agent.collect_tools = lambda **_kwargs: []
+        agent.build_app_probe_messages = lambda: [{"role": "user", "content": "<environment_context>probe</environment_context>"}]
+
+        runtime = agent.AgentRuntime(model="model", tools=[], name="runtime")
+        runtime.run_turn([{"role": "user", "content": "执行应用探测任务"}], session_id="s1")
+        runtime.run_turn([{"role": "user", "content": "普通消息"}], session_id="s1")
+
+        first_invocation = str(captured["invocations"][0])
+        second_new_tail = captured["invocations"][1][-1]["content"]
+        self.assertIn("<environment_context>probe</environment_context>", first_invocation)
+        self.assertEqual(second_new_tail, "普通消息")
 
 
 if __name__ == "__main__":

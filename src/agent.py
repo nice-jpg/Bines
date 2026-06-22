@@ -7,9 +7,7 @@ LangChain's ``create_agent`` owns that loop through its graph runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from typing import Any, Iterable, Mapping, Sequence
-from xml.sax.saxutils import escape
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -24,13 +22,13 @@ try:
     from src.subagents_manager import SubagentManager
     from src.tools import collect_tools
     from src.prompts import SYSTEM_PROMPT
-    from src.tasks import with_app_probe_messages
+    from src.tasks import build_app_probe_messages, messages_request_app_probe
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
     from subagents_manager import SubagentManager
     from tools import collect_tools
     from prompts import SYSTEM_PROMPT
-    from tasks import with_app_probe_messages
+    from tasks import build_app_probe_messages, messages_request_app_probe
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -55,11 +53,13 @@ class AgentRuntime:
         self.tools = list(tools or [])
         self.name = name
         self.agent = build_agent(model=model, tools=self.tools, name=name)
+        self.sessions: dict[str, list[Any]] = {}
 
     def run_turn(
         self,
         messages: Iterable[BaseMessage | Mapping[str, Any]],
         *,
+        session_id: str | None = None,
         tools: Sequence[Any] | None = None,
         max_iterations: int = 8,
     ) -> AgentRunResult:
@@ -70,16 +70,28 @@ class AgentRuntime:
         if tools:
             raise ValueError("AgentRuntime tools are fixed at initialization to avoid rebuilding the agent.")
 
-        prepared_messages = with_app_probe_messages(list(messages))
+        turn_messages = list(messages)
+        prepared_messages = self._prepare_messages(turn_messages, session_id=session_id)
         state = self.agent.invoke(
             {"messages": prepared_messages},
             config={"recursion_limit": max_iterations},
         )
+        if session_id:
+            self.sessions[session_id] = list(state.get("messages") or prepared_messages)
         return AgentRunResult(
             output=_latest_text(state),
             state=state,
             stopped_by="create_agent",
         )
+
+    def _prepare_messages(self, turn_messages: list[Any], *, session_id: str | None) -> list[Any]:
+        messages: list[Any] = []
+        if session_id:
+            messages.extend(self.sessions.get(session_id, []))
+        if messages_request_app_probe(turn_messages):
+            messages.extend(build_app_probe_messages())
+        messages.extend(turn_messages)
+        return messages
 
 
 def build_agent(
@@ -157,29 +169,6 @@ def run_agent_loop(
     )
     return runtime.run_turn(history or [], max_iterations=max_iterations)
 
-
-def format_feishu_message_context(message: Any) -> str:
-    """Format a Feishu message as agent-readable XML context."""
-
-    mentions = getattr(message, "mentions", [])
-    return (
-        "<feishu_message>\n"
-        f"<message_id>{_xml_text(getattr(message, 'message_id', ''))}</message_id>\n"
-        f"<root_id>{_xml_text(getattr(message, 'root_id', ''))}</root_id>\n"
-        f"<parent_id>{_xml_text(getattr(message, 'parent_id', ''))}</parent_id>\n"
-        f"<chat_id>{_xml_text(getattr(message, 'chat_id', ''))}</chat_id>\n"
-        f"<chat_type>{_xml_text(getattr(message, 'chat_type', ''))}</chat_type>\n"
-        f"<message_type>{_xml_text(getattr(message, 'message_type', ''))}</message_type>\n"
-        f"<create_time>{_xml_text(getattr(message, 'create_time', ''))}</create_time>\n"
-        f"<update_time>{_xml_text(getattr(message, 'update_time', ''))}</update_time>\n"
-        f"<sender_open_id>{_xml_text(getattr(message, 'sender_open_id', ''))}</sender_open_id>\n"
-        f"<sender_union_id>{_xml_text(getattr(message, 'sender_union_id', ''))}</sender_union_id>\n"
-        f"<sender_user_id>{_xml_text(getattr(message, 'sender_user_id', ''))}</sender_user_id>\n"
-        f"<mentions>{_xml_text(json.dumps(mentions, ensure_ascii=False))}</mentions>\n"
-        f"<text>{_xml_text(getattr(message, 'text', ''))}</text>\n"
-        "</feishu_message>"
-    )
-
 def _latest_text(state: Mapping[str, Any]) -> str:
     messages = state.get("messages") or []
     if not messages:
@@ -194,7 +183,3 @@ def _latest_text(state: Mapping[str, Any]) -> str:
     if content is None:
         return ""
     return str(content)
-
-
-def _xml_text(value: Any) -> str:
-    return escape(str(value or ""))

@@ -23,18 +23,14 @@ class AppProbeTaskTests(unittest.TestCase):
         self.assertFalse(is_app_probe_request(f"{APP_PROBE_TRIGGER}。"))
         self.assertFalse(is_app_probe_request("普通聊天"))
 
-    def test_messages_request_app_probe_supports_plain_and_feishu_context(self) -> None:
+    def test_messages_request_app_probe_uses_only_plain_exact_current_text(self) -> None:
         self.assertTrue(messages_request_app_probe([{"role": "user", "content": APP_PROBE_TRIGGER}]))
-        self.assertTrue(
+        self.assertFalse(
             messages_request_app_probe(
                 [{"role": "user", "content": f"<feishu_message><text>{APP_PROBE_TRIGGER}</text></feishu_message>"}]
             )
         )
-        self.assertFalse(
-            messages_request_app_probe(
-                [{"role": "user", "content": f"<feishu_message><text>{APP_PROBE_TRIGGER} </text></feishu_message>"}]
-            )
-        )
+        self.assertFalse(messages_request_app_probe([{"role": "user", "content": f"{APP_PROBE_TRIGGER} "}]))
 
     def test_build_app_probe_messages_wraps_existing_initial_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from html import unescape
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -13,7 +11,6 @@ except ModuleNotFoundError:  # Supports running with src on PYTHONPATH.
     from prompts import build_initial_messages
 
 APP_PROBE_TRIGGER = "执行应用探测任务"
-FEISHU_TEXT_RE = re.compile(r"<text>(.*?)</text>", re.DOTALL)
 
 
 def is_app_probe_request(text: str) -> bool:
@@ -23,15 +20,13 @@ def is_app_probe_request(text: str) -> bool:
 
 
 def messages_request_app_probe(messages: Sequence[Any]) -> bool:
-    """Detect the app-probe trigger in plain or Feishu-wrapped user messages."""
+    """Detect the app-probe trigger in current-turn plain user messages."""
 
     for message in messages:
         content = _message_content(message)
         if content is None:
             continue
         if is_app_probe_request(content):
-            return True
-        if _feishu_text_triggers_app_probe(content):
             return True
     return False
 
@@ -71,12 +66,3 @@ def _message_content(message: Any) -> str | None:
     else:
         content = getattr(message, "content", None)
     return content if isinstance(content, str) else None
-
-
-def _feishu_text_triggers_app_probe(content: str) -> bool:
-    if "<feishu_message>" not in content:
-        return False
-    match = FEISHU_TEXT_RE.search(content)
-    if match is None:
-        return False
-    return is_app_probe_request(unescape(match.group(1)))
