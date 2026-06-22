@@ -68,12 +68,16 @@ EVENT_HUB_TOOL_NAMES = tuple(spec.name for spec in TOOL_SPECS)
 class EventHub:
     """Central owner for recorded touch-operation replay."""
 
-    def __init__(self, logger: WorkspaceEventLogger | None = None) -> None:
+    def __init__(
+        self,
+        logger: WorkspaceEventLogger | None = None,
+        sleep_func: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.device = AndroidDevice()
         self._actions_checked = False
         self.logger = logger or WorkspaceEventLogger()
         self.post_action_ui_delay_seconds = DEFAULT_POST_ACTION_UI_DELAY_SECONDS
-        self._sleep = time.sleep
+        self._sleep = sleep_func
 
     def tap(self, x: int, y: int) -> str | ErrorResult:
         """Replay the recorded tap action."""

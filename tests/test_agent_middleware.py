@@ -120,9 +120,26 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         middleware_names = [type(middleware).__name__ for middleware in captured["middleware"]]
         self.assertEqual(
             middleware_names,
-            ["DeviceContextCompressionMiddleware", "RuntimeContextCaptureMiddleware", "SummarizationMiddleware"],
+            [
+                "DeviceContextCompressionMiddleware",
+                "RuntimeContextCaptureMiddleware",
+                "HumanInTheLoopMiddleware",
+                "SummarizationMiddleware",
+            ],
         )
+        hitl = captured["middleware"][2]
+        self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
+        self.assertIn("checkpointer", captured)
         self.assertTrue(any(call.get("include_subagents") is True for call in collect_calls))
+
+    def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:
+        self.test_build_agent_registers_context_compression_before_summarization()
+        middleware = importlib.import_module("middleware")
+
+        hitl = middleware.create_captcha_human_in_the_loop_middleware()
+
+        self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
+        self.assertEqual(middleware.CAPTCHA_AUTHENTICATION_TOOL_NAME, "authenticate_captcha")
 
 
 if __name__ == "__main__":

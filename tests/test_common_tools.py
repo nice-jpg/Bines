@@ -25,7 +25,7 @@ if "langchain_core.tools" not in sys.modules:
     sys.modules["langchain_core"] = langchain_core
     sys.modules["langchain_core.tools"] = langchain_core_tools
 
-from tools.common import ManualTool, OperationNoticeTool, ThinkingTool, create_common_tools
+from tools.common import CaptchaAuthenticationTool, ManualTool, OperationNoticeTool, ThinkingTool, create_common_tools
 
 
 class FakeLogger:
@@ -107,13 +107,34 @@ class CommonToolTests(unittest.TestCase):
     def test_think_handles_empty_input(self) -> None:
         self.assertEqual(ThinkingTool().think("  "), "No thought was recorded because the input was empty.")
 
+    def test_authenticate_captcha_records_placeholder_result(self) -> None:
+        logger = FakeLogger()
+
+        result = CaptchaAuthenticationTool(logger=logger).authenticate_captcha(
+            current_path="meituan/外卖",
+            reason="security check blocks the shop list",
+            evidence="XML contains 验证码",
+        )
+
+        self.assertIn("<captcha_authentication", result)
+        self.assertIn("Re-read the current UI", result)
+        self.assertEqual(logger.records[0][0], "captcha_authentication")
+        self.assertEqual(logger.records[0][2]["current_path"], "meituan/外卖")
+        self.assertEqual(logger.records[0][2]["reason"], "security check blocks the shop list")
+
+    def test_authenticate_captcha_handles_empty_inputs_without_raising(self) -> None:
+        result = CaptchaAuthenticationTool(logger=FakeLogger()).authenticate_captcha("", "", "")
+
+        self.assertIn("status=\"placeholder\"", result)
+
     def test_create_common_tools_registers_think_tool(self) -> None:
         tools = create_common_tools()
 
-        self.assertEqual([tool.name for tool in tools], ["notify_user", "think", "query_manual"])
+        self.assertEqual([tool.name for tool in tools], ["notify_user", "authenticate_captcha", "think", "query_manual"])
         self.assertIn("before any external device or Excel operation", tools[0].description)
-        self.assertIn("complex tool outputs", tools[1].description)
-        self.assertIn("does not fetch new information", tools[1].description)
+        self.assertIn("human captcha authentication", tools[1].description)
+        self.assertIn("complex tool outputs", tools[2].description)
+        self.assertIn("does not fetch new information", tools[2].description)
 
     def test_query_manual_returns_only_current_page_doc_for_operation_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
