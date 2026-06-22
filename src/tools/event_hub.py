@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+import time
 
 from langchain_core.tools import StructuredTool
 
@@ -17,11 +18,16 @@ try:
     from src.device.results import ErrorResult, is_error_result, make_error_result
     from src.device.translator import check_actions
     from src.tools.event_logger import WorkspaceEventLogger
+    from src.tools.optimize_xml import optimize
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from device.adapter import AndroidDevice
     from device.results import ErrorResult, is_error_result, make_error_result
     from device.translator import check_actions
     from tools.event_logger import WorkspaceEventLogger
+    from tools.optimize_xml import optimize
+
+DEFAULT_POST_ACTION_UI_DELAY_SECONDS = 1.2
+
 
 @dataclass(frozen=True)
 class ToolSpec:
@@ -36,21 +42,21 @@ TOOL_SPECS = (
     ToolSpec("tap", "tap (x, y). Provide x/y coordinates. Returns no operation data.", "tap", ("x", "y")),
     ToolSpec(
         "swipe_up",
-        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns no operation data.",
+        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_up",
         ("x", "y"),
     ),
     ToolSpec(
         "swipe_down",
-        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns no operation data.",
+        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_down",
         ("x", "y"),
     ),
     ToolSpec(
         "swipe_back",
-        "return to the last page. Provide x/y coordinates. Returns no operation data.",
+        "return to the last page. Returns current UIAutomator XML hierarchy.",
         "swipe_back",
-        ("x", "y"),
+        (),
     ),
     ToolSpec("uiautomate", "Get the current UIAutomator XML hierarchy.", "uiautomate", ()),
     ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot", ()),
@@ -66,6 +72,8 @@ class EventHub:
         self.device = AndroidDevice()
         self._actions_checked = False
         self.logger = logger or WorkspaceEventLogger()
+        self.post_action_ui_delay_seconds = DEFAULT_POST_ACTION_UI_DELAY_SECONDS
+        self._sleep = time.sleep
 
     def tap(self, x: int, y: int) -> str | ErrorResult:
         """Replay the recorded tap action."""
@@ -82,15 +90,18 @@ class EventHub:
 
         return self._replay_recorded_action("swipe_down", x, y)
 
-    def swipe_back(self, x: int, y: int) -> str | ErrorResult:
+    def swipe_back(self) -> str | ErrorResult:
         """Replay the recorded back action."""
 
-        return self._replay_recorded_action("swipe_back", 0, y)
+        return self._replay_recorded_action("swipe_back", 0, 2000)
 
     def uiautomate(self) -> str | ErrorResult:
         """Return the current UIAutomator XML hierarchy."""
-
-        return self._run_device_operation("uiautomate", self.device.dump_ui, inspect_page=True)
+        result = self._run_device_operation("uiautomate", self.device.dump_ui, inspect_page=True)
+        if type(result) is ErrorResult:
+            return result
+        assert(isinstance(result, str))
+        return optimize(result)
 
     def screenshot(self) -> str | ErrorResult:
         """Capture a screenshot on the device and return the remote path."""
@@ -118,7 +129,12 @@ class EventHub:
         )
         if is_error_result(action_result):
             return action_result
+        self._wait_after_action()
         return self.uiautomate()
+
+    def _wait_after_action(self) -> None:
+        if self.post_action_ui_delay_seconds > 0:
+            self._sleep(self.post_action_ui_delay_seconds)
 
     def _ensure_actions_checked(self) -> None | ErrorResult:
         if self._actions_checked:

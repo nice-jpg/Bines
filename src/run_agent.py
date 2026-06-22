@@ -1,40 +1,62 @@
-"""CLI example for the LangChain create_agent harness."""
+"""Run the Bines agent with the Feishu communication channel."""
 
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
-
-from langchain_core.tools import tool
 
 try:
-    from src.agent import run_agent_loop
+    from src.agent import AgentRuntime
+    from src.channel.feishu import FeishuChannelRuntime, load_feishu_config
     from src.model import build_model
+    from src.tools.common import OperationNoticeTool, create_common_tools
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    from agent import run_agent_loop
+    from agent import AgentRuntime
+    from channel.feishu import FeishuChannelRuntime, load_feishu_config
     from model import build_model
+    from tools.common import OperationNoticeTool, create_common_tools
 
 
-@tool
-def current_utc_time() -> str:
-    """Return the current UTC time in ISO 8601 format."""
+class MutableNotifier:
+    """A notifier proxy whose destination can change per inbound message."""
 
-    return datetime.now(timezone.utc).isoformat()
+    def __init__(self) -> None:
+        self._notifier = None
+
+    def set(self, notifier) -> None:
+        self._notifier = notifier
+
+    def __call__(self, text: str) -> None:
+        if self._notifier is not None:
+            self._notifier(text)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run a LangChain create_agent tool-calling harness.")
+    parser = argparse.ArgumentParser(description="Run the Bines agent through Feishu.")
+    parser.add_argument("--max-iterations", type=int, default=1000)
     return parser
 
 
 def main() -> None:
-    model = build_model()
-    result = run_agent_loop(
-        model=model,
-        tools=[current_utc_time],
-        max_iterations=1000,
+    args = build_parser().parse_args()
+    channel = FeishuChannelRuntime(load_feishu_config())
+    notifier = MutableNotifier()
+    operation_notice = OperationNoticeTool(notifier=notifier)
+    runtime = AgentRuntime(
+        model=build_model(),
+        tools=create_common_tools(operation_notice_tool=operation_notice),
+        name="feishu-agent",
     )
-    print(result.output)
+
+    def on_message(message) -> None:
+        notifier.set(channel.build_notifier(message.target))
+        result = runtime.run_turn(
+            [{"role": "user", "content": message.text}],
+            session_id=f"feishu:{message.chat_id}",
+            max_iterations=args.max_iterations,
+        )
+        channel.send_text(message.target, result.output)
+
+    channel.start(on_message)
 
 
 if __name__ == "__main__":

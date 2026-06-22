@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prompts import build_initial_message
+from prompts import build_initial_message, build_initial_messages
 
 
 class InitialMessageTests(unittest.TestCase):
@@ -47,6 +47,7 @@ class InitialMessageTests(unittest.TestCase):
         self.assertIn("- 范围：1000米", message)
         self.assertIn("- 二级页面1：美食", message)
         self.assertIn("- 二级页面2：外卖", message)
+        self.assertNotIn("<page_mechanism_context>", message)
 
     def test_build_initial_message_tolerates_trailing_junk_after_xml_root(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -128,6 +129,18 @@ class InitialMessageTests(unittest.TestCase):
         self.assertIn("- 城市：未配置", message)
         self.assertIn("- 二级页面1：未配置", message)
         self.assertIn("- 二级页面2：未配置", message)
+        self.assertNotIn("No page mechanism documents found", message)
+
+    def test_build_initial_messages_returns_only_environment_and_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            (workspace / "config.xml").write_text("<config></config>", encoding="utf-8")
+
+            messages = build_initial_messages(workspace, current_date="2026-06-14")
+
+        self.assertEqual(len(messages), 2)
+        self.assertIn("<environment_context>", messages[0])
+        self.assertIn("<config_context>", messages[1])
 
 
 if __name__ == "__main__":
