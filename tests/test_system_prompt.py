@@ -13,6 +13,7 @@ class SystemPromptTests(unittest.TestCase):
     def test_prompt_keeps_generic_tool_and_scanning_rules(self) -> None:
         self.assertIn("run_package: open the target app by Android package name", SYSTEM_PROMPT)
         self.assertIn("notify_user: tell the user what external operation", SYSTEM_PROMPT)
+        self.assertIn("authenticate_captcha: pause for human captcha authentication", SYSTEM_PROMPT)
         self.assertIn("think: reflect on complex tool outputs", SYSTEM_PROMPT)
         self.assertIn("query_manual: read the PAGE.md manual", SYSTEM_PROMPT)
         self.assertIn("spawn_subagent: create an independent or delegated synchronous subagent", SYSTEM_PROMPT)
@@ -64,6 +65,11 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Use the returned operation_log as live context", SYSTEM_PROMPT)
         self.assertIn("You do not need to call notify_user before think, query_manual, or notify_user itself", SYSTEM_PROMPT)
         self.assertIn("that goal must be readable in notify_user", SYSTEM_PROMPT)
+
+    def test_prompt_requires_captcha_authentication_tool(self) -> None:
+        self.assertIn("first call notify_user, then call authenticate_captcha", SYSTEM_PROMPT)
+        self.assertIn("Do not continue tap, swipe, back, device reading, subagent, or Excel output", SYSTEM_PROMPT)
+        self.assertIn("After authenticate_captcha returns, call uiautomate or screenshot", SYSTEM_PROMPT)
 
     def test_prompt_guides_subagent_delegation(self) -> None:
         self.assertIn("Independent subagents solve standalone analysis tasks", SYSTEM_PROMPT)

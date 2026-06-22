@@ -118,6 +118,40 @@ class ThinkingTool:
         return "Thought recorded."
 
 
+class CaptchaAuthenticationTool:
+    """Placeholder tool that marks a captcha handoff to a human operator."""
+
+    def __init__(self, logger: WorkspaceEventLogger | None = None) -> None:
+        self.logger = logger or WorkspaceEventLogger()
+
+    def authenticate_captcha(
+        self,
+        current_path: str,
+        reason: str = "",
+        evidence: str = "",
+    ) -> str:
+        """Record a captcha authentication handoff and return a placeholder result."""
+
+        normalized_path = str(current_path or "").strip()
+        normalized_reason = str(reason or "").strip()
+        normalized_evidence = str(evidence or "").strip()
+        self.logger.log(
+            "captcha_authentication",
+            "Captcha authentication was handed off to a human operator.",
+            details={
+                "current_path": normalized_path,
+                "reason": normalized_reason,
+                "evidence": normalized_evidence,
+            },
+        )
+        return (
+            "<captcha_authentication status=\"placeholder\">"
+            "Human captcha authentication has been acknowledged. "
+            "Re-read the current UI with uiautomate or screenshot before continuing."
+            "</captcha_authentication>"
+        )
+
+
 class ManualTool:
     """Read page operation manuals from the page_mechanism directory."""
 
@@ -212,12 +246,14 @@ class ManualTool:
 
 def create_common_tools(
     operation_notice_tool: OperationNoticeTool | None = None,
+    captcha_authentication_tool: CaptchaAuthenticationTool | None = None,
     thinking_tool: ThinkingTool | None = None,
     manual_tool: ManualTool | None = None,
 ) -> list[StructuredTool]:
     """Create shared reasoning tools for the LangChain agent."""
 
     operation_notice = operation_notice_tool or OperationNoticeTool()
+    captcha_authentication = captcha_authentication_tool or CaptchaAuthenticationTool()
     thinking = thinking_tool or ThinkingTool()
     manual = manual_tool or ManualTool()
     return [
@@ -230,6 +266,17 @@ def create_common_tools(
                 "optional reason, optional next_page, optional next_path. If the operation "
                 "will enter a lower-level page, include next_page and next_path. The returned "
                 "operation_log is context for later decisions."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=captcha_authentication.authenticate_captcha,
+            name="authenticate_captcha",
+            description=(
+                "Use this tool only when the current UI shows a captcha, security check, "
+                "slider verification, or human verification. Inputs: current_path, optional "
+                "reason, optional evidence. The tool is a placeholder for human captcha "
+                "authentication; after it returns, re-read the UI with uiautomate or "
+                "screenshot before continuing."
             ),
         ),
         StructuredTool.from_function(

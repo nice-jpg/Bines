@@ -7,24 +7,44 @@ LangChain's ``create_agent`` owns that loop through its graph runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import itertools
 from typing import Any, Iterable, Mapping, Sequence
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig, TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 
 try:
-    from src.middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+except ModuleNotFoundError:  # Lightweight fallback for unit tests without LangGraph installed.
+    class InMemorySaver:  # type: ignore[no-redef]
+        pass
+
+    class Command:  # type: ignore[no-redef]
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+
+try:
+    from src.middleware import (
+        DeviceContextCompressionMiddleware,
+        RuntimeContextCaptureMiddleware,
+        create_captcha_human_in_the_loop_middleware,
+    )
     from src.subagents_manager import SubagentManager
     from src.tools import collect_tools
     from src.prompts import SYSTEM_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    from middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
+    from middleware import (
+        DeviceContextCompressionMiddleware,
+        RuntimeContextCaptureMiddleware,
+        create_captcha_human_in_the_loop_middleware,
+    )
     from subagents_manager import SubagentManager
     from tools import collect_tools
     from prompts import SYSTEM_PROMPT
@@ -37,6 +57,8 @@ class AgentRunResult:
     output: str
     state: Mapping[str, Any]
     stopped_by: str
+    interrupted: bool = False
+    interrupts: list[Any] | None = None
 
 
 class AgentRuntime:
@@ -54,6 +76,8 @@ class AgentRuntime:
         self.name = name
         self.agent = build_agent(model=model, tools=self.tools, name=name)
         self.sessions: dict[str, list[Any]] = {}
+        self._stateless_counter = itertools.count(1)
+        self._pending_thread_ids: dict[str, str] = {}
 
     def run_turn(
         self,
@@ -72,16 +96,58 @@ class AgentRuntime:
 
         turn_messages = list(messages)
         prepared_messages = self._prepare_messages(turn_messages, session_id=session_id)
+        thread_id = self._thread_id_for_turn(session_id)
         state = self.agent.invoke(
             {"messages": prepared_messages},
-            config={"recursion_limit": max_iterations},
+            config=_invoke_config(max_iterations, thread_id),
         )
-        if session_id:
+        interrupts = _extract_interrupts(state)
+        if session_id and interrupts:
+            self._pending_thread_ids[session_id] = thread_id
+        elif session_id:
+            self._pending_thread_ids.pop(session_id, None)
+        if session_id and not interrupts:
             self.sessions[session_id] = list(state.get("messages") or prepared_messages)
         return AgentRunResult(
             output=_latest_text(state),
             state=state,
             stopped_by="create_agent",
+            interrupted=bool(interrupts),
+            interrupts=interrupts,
+        )
+
+    def resume_turn(
+        self,
+        *,
+        session_id: str,
+        user_input: Any | None = None,
+        max_iterations: int = 8,
+    ) -> AgentRunResult:
+        """Resume a previously interrupted LangGraph thread."""
+
+        if max_iterations < 1:
+            raise ValueError("max_iterations must be >= 1")
+        thread_id = self._pending_thread_ids.get(session_id)
+        if not thread_id:
+            raise ValueError(f"No interrupted agent workflow is pending for session: {session_id}")
+
+        resume_message = "Human captcha authentication completed." if user_input is None else str(user_input)
+        state = self.agent.invoke(
+            Command(resume={"decisions": [{"type": "respond", "message": resume_message}]}),
+            config=_invoke_config(max_iterations, thread_id),
+        )
+        interrupts = _extract_interrupts(state)
+        if interrupts:
+            self._pending_thread_ids[session_id] = thread_id
+        else:
+            self._pending_thread_ids.pop(session_id, None)
+            self.sessions[session_id] = list(state.get("messages") or self.sessions.get(session_id, []))
+        return AgentRunResult(
+            output=_latest_text(state),
+            state=state,
+            stopped_by="create_agent",
+            interrupted=bool(interrupts),
+            interrupts=interrupts,
         )
 
     def _prepare_messages(self, turn_messages: list[Any], *, session_id: str | None) -> list[Any]:
@@ -92,6 +158,14 @@ class AgentRuntime:
             messages.extend(build_app_probe_messages())
         messages.extend(turn_messages)
         return messages
+
+    def has_pending_interrupt(self, session_id: str) -> bool:
+        return session_id in self._pending_thread_ids
+
+    def _thread_id_for_turn(self, session_id: str | None) -> str:
+        if session_id:
+            return session_id
+        return f"stateless:{id(self)}:{next(self._stateless_counter)}"
 
 
 def build_agent(
@@ -121,6 +195,7 @@ def build_agent(
     # middlewares.append(TodoListMiddleware())
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(RuntimeContextCaptureMiddleware(set_runtime_messages))
+    middlewares.append(create_captcha_human_in_the_loop_middleware())
     middlewares.append(SummarizationMiddleware(model=model))
     registered_tools = _with_collected_tools(
         tools,
@@ -133,7 +208,26 @@ def build_agent(
         system_prompt=SYSTEM_PROMPT,
         name=name,
         middleware=middlewares,
+        checkpointer=InMemorySaver(),
     )
+
+
+def _invoke_config(max_iterations: int, thread_id: str) -> dict[str, Any]:
+    return {
+        "recursion_limit": max_iterations,
+        "configurable": {"thread_id": thread_id},
+    }
+
+
+def _extract_interrupts(state: Mapping[str, Any]) -> list[Any]:
+    interrupts = state.get("__interrupt__") or state.get("interrupts") or []
+    if interrupts is None:
+        return []
+    if isinstance(interrupts, list):
+        return interrupts
+    if isinstance(interrupts, tuple):
+        return list(interrupts)
+    return [interrupts]
 
 
 def _with_collected_tools(tools: Sequence[Any], collected_tools: Sequence[Any] | None = None) -> list[Any]:
