@@ -1,37 +1,27 @@
-"""Run the Feishu long-connection channel."""
+"""Channel-only Feishu smoke runner."""
 
 from __future__ import annotations
 
 try:
-    from src.channel.feishu.agent_bridge import FeishuAgentBridge
-    from src.channel.feishu.client import FeishuMessenger
     from src.channel.feishu.config import load_feishu_config
-    from src.channel.feishu.receiver import FeishuChannel
+    from src.channel.feishu.receiver import FeishuChannelRuntime
 except ModuleNotFoundError:  # Supports running with src on PYTHONPATH.
-    from channel.feishu.agent_bridge import FeishuAgentBridge
-    from channel.feishu.client import FeishuMessenger
     from channel.feishu.config import load_feishu_config
-    from channel.feishu.receiver import FeishuChannel
+    from channel.feishu.receiver import FeishuChannelRuntime
 
 
 def main() -> None:
-    config = load_feishu_config()
-    messenger = FeishuMessenger(config)
-    bridge = FeishuAgentBridge(messenger)
+    channel = FeishuChannelRuntime(load_feishu_config())
 
-    def on_parse_error(error_text, data) -> None:
-        event = getattr(data, "event", None)
-        message = getattr(event, "message", None)
-        chat_id = getattr(message, "chat_id", "")
-        message_id = getattr(message, "message_id", "")
-        chat_type = getattr(message, "chat_type", "")
-        if chat_type == "p2p" and chat_id:
-            messenger.send_text(chat_id, error_text)
-        elif message_id:
-            messenger.reply_text(message_id, error_text)
+    def on_message(message) -> None:
+        channel.send_text(message.target, f"Received text message: {message.text}")
 
-    channel = FeishuChannel(config, bridge.handle_message, on_parse_error=on_parse_error)
-    channel.start()
+    channel.on_parse_error = lambda parsed, _data: (
+        channel.send_text(parsed.incoming.target, parsed.error_text or "Failed to parse message.")
+        if parsed.incoming is not None
+        else None
+    )
+    channel.start(on_message)
 
 
 if __name__ == "__main__":

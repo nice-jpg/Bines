@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import types
@@ -31,9 +32,10 @@ if "langchain_core.tools" not in sys.modules:
     sys.modules["langchain_core"] = langchain_core
     sys.modules["langchain_core.tools"] = langchain_core_tools
 
-from channel.feishu.agent_bridge import FeishuAgentBridge
-from channel.feishu.config import load_feishu_config
-from channel.feishu.messages import IncomingMessage, parse_message_event
+from channel.feishu.config import FeishuConfig, load_feishu_config
+from channel.feishu.dedup import MessageDeduplicator
+from channel.feishu.messages import IncomingMessage, MessageTarget, parse_message_event
+from channel.feishu.receiver import FeishuChannelRuntime
 
 
 class FakeMessenger:
@@ -88,89 +90,152 @@ class FeishuChannelTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "Missing required Feishu setting"):
                     load_feishu_config(env_path)
 
-    def test_parse_text_message_event(self) -> None:
-        data = _event_data(content='{"text":"hello"}')
+    def test_parse_text_message_event_preserves_metadata_and_mentions(self) -> None:
+        mentions = [{"key": "@_user_1", "id": {"open_id": "mentioned_open"}, "name": "user1"}]
+        data = _event_data(content='{"text":"hello @user1"}', mentions=mentions)
 
         parsed = parse_message_event(data)
 
         self.assertTrue(parsed.ok)
         self.assertIsNotNone(parsed.incoming)
-        self.assertEqual(parsed.incoming.text, "hello")
-        self.assertEqual(parsed.incoming.chat_id, "chat_1")
-        self.assertEqual(parsed.incoming.message_id, "msg_1")
-        self.assertEqual(parsed.incoming.sender_open_id, "open_1")
+        incoming = parsed.incoming
+        self.assertEqual(incoming.text, "hello @user1")
+        self.assertEqual(incoming.chat_id, "chat_1")
+        self.assertEqual(incoming.message_id, "msg_1")
+        self.assertEqual(incoming.root_id, "root_1")
+        self.assertEqual(incoming.parent_id, "parent_1")
+        self.assertEqual(incoming.create_time, "1710000000000")
+        self.assertEqual(incoming.update_time, "1710000001000")
+        self.assertEqual(incoming.sender_open_id, "open_1")
+        self.assertEqual(incoming.sender_union_id, "union_1")
+        self.assertEqual(incoming.sender_user_id, "user_1")
+        self.assertEqual(incoming.mentions, mentions)
+        self.assertIs(incoming.raw_message, data.event.message)
 
-    def test_parse_unsupported_and_malformed_messages(self) -> None:
+    def test_parse_unsupported_and_malformed_messages_keep_message_identity(self) -> None:
         unsupported = parse_message_event(_event_data(message_type="image"))
         malformed = parse_message_event(_event_data(content="{bad-json"))
 
         self.assertFalse(unsupported.ok)
+        self.assertIsNotNone(unsupported.incoming)
+        self.assertEqual(unsupported.incoming.message_id, "msg_1")
+        self.assertEqual(unsupported.incoming.message_type, "image")
         self.assertIn("Unsupported message type", unsupported.error_text or "")
         self.assertFalse(malformed.ok)
+        self.assertIsNotNone(malformed.incoming)
+        self.assertEqual(malformed.incoming.chat_id, "chat_1")
         self.assertIn("Failed to parse", malformed.error_text or "")
 
-    def test_agent_bridge_wraps_message_and_sends_final_output(self) -> None:
+    def test_message_deduplicator_filters_repeated_ids_and_enforces_lru(self) -> None:
+        dedup = MessageDeduplicator(capacity=2, persistence_path=None)
+
+        self.assertTrue(dedup.should_process("msg_1"))
+        self.assertFalse(dedup.should_process("msg_1"))
+        self.assertTrue(dedup.should_process("msg_2"))
+        self.assertTrue(dedup.should_process("msg_3"))
+        self.assertTrue(dedup.should_process("msg_1"))
+
+    def test_message_deduplicator_restores_persisted_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "processed.jsonl"
+            path.write_text(json.dumps({"message_id": "msg_1", "chat_id": "chat_1"}) + "\n", encoding="utf-8")
+
+            dedup = MessageDeduplicator(capacity=10, persistence_path=path)
+
+            self.assertFalse(dedup.should_process("msg_1", chat_id="chat_1"))
+            self.assertTrue(dedup.should_process("msg_2", chat_id="chat_1"))
+
+    def test_channel_runtime_deduplicates_before_callback(self) -> None:
+        received = []
+        errors = []
+        runtime = FeishuChannelRuntime(
+            FeishuConfig("app", "secret"),
+            messenger=FakeMessenger(),
+            deduplicator=MessageDeduplicator(persistence_path=None),
+            on_parse_error=lambda parsed, _data: errors.append(parsed),
+        )
+        runtime._on_message = received.append
+
+        runtime._handle_message(_event_data())
+        runtime._handle_message(_event_data())
+        runtime._handle_message(_event_data(message_type="image", message_id="msg_2"))
+
+        self.assertEqual([message.message_id for message in received], ["msg_1"])
+        self.assertEqual([error.incoming.message_id for error in errors if error.incoming], ["msg_2"])
+
+    def test_channel_runtime_sends_to_p2p_or_replies_to_group(self) -> None:
         messenger = FakeMessenger()
-        captured = {}
+        runtime = FeishuChannelRuntime(
+            FeishuConfig("app", "secret"),
+            messenger=messenger,
+            deduplicator=MessageDeduplicator(persistence_path=None),
+        )
 
-        def runner(messages, tools):
-            captured["messages"] = messages
-            captured["tool_names"] = [tool.name for tool in tools]
-            return "agent output"
+        runtime.send_text(MessageTarget("chat_1", "msg_1", "p2p"), "p2p output")
+        runtime.send_text(MessageTarget("chat_2", "msg_2", "group"), "group output")
+        runtime.build_notifier(MessageTarget("chat_3", "msg_3", "group"))("notice")
 
-        bridge = FeishuAgentBridge(messenger, agent_runner=runner)
-        bridge.handle_message(_incoming(chat_type="group"))
+        self.assertEqual(messenger.sent, [("chat_1", "p2p output"), ("chat_3", "notice")])
+        self.assertEqual(messenger.replies, [("msg_2", "group output")])
 
-        self.assertEqual(messenger.replies, [("msg_1", "agent output")])
-        self.assertIn("notify_user", captured["tool_names"])
-        self.assertEqual(captured["tool_names"].count("notify_user"), 1)
-        self.assertIn("<feishu_message>", captured["messages"][-1]["content"])
-        self.assertIn("<text>collect shops</text>", captured["messages"][-1]["content"])
+    def test_transport_modules_do_not_depend_on_agent_runtime(self) -> None:
+        feishu_dir = Path(__file__).resolve().parents[1] / "src" / "channel" / "feishu"
+        forbidden = ("src.agent", "src.model", "src.tools", "src.prompts")
+        transport_files = [
+            path
+            for path in feishu_dir.glob("*.py")
+        ]
 
-    def test_agent_bridge_notify_user_sends_operation_notice_to_chat(self) -> None:
-        messenger = FakeMessenger()
-
-        def runner(_messages, tools):
-            notify_tool = next(tool for tool in tools if tool.name == "notify_user")
-            notify_tool.invoke(
-                {
-                    "operation": "tap '美食' on (320, 620) to load a subpage",
-                    "current_path": "meituan",
-                    "reason": "open configured secondary page",
-                    "next_page": "美食",
-                    "next_path": "meituan/美食",
-                }
-            )
-            return "done"
-
-        bridge = FeishuAgentBridge(messenger, agent_runner=runner)
-        bridge.handle_message(_incoming(chat_type="p2p"))
-
-        self.assertEqual(messenger.sent[-1], ("chat_1", "done"))
-        self.assertTrue(any("Operation: tap '美食'" in text for _, text in messenger.sent))
-        self.assertTrue(any("Next path: meituan/美食" in text for _, text in messenger.sent))
+        for path in transport_files:
+            with self.subTest(path=path.name):
+                content = path.read_text(encoding="utf-8")
+                self.assertFalse(any(item in content for item in forbidden))
 
 
 def _incoming(chat_type: str = "p2p") -> IncomingMessage:
     return IncomingMessage(
-        chat_id="chat_1",
         message_id="msg_1",
+        root_id="root_1",
+        parent_id="parent_1",
+        chat_id="chat_1",
         chat_type=chat_type,
+        message_type="text",
+        create_time="1710000000000",
+        update_time="1710000001000",
         sender_open_id="open_1",
-        text="collect shops",
+        sender_union_id="union_1",
+        sender_user_id="user_1",
+        text="collect & shops",
+        mentions=[{"id": {"open_id": "mentioned_open"}, "name": "user1"}],
     )
 
 
-def _event_data(message_type: str = "text", content: str = '{"text":"hello"}'):
+def _event_data(
+    message_type: str = "text",
+    content: str = '{"text":"hello"}',
+    mentions=None,
+    message_id: str = "msg_1",
+):
     return types.SimpleNamespace(
         event=types.SimpleNamespace(
-            sender=types.SimpleNamespace(sender_id=types.SimpleNamespace(open_id="open_1")),
+            sender=types.SimpleNamespace(
+                sender_id=types.SimpleNamespace(
+                    open_id="open_1",
+                    union_id="union_1",
+                    user_id="user_1",
+                )
+            ),
             message=types.SimpleNamespace(
+                message_id=message_id,
+                root_id="root_1",
+                parent_id="parent_1",
                 message_type=message_type,
                 content=content,
+                mentions=mentions or [],
                 chat_id="chat_1",
-                message_id="msg_1",
                 chat_type="p2p",
+                create_time="1710000000000",
+                update_time="1710000001000",
             ),
         )
     )

@@ -7,7 +7,9 @@ LangChain's ``create_agent`` owns that loop through its graph runtime.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any, Iterable, Mapping, Sequence
+from xml.sax.saxutils import escape
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -21,12 +23,14 @@ try:
     from src.middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
     from src.subagents_manager import SubagentManager
     from src.tools import collect_tools
-    from src.prompts import SYSTEM_PROMPT, build_initial_messages
+    from src.prompts import SYSTEM_PROMPT
+    from src.tasks import with_app_probe_messages
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import DeviceContextCompressionMiddleware, RuntimeContextCaptureMiddleware
     from subagents_manager import SubagentManager
     from tools import collect_tools
-    from prompts import SYSTEM_PROMPT, build_initial_messages
+    from prompts import SYSTEM_PROMPT
+    from tasks import with_app_probe_messages
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -35,6 +39,47 @@ class AgentRunResult:
     output: str
     state: Mapping[str, Any]
     stopped_by: str
+
+
+class AgentRuntime:
+    """Reusable agent runtime that separates initialization from interaction."""
+
+    def __init__(
+        self,
+        *,
+        model: str | BaseChatModel,
+        tools: Sequence[Any] | None = None,
+        name: str | None = None,
+    ) -> None:
+        self.model = model
+        self.tools = list(tools or [])
+        self.name = name
+        self.agent = build_agent(model=model, tools=self.tools, name=name)
+
+    def run_turn(
+        self,
+        messages: Iterable[BaseMessage | Mapping[str, Any]],
+        *,
+        tools: Sequence[Any] | None = None,
+        max_iterations: int = 8,
+    ) -> AgentRunResult:
+        """Run one interaction turn without rebuilding the model or agent."""
+
+        if max_iterations < 1:
+            raise ValueError("max_iterations must be >= 1")
+        if tools:
+            raise ValueError("AgentRuntime tools are fixed at initialization to avoid rebuilding the agent.")
+
+        prepared_messages = with_app_probe_messages(list(messages))
+        state = self.agent.invoke(
+            {"messages": prepared_messages},
+            config={"recursion_limit": max_iterations},
+        )
+        return AgentRunResult(
+            output=_latest_text(state),
+            state=state,
+            stopped_by="create_agent",
+        )
 
 
 def build_agent(
@@ -105,25 +150,34 @@ def run_agent_loop(
 ) -> AgentRunResult:
     """Run one user turn through LangChain's standard ``create_agent`` harness."""
 
-    if max_iterations < 1:
-        raise ValueError("max_iterations must be >= 1")
-
-    agent = build_agent(model=model, 
-                        tools=tools, 
-                        name=name)
-    messages = list(history or [])
-    envs = build_initial_messages()
-    for content in envs:
-        messages.append({"role": "user", "content": content})
-    state = agent.invoke(
-        {"messages": messages},
-        config={"recursion_limit": max_iterations},
+    runtime = AgentRuntime(
+        model=model,
+        tools=tools,
+        name=name,
     )
+    return runtime.run_turn(history or [], max_iterations=max_iterations)
 
-    return AgentRunResult(
-        output=_latest_text(state),
-        state=state,
-        stopped_by="create_agent",
+
+def format_feishu_message_context(message: Any) -> str:
+    """Format a Feishu message as agent-readable XML context."""
+
+    mentions = getattr(message, "mentions", [])
+    return (
+        "<feishu_message>\n"
+        f"<message_id>{_xml_text(getattr(message, 'message_id', ''))}</message_id>\n"
+        f"<root_id>{_xml_text(getattr(message, 'root_id', ''))}</root_id>\n"
+        f"<parent_id>{_xml_text(getattr(message, 'parent_id', ''))}</parent_id>\n"
+        f"<chat_id>{_xml_text(getattr(message, 'chat_id', ''))}</chat_id>\n"
+        f"<chat_type>{_xml_text(getattr(message, 'chat_type', ''))}</chat_type>\n"
+        f"<message_type>{_xml_text(getattr(message, 'message_type', ''))}</message_type>\n"
+        f"<create_time>{_xml_text(getattr(message, 'create_time', ''))}</create_time>\n"
+        f"<update_time>{_xml_text(getattr(message, 'update_time', ''))}</update_time>\n"
+        f"<sender_open_id>{_xml_text(getattr(message, 'sender_open_id', ''))}</sender_open_id>\n"
+        f"<sender_union_id>{_xml_text(getattr(message, 'sender_union_id', ''))}</sender_union_id>\n"
+        f"<sender_user_id>{_xml_text(getattr(message, 'sender_user_id', ''))}</sender_user_id>\n"
+        f"<mentions>{_xml_text(json.dumps(mentions, ensure_ascii=False))}</mentions>\n"
+        f"<text>{_xml_text(getattr(message, 'text', ''))}</text>\n"
+        "</feishu_message>"
     )
 
 def _latest_text(state: Mapping[str, Any]) -> str:
@@ -140,3 +194,7 @@ def _latest_text(state: Mapping[str, Any]) -> str:
     if content is None:
         return ""
     return str(content)
+
+
+def _xml_text(value: Any) -> str:
+    return escape(str(value or ""))
