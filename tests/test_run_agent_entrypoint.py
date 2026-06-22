@@ -149,8 +149,8 @@ class RunAgentEntrypointTests(unittest.TestCase):
                     return types.SimpleNamespace(output="", interrupted=True)
                 return types.SimpleNamespace(output="normal output", interrupted=False)
 
-            def resume_turn(self, *, session_id, decisions, max_iterations):
-                calls["resume_turn"].append((session_id, decisions, max_iterations))
+            def resume_turn(self, *, session_id, user_input, max_iterations):
+                calls["resume_turn"].append((session_id, user_input, max_iterations))
                 self.pending[session_id] = False
                 return types.SimpleNamespace(output="resumed output", interrupted=False)
 
@@ -184,7 +184,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
             sys.argv = old_argv
 
         self.assertEqual(calls["run_turn"][0][0], [{"role": "user", "content": "start captcha task"}])
-        self.assertEqual(calls["resume_turn"], [("feishu:chat_1", [{"type": "approve"}], 1000)])
+        self.assertEqual(calls["resume_turn"], [("feishu:chat_1", "验证码已完成", 1000)])
         self.assertEqual(calls["run_turn"][1][0], [{"role": "user", "content": "验证码已完成"}])
         self.assertEqual(
             calls["sent"],

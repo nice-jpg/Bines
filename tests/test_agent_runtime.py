@@ -106,12 +106,6 @@ class AgentRuntimeTests(unittest.TestCase):
         class TodoListMiddleware(AgentMiddleware):
             pass
 
-        class HumanInTheLoopMiddleware(AgentMiddleware):
-            pass
-
-        class InterruptOnConfig:
-            pass
-
         class FakeAgent:
             def invoke(self, payload, config=None):
                 captured.setdefault("configs", []).append(config)
@@ -126,7 +120,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 if captured.get("interrupt_next"):
                     captured["interrupt_next"] = False
                     return {
-                        "__interrupt__": ["captcha approval required"],
+                        "__interrupt__": ["captcha user input required"],
                         "messages": payload["messages"],
                     }
                 return {
@@ -141,8 +135,6 @@ class AgentRuntimeTests(unittest.TestCase):
             return FakeAgent()
 
         langchain_agents.create_agent = create_agent
-        langchain_agents_middleware.HumanInTheLoopMiddleware = HumanInTheLoopMiddleware
-        langchain_agents_middleware.InterruptOnConfig = InterruptOnConfig
         langchain_agents_middleware.TodoListMiddleware = TodoListMiddleware
         langchain_agents_middleware_summarization.SummarizationMiddleware = SummarizationMiddleware
         langchain_agents_middleware_types.AgentMiddleware = AgentMiddleware
@@ -202,16 +194,19 @@ class AgentRuntimeTests(unittest.TestCase):
 
         runtime = agent.AgentRuntime(model="model", tools=[], name="runtime")
         interrupted = runtime.run_turn([{"role": "user", "content": "captcha"}], session_id="s1")
-        resumed = runtime.resume_turn(session_id="s1", decisions=[{"type": "approve"}])
+        resumed = runtime.resume_turn(session_id="s1", user_input="验证码已完成")
 
         self.assertTrue(interrupted.interrupted)
-        self.assertEqual(interrupted.interrupts, ["captcha approval required"])
+        self.assertEqual(interrupted.interrupts, ["captcha user input required"])
         self.assertFalse(resumed.interrupted)
         self.assertEqual(resumed.output, "resumed output")
         self.assertTrue(runtime.has_pending_interrupt("s1") is False)
         self.assertEqual(captured["configs"][0]["configurable"]["thread_id"], "s1")
         self.assertEqual(captured["configs"][1]["configurable"]["thread_id"], "s1")
-        self.assertEqual(captured["commands"][0].kwargs["resume"]["decisions"], [{"type": "approve"}])
+        self.assertEqual(
+            captured["commands"][0].kwargs["resume"],
+            {"decisions": [{"type": "respond", "message": "验证码已完成"}]},
+        )
 
 
 if __name__ == "__main__":

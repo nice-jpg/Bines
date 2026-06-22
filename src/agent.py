@@ -120,7 +120,7 @@ class AgentRuntime:
         self,
         *,
         session_id: str,
-        decisions: Sequence[Mapping[str, Any]] | None = None,
+        user_input: Any | None = None,
         max_iterations: int = 8,
     ) -> AgentRunResult:
         """Resume a previously interrupted LangGraph thread."""
@@ -131,9 +131,9 @@ class AgentRuntime:
         if not thread_id:
             raise ValueError(f"No interrupted agent workflow is pending for session: {session_id}")
 
-        resume_decisions = list(decisions or [{"type": "approve"}])
+        resume_message = "Human captcha authentication completed." if user_input is None else str(user_input)
         state = self.agent.invoke(
-            Command(resume={"decisions": resume_decisions}),
+            Command(resume={"decisions": [{"type": "respond", "message": resume_message}]}),
             config=_invoke_config(max_iterations, thread_id),
         )
         interrupts = _extract_interrupts(state)

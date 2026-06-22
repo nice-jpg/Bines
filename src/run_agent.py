@@ -15,8 +15,8 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from model import build_model
     from tools.common import OperationNoticeTool, create_common_tools
 
-CAPTCHA_RESUME_TEXT = "验证码已完成"
-CAPTCHA_PAUSED_MESSAGE = "验证码认证已暂停，请人工处理后回复 `验证码已完成`。"
+CAPTCHA_RESUME_TEXT = "done"
+CAPTCHA_PAUSED_MESSAGE = "验证码认证已暂停，请人工处理后回复 `done`。"
 
 
 class MutableNotifier:
@@ -56,7 +56,7 @@ def main() -> None:
         if message.text == CAPTCHA_RESUME_TEXT and runtime.has_pending_interrupt(session_id):
             result = runtime.resume_turn(
                 session_id=session_id,
-                decisions=[{"type": "approve"}],
+                user_input=message.text,
                 max_iterations=args.max_iterations,
             )
         else:
