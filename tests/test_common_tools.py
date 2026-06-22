@@ -53,6 +53,24 @@ class CommonToolTests(unittest.TestCase):
         self.assertEqual(logger.records[0][1], "swipe up on (200, 1200) to load more shops")
         self.assertEqual(logger.records[0][2]["current_path"], "meituan/外卖")
 
+    def test_notify_user_calls_optional_notifier_without_changing_result(self) -> None:
+        delivered = []
+        result = OperationNoticeTool(
+            logger=FakeLogger(),
+            notifier=delivered.append,
+        ).notify_user(
+            operation="tap '美食' on (320, 620) to load a subpage",
+            current_path="meituan",
+            reason="open configured secondary page",
+            next_page="美食",
+            next_path="meituan/美食",
+        )
+
+        self.assertIn("<operation_log>", result)
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("Operation: tap '美食' on (320, 620) to load a subpage", delivered[0])
+        self.assertIn("Next path: meituan/美食", delivered[0])
+
     def test_notify_user_records_expected_next_page_context(self) -> None:
         result = OperationNoticeTool(logger=FakeLogger()).notify_user(
             operation="tap '美食' on (320, 620) to load a subpage",

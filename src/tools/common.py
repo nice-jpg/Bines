@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from pathlib import Path
 import posixpath
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.tools import StructuredTool
 
@@ -24,9 +24,11 @@ class OperationNoticeTool:
         self,
         logger: WorkspaceEventLogger | None = None,
         max_entries: int = 30,
+        notifier: Callable[[str], None] | None = None,
     ) -> None:
         self.logger = logger or WorkspaceEventLogger()
         self.max_entries = max(1, int(max_entries))
+        self.notifier = notifier
         self._entries: deque[dict[str, str]] = deque(maxlen=self.max_entries)
 
     def notify_user(
@@ -61,7 +63,28 @@ class OperationNoticeTool:
                 "next_path": entry["next_path"],
             },
         )
+        self._notify(entry)
         return self._format_log()
+
+    def _notify(self, entry: dict[str, str]) -> None:
+        if self.notifier is None:
+            return
+        lines = [f"Operation: {entry['operation']}"]
+        if entry["current_path"]:
+            lines.append(f"Current path: {entry['current_path']}")
+        if entry["reason"]:
+            lines.append(f"Reason: {entry['reason']}")
+        if entry["next_page"] or entry["next_path"]:
+            lines.append(f"Next page: {entry['next_page'] or '-'}")
+            lines.append(f"Next path: {entry['next_path'] or '-'}")
+        try:
+            self.notifier("\n".join(lines))
+        except Exception as exc:  # noqa: BLE001 - communication errors must not interrupt tools.
+            self.logger.log(
+                "operation_notice_delivery_error",
+                "Failed to deliver operation notice.",
+                details={"error": str(exc), "operation": entry["operation"]},
+            )
 
     def _format_log(self) -> str:
         lines = ["<operation_log>"]

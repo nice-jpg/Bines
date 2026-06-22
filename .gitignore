@@ -10,3 +10,4 @@ deprecated
 
 workspace
 src/test.py
+src/channel/lark-samples-main/
