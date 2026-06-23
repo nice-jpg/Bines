@@ -37,6 +37,17 @@ class AdbClient:
             raise RuntimeError(output or f"adb command failed: {' '.join(args)}")
         return completed.stdout
 
+    def start_shell(self, command: str | list[str], *, root: bool = False) -> subprocess.Popen[str]:
+        args = self._adb_args(["shell", *self._shell_args(command, root=root)])
+        return self.popen_factory(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
     def exec_out(self, command: str | list[str]) -> bytes:
         args = self._adb_args(["exec-out", *self._plain_args(command)])
         completed = self.binary_runner(args)
@@ -105,12 +116,26 @@ class AdbClient:
             return helper_path
         helper_dir = dirname(helper_path.rstrip("/")) or "/data/local/tmp"
         self.shell(["mkdir", "-p", helper_dir])
-        result = self.runner(self._adb_args(["push", str(DEFAULT_LOCAL_INPUT_STREAM_HELPER), helper_path]))
-        if result.returncode != 0:
-            output = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(output or f"adb push failed: {helper_path}")
+        self.push_file(str(DEFAULT_LOCAL_INPUT_STREAM_HELPER), helper_path)
         self.shell(["chmod", "755", helper_path])
         return helper_path
+
+    def push_file(self, local_path: str, remote_path: str) -> str:
+        result = self.runner(self._adb_args(["push", str(local_path), str(remote_path)]))
+        if result.returncode != 0:
+            output = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(output or f"adb push failed: {remote_path}")
+        return remote_path
+
+    def reverse_tcp(self, device_port: int, host_port: int) -> str:
+        result = self.runner(self._adb_args(["reverse", f"tcp:{int(device_port)}", f"tcp:{int(host_port)}"]))
+        if result.returncode != 0:
+            output = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(output or f"adb reverse failed: tcp:{device_port} tcp:{host_port}")
+        return result.stdout
+
+    def remove_reverse_tcp(self, device_port: int) -> None:
+        self.runner(self._adb_args(["reverse", "--remove", f"tcp:{int(device_port)}"]))
 
     def start_input_stream(self, input_device: str, helper_path: str) -> subprocess.Popen[bytes]:
         command = " ".join([shlex.quote(helper_path), shlex.quote(input_device)])
@@ -121,6 +146,32 @@ class AdbClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
+
+    def start_android_agent(self, remote_jar: str, main_class: str, args: list[str]) -> subprocess.Popen[str]:
+        classpath = f"CLASSPATH={shlex.quote(remote_jar)}"
+        command = " ".join([classpath, "app_process", "/", shlex.quote(main_class), *(shlex.quote(str(arg)) for arg in args)])
+        return self.popen_factory(
+            self._adb_args(["shell", "su", "-c", command]),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+    def kill_processes_matching(self, pattern: str, *, root: bool = True) -> None:
+        quoted_pattern = shlex.quote(pattern)
+        command = (
+            "for pid in $(toybox pgrep -f "
+            + quoted_pattern
+            + " 2>/dev/null || pgrep -f "
+            + quoted_pattern
+            + " 2>/dev/null); do kill -9 \"$pid\" 2>/dev/null || true; done"
+        )
+        try:
+            self.shell(command, root=root)
+        except Exception:
+            return
 
     def _adb_args(self, args: list[str]) -> list[str]:
         adb_args = [self.config.adb_path]

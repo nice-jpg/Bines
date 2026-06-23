@@ -9,9 +9,13 @@ import time
 from typing import Any
 
 from .adb import AdbClient
+from .android_agent import AndroidShadowAgent
 from .config import SCHEMA_VERSION, ShadowConfig
 from .display import DisplayStreamer, create_display_streamer
 from .input_stream import InputCapabilities, InputStreamInjector, TouchEventEncoder, packet_to_base64, parse_input_capabilities
+from .process_log import log_event
+from .reachability import ReachabilityResult, check_android_udp_reachability, log_reachability_result
+from .webrtc import WebRtcGateway
 
 
 class ShadowSession:
@@ -22,11 +26,15 @@ class ShadowSession:
         adb: AdbClient | None = None,
         display_streamer: DisplayStreamer | None = None,
         input_injector: InputStreamInjector | None = None,
+        android_agent: AndroidShadowAgent | None = None,
+        webrtc_gateway: WebRtcGateway | None = None,
     ) -> None:
         self.config = config or ShadowConfig.from_env()
         self.adb = adb or AdbClient(self.config)
         self.display_streamer = display_streamer or create_display_streamer(self.adb, self.config)
         self.input_injector = input_injector or InputStreamInjector(self.adb, self.config)
+        self.android_agent = android_agent or (AndroidShadowAgent(self.adb, self.config) if self.is_webrtc_backend else None)
+        self.webrtc_gateway = webrtc_gateway or (WebRtcGateway(self.config) if self.is_webrtc_backend else None)
         self.screen_width = 0
         self.screen_height = 0
         self.device_info: dict[str, str] = {}
@@ -40,11 +48,18 @@ class ShadowSession:
         self._raw_events: list[str] = []
         self._recording_started_at = ""
         self._pointer_down: dict[int, dict[str, Any]] = {}
+        self._webrtc_error = ""
+        self._reachability: ReachabilityResult | None = None
+        self._adb_reverse_ports: list[int] = []
         self._lock = threading.RLock()
 
     @property
     def is_recording(self) -> bool:
         return self._recording_process is not None
+
+    @property
+    def is_webrtc_backend(self) -> bool:
+        return self.config.video_backend.strip().lower() in {"webrtc_h264", "scrcpy_h264"}
 
     def prepare(self) -> None:
         self.screen_width, self.screen_height = self.adb.screen_size()
@@ -57,12 +72,63 @@ class ShadowSession:
             self.input_capabilities = InputCapabilities.default_for_screen(self.screen_width, self.screen_height)
         self.touch_encoder = TouchEventEncoder(self.input_capabilities, (self.screen_width, self.screen_height))
         self.display_streamer.start()
+        if self.is_webrtc_backend:
+            self._start_webrtc_stack()
 
     def frame_png(self) -> bytes:
         return self.display_streamer.latest_frame(timeout=2)
 
     def mjpeg_frames(self):
         return self.display_streamer.mjpeg_frames()
+
+    def handle_webrtc_offer(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self.is_webrtc_backend or self.webrtc_gateway is None:
+            return {"ok": False, "error": "webrtc_h264 backend is not enabled"}
+        if self._webrtc_error:
+            return {"ok": False, "error": self._webrtc_error}
+        if payload.get("type") != "offer" or not isinstance(payload.get("sdp"), str):
+            return {"ok": False, "error": "payload must contain WebRTC offer sdp and type"}
+        answer = self.webrtc_gateway.offer({"type": payload["type"], "sdp": payload["sdp"]})
+        if "sdp" not in answer or "type" not in answer:
+            return {
+                "ok": False,
+                "error": answer.get("error") or "WebRTC gateway returned an invalid answer",
+                "gateway": answer,
+            }
+        return answer
+
+    def status(self) -> dict[str, Any]:
+        transport = self.config.webrtc_transport
+        effective_rtp_host = "127.0.0.1" if transport.strip().lower() == "adb_reverse_tcp" else self.config.webrtc_rtp_host
+        payload: dict[str, Any] = {
+            "ok": True,
+            "recording": self.is_recording,
+            "screen": {"width": self.screen_width, "height": self.screen_height},
+            "frame_interval_ms": self.config.frame_interval_ms,
+            "video": {
+                "backend": self.config.video_backend,
+                "format": self.config.video_format,
+                "fps": self.config.video_fps,
+                "quality": self.config.video_quality,
+                "scale": self.config.video_scale,
+                "max_size": self.config.video_max_size,
+                "bitrate": self.config.video_bitrate,
+                "i_frame_interval_ms": self.config.video_iframe_interval_ms,
+                "transport": transport,
+                "rtp_host": effective_rtp_host,
+                "rtp_listen_host": self.config.webrtc_rtp_listen_host,
+                "rtp_port": self.config.webrtc_rtp_port or (self.config.port + 1001),
+            },
+        }
+        if self.android_agent is not None:
+            payload["android_agent"] = self.android_agent.status()
+        if self.webrtc_gateway is not None:
+            payload["webrtc_gateway"] = self.webrtc_gateway.status()
+        if self._reachability is not None:
+            payload["reachability"] = self._reachability.to_dict()
+        if self._webrtc_error:
+            payload["webrtc_error"] = self._webrtc_error
+        return payload
 
     def start_recording(self) -> dict[str, Any]:
         with self._lock:
@@ -165,9 +231,48 @@ class ShadowSession:
         self.raw_browser_events.extend(audits)
         self.operations.extend(audits)
 
+    def _start_webrtc_stack(self) -> None:
+        self._webrtc_error = ""
+        try:
+            if self.android_agent is None or self.webrtc_gateway is None:
+                raise RuntimeError("webrtc_h264 backend requires Android agent and WebRTC gateway")
+            self.android_agent.validate_config()
+            if self.config.webrtc_transport.strip().lower() == "adb_reverse_tcp":
+                self._setup_adb_reverse()
+            else:
+                self._reachability = check_android_udp_reachability(self.adb, self.config)
+                log_reachability_result(self._reachability)
+            self.webrtc_gateway.start()
+            self.android_agent.start()
+        except Exception as exc:
+            self._webrtc_error = str(exc)
+            if self.android_agent is not None:
+                self.android_agent.stop()
+            if self.webrtc_gateway is not None:
+                self.webrtc_gateway.stop()
+            self._cleanup_adb_reverse()
+
+    def _setup_adb_reverse(self) -> None:
+        rtp_port = self.config.webrtc_rtp_port or (self.config.port + 1001)
+        log_event("shadow_root.adb_reverse", "setup start", device_port=rtp_port, host_port=rtp_port)
+        self.adb.reverse_tcp(rtp_port, rtp_port)
+        log_event("shadow_root.adb_reverse", "setup ok", device_port=rtp_port, host_port=rtp_port)
+        self._adb_reverse_ports.append(rtp_port)
+
+    def _cleanup_adb_reverse(self) -> None:
+        while self._adb_reverse_ports:
+            port = self._adb_reverse_ports.pop()
+            log_event("shadow_root.adb_reverse", "remove", device_port=port)
+            self.adb.remove_reverse_tcp(port)
+
     def close(self) -> None:
         if self.is_recording:
             self.stop_recording()
+        if self.webrtc_gateway is not None:
+            self.webrtc_gateway.stop()
+        if self.android_agent is not None:
+            self.android_agent.stop()
+        self._cleanup_adb_reverse()
         self.input_injector.stop()
         self.display_streamer.stop()
 

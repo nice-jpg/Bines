@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import tempfile
 import unittest
+import importlib.util
+from pathlib import Path
 from io import BytesIO, StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from nice_auther.shadow_root import AdbClient, ShadowConfig, ShadowSession
-from nice_auther.shadow_root.display import MjpegScreencapStreamer, create_display_streamer
+from nice_auther.shadow_root.android_agent import AndroidShadowAgent
+from nice_auther.shadow_root.display import MjpegScreencapStreamer, WebRtcH264Streamer, create_display_streamer
 from nice_auther.shadow_root.input_stream import ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_PRESSURE, PIAR_MAGIC, TouchEventEncoder, parse_input_capabilities
+from nice_auther.shadow_root.reachability import ReachabilityResult, log_reachability_result
 from nice_auther.shadow_root.run import _config_from_args
 from nice_auther.shadow_root.server import _ShadowHandler, _access_url_for_config, _bind_host_for_config, _payload_summary, start_shadow_session
 from nice_auther.shadow_root.tunnel import SshReverseTunnel, tunnel_access_url
 from nice_auther.shadow_root.web_ui import INDEX_HTML
+from nice_auther.shadow_root.webrtc import DEFAULT_WEBRTC_GATEWAY_PATH, WebRtcGateway
 
 
 class FakeStdin(BytesIO):
@@ -107,6 +113,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
                 "SHADOW_INPUT_DEVICE": "/dev/input/event9",
                 "SHADOW_FRAME_INTERVAL_MS": "250",
                 "SHADOW_TOKEN": "secret",
+                "SHADOW_VIDEO_BACKEND": "mjpeg_screencap",
             }
         )
 
@@ -118,17 +125,40 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertEqual(config.input_device, "/dev/input/event9")
         self.assertEqual(config.frame_interval_ms, 250)
         self.assertEqual(config.token, "secret")
+        self.assertEqual(ShadowConfig.from_env({}).video_backend, "webrtc_h264")
         self.assertEqual(ShadowConfig.from_env({"SHADOW_VIDEO_FPS": "12"}).video_fps, 12)
         quality_config = ShadowConfig.from_env(
             {
                 "SHADOW_VIDEO_FORMAT": "png",
                 "SHADOW_VIDEO_QUALITY": "70",
                 "SHADOW_VIDEO_SCALE": "0.4",
+                "SHADOW_VIDEO_MAX_SIZE": "540",
+                "SHADOW_VIDEO_BITRATE": "900k",
+                "SHADOW_VIDEO_IFRAME_INTERVAL_MS": "750",
+                "SHADOW_WEBRTC_GATEWAY_PATH": "/tmp/gateway",
+                "SHADOW_ANDROID_AGENT_JAR": "/tmp/agent.jar",
+                "SHADOW_ANDROID_AGENT_MAIN_CLASS": "example.Agent",
+                "SHADOW_WEBRTC_RTP_MTU": "1000",
+                "SHADOW_WEBRTC_TRANSPORT": "udp_rtp",
+                "SHADOW_WEBRTC_RTP_HOST": "192.168.1.10",
+                "SHADOW_WEBRTC_RTP_LISTEN_HOST": "0.0.0.0",
+                "SHADOW_ANDROID_AGENT_SELF_TEST_RTP": "true",
             }
         )
         self.assertEqual(quality_config.video_format, "png")
         self.assertEqual(quality_config.video_quality, 70)
         self.assertEqual(quality_config.video_scale, 0.4)
+        self.assertEqual(quality_config.video_max_size, 540)
+        self.assertEqual(quality_config.video_bitrate, "900k")
+        self.assertEqual(quality_config.video_iframe_interval_ms, 750)
+        self.assertEqual(quality_config.webrtc_gateway_path, "/tmp/gateway")
+        self.assertEqual(quality_config.android_agent_jar, "/tmp/agent.jar")
+        self.assertEqual(quality_config.android_agent_main_class, "example.Agent")
+        self.assertEqual(quality_config.webrtc_rtp_mtu, 1000)
+        self.assertEqual(quality_config.webrtc_transport, "udp_rtp")
+        self.assertEqual(quality_config.webrtc_rtp_host, "192.168.1.10")
+        self.assertEqual(quality_config.webrtc_rtp_listen_host, "0.0.0.0")
+        self.assertTrue(quality_config.android_agent_self_test_rtp)
         tunnel_config = ShadowConfig.from_env(
             {
                 "SHADOW_TUNNEL_ENABLED": "true",
@@ -290,7 +320,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
     def test_recording_start_stop_builds_bundle_with_getevent_log(self) -> None:
         runner = RecordingRunner()
         process = FakeProcess()
-        config = ShadowConfig(input_device="/dev/input/event3")
+        config = ShadowConfig(input_device="/dev/input/event3", video_backend="mjpeg_screencap")
         adb = AdbClient(config, runner=runner, popen_factory=lambda *args, **kwargs: process)
         session = ShadowSession(config, adb=adb)
 
@@ -338,7 +368,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
 
     def test_frame_png_uses_adb_exec_out(self) -> None:
         runner = RecordingBinaryRunner()
-        config = ShadowConfig()
+        config = ShadowConfig(video_backend="mjpeg_screencap")
         adb = AdbClient(config, binary_runner=runner)
         session = ShadowSession(config, adb=adb)
 
@@ -378,7 +408,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertIn('id="debugLog"', INDEX_HTML)
         self.assertIn('display: none', INDEX_HTML)
         self.assertIn('body.debug-on #debugLog', INDEX_HTML)
-        self.assertIn('body.debug-on #screen', INDEX_HTML)
+        self.assertIn('body.debug-on #screenVideo', INDEX_HTML)
         self.assertIn('function log(', INDEX_HTML)
         self.assertIn('if (!debugEnabled) return;', INDEX_HTML)
         self.assertIn('flush start', INDEX_HTML)
@@ -391,6 +421,18 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertIn('function setDebugEnabled(enabled)', INDEX_HTML)
         self.assertIn('document.body.classList.toggle("debug-on", debugEnabled)', INDEX_HTML)
         self.assertIn('debugToggle.onclick', INDEX_HTML)
+
+    def test_web_ui_uses_webrtc_video_and_datachannel(self) -> None:
+        self.assertIn('id="screenVideo"', INDEX_HTML)
+        self.assertIn('autoplay playsinline muted', INDEX_HTML)
+        self.assertIn('new RTCPeerConnection()', INDEX_HTML)
+        self.assertIn('createDataChannel("control"', INDEX_HTML)
+        self.assertIn('waitForIceGatheringComplete(peerConnection)', INDEX_HTML)
+        self.assertIn('POST ${path}', INDEX_HTML)
+        self.assertIn('"/webrtc/offer"', INDEX_HTML)
+        self.assertIn('controlChannel.readyState === "open"', INDEX_HTML)
+        self.assertIn('return await post("/events", {events});', INDEX_HTML)
+        self.assertIn('startMjpeg()', INDEX_HTML)
 
     def test_server_payload_summary_keeps_event_logs_compact(self) -> None:
         summary = _payload_summary(
@@ -447,7 +489,7 @@ add 1: /dev/input/event3
 
     def test_display_streamer_reuses_single_capture_worker(self) -> None:
         runner = RecordingBinaryRunner()
-        config = ShadowConfig(video_fps=30)
+        config = ShadowConfig(video_backend="mjpeg_screencap", video_fps=30)
         adb = AdbClient(config, binary_runner=runner)
         streamer = MjpegScreencapStreamer(adb, config)
 
@@ -467,7 +509,7 @@ add 1: /dev/input/event3
                 self.calls.append(args)
                 return subprocess.CompletedProcess(args, 0, sample_png(), b"")
 
-        config = ShadowConfig(video_format="jpeg", video_quality=30, video_scale=0.5, video_fps=30)
+        config = ShadowConfig(video_backend="mjpeg_screencap", video_format="jpeg", video_quality=30, video_scale=0.5, video_fps=30)
         adb = AdbClient(config, binary_runner=PngRunner())
         streamer = MjpegScreencapStreamer(adb, config)
 
@@ -482,11 +524,353 @@ add 1: /dev/input/event3
         with Image.open(BytesIO(frame)) as image:
             self.assertEqual(image.size, (10, 10))
 
-    def test_scrcpy_backend_currently_falls_back_to_mjpeg(self) -> None:
-        config = ShadowConfig(video_backend="scrcpy_h264")
+    def test_webrtc_backend_uses_webrtc_streamer(self) -> None:
+        config = ShadowConfig(video_backend="webrtc_h264")
         adb = AdbClient(config, binary_runner=RecordingBinaryRunner())
 
-        self.assertIsInstance(create_display_streamer(adb, config), MjpegScreencapStreamer)
+        self.assertIsInstance(create_display_streamer(adb, config), WebRtcH264Streamer)
+
+    def test_android_agent_pushes_and_starts_root_app_process(self) -> None:
+        runner = RecordingRunner()
+        started: list[list[str]] = []
+        process = FakeProcess()
+        with tempfile.TemporaryDirectory() as tmp:
+            agent_jar = Path(tmp) / "agent.jar"
+            agent_jar.write_bytes(b"jar")
+            config = ShadowConfig(
+                android_agent_jar=str(agent_jar),
+                video_max_size=540,
+                video_fps=20,
+                video_bitrate="900k",
+                video_iframe_interval_ms=750,
+                webrtc_rtp_port=19001,
+                webrtc_control_port=19002,
+                webrtc_rtp_mtu=900,
+                android_agent_self_test_rtp=True,
+            )
+            adb = AdbClient(config, runner=runner, popen_factory=lambda args, **kwargs: started.append(args) or process)
+
+            agent = AndroidShadowAgent(adb, config)
+            agent.start()
+
+        self.assertTrue(any(call[:2] == ["adb", "push"] and call[-1] == "/data/local/tmp/nice_shadow_agent.jar" for call in runner.calls))
+        command = " ".join(started[0])
+        self.assertIn("app_process", command)
+        self.assertIn("--transport adb_reverse_tcp", command)
+        self.assertIn("--max-size 540", command)
+        self.assertIn("--fps 20", command)
+        self.assertIn("--bitrate 900k", command)
+        self.assertIn("--rtp-port 19001", command)
+        self.assertIn("--control-port 19002", command)
+        self.assertIn("--mtu 900", command)
+        self.assertIn("--self-test-rtp", command)
+        agent.stop()
+        self.assertTrue(process.terminated)
+
+    def test_webrtc_gateway_builds_external_process_command(self) -> None:
+        started: list[list[str]] = []
+        process = FakeProcess()
+        with tempfile.TemporaryDirectory() as tmp:
+            gateway_bin = Path(tmp) / "gateway"
+            gateway_bin.write_text("#!/bin/sh\n")
+            config = ShadowConfig(webrtc_gateway_path=str(gateway_bin), port=8765)
+            gateway = WebRtcGateway(config, popen_factory=lambda args, **kwargs: started.append(args) or process)
+
+            gateway.start()
+
+        self.assertEqual(started[0][0], str(gateway_bin))
+        self.assertIn("--transport", started[0])
+        self.assertIn("adb_reverse_tcp", started[0])
+        self.assertIn("--rtp-port", started[0])
+        self.assertIn("--rtp-listen-host", started[0])
+        self.assertIn("0.0.0.0", started[0])
+        self.assertIn("9766", started[0])
+        self.assertIn("--events-url", started[0])
+        self.assertIn("http://127.0.0.1:8765/events", started[0])
+        gateway.stop()
+        self.assertTrue(process.terminated)
+
+    def test_webrtc_gateway_uses_bundled_build_path_by_default(self) -> None:
+        started: list[list[str]] = []
+        process = FakeProcess()
+        gateway = WebRtcGateway(ShadowConfig(port=8765), popen_factory=lambda args, **kwargs: started.append(args) or process)
+
+        with patch("nice_auther.shadow_root.webrtc.DEFAULT_WEBRTC_GATEWAY_PATH", Path("/tmp/nice-webrtc-gateway")):
+            with patch.object(Path, "exists", return_value=True):
+                gateway.start()
+
+        self.assertEqual(started[0][0], "/tmp/nice-webrtc-gateway")
+        gateway.stop()
+
+    def test_webrtc_gateway_default_binary_has_been_built(self) -> None:
+        self.assertTrue(DEFAULT_WEBRTC_GATEWAY_PATH.exists())
+
+    def test_session_webrtc_offer_is_forwarded_to_gateway(self) -> None:
+        class FakeGateway:
+            def __init__(self) -> None:
+                self.payloads: list[dict[str, str]] = []
+
+            def offer(self, payload: dict[str, str]) -> dict[str, str]:
+                self.payloads.append(payload)
+                return {"type": "answer", "sdp": "answer-sdp"}
+
+            def status(self) -> dict[str, object]:
+                return {"running": True}
+
+            def stop(self) -> None:
+                return
+
+        gateway = FakeGateway()
+        session = ShadowSession(ShadowConfig(), adb=AdbClient(ShadowConfig()), webrtc_gateway=gateway)
+
+        result = session.handle_webrtc_offer({"type": "offer", "sdp": "offer-sdp"})
+
+        self.assertEqual(result, {"type": "answer", "sdp": "answer-sdp"})
+        self.assertEqual(gateway.payloads, [{"type": "offer", "sdp": "offer-sdp"}])
+
+    def test_session_webrtc_offer_returns_gateway_error_without_invalid_sdp(self) -> None:
+        class FakeGateway:
+            def offer(self, payload: dict[str, str]) -> dict[str, object]:
+                return {"ok": False, "status": 501, "error": "Pion gateway implementation required"}
+
+            def status(self) -> dict[str, object]:
+                return {"running": True}
+
+            def stop(self) -> None:
+                return
+
+        session = ShadowSession(ShadowConfig(), adb=AdbClient(ShadowConfig()), webrtc_gateway=FakeGateway())
+
+        result = session.handle_webrtc_offer({"type": "offer", "sdp": "offer-sdp"})
+
+        self.assertEqual(result["ok"], False)
+        self.assertIn("Pion gateway", result["error"])
+        self.assertNotIn("sdp", result)
+
+    def test_session_status_includes_webrtc_state(self) -> None:
+        class FakeGateway:
+            def status(self) -> dict[str, object]:
+                return {"running": True, "rtp_port": 9766}
+
+            def stop(self) -> None:
+                return
+
+        session = ShadowSession(ShadowConfig(), adb=AdbClient(ShadowConfig()), webrtc_gateway=FakeGateway())
+        session.screen_width = 1080
+        session.screen_height = 2400
+
+        status = session.status()
+
+        self.assertEqual(status["video"]["backend"], "webrtc_h264")
+        self.assertEqual(status["video"]["max_size"], 720)
+        self.assertEqual(status["video"]["bitrate"], "2M")
+        self.assertEqual(status["video"]["rtp_listen_host"], "0.0.0.0")
+        self.assertEqual(status["webrtc_gateway"]["rtp_port"], 9766)
+
+    def test_session_webrtc_prepare_runs_reachability_probe(self) -> None:
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.started = False
+                self.stopped = False
+
+            def validate_config(self) -> None:
+                return
+
+            def start(self) -> None:
+                self.started = True
+
+            def stop(self) -> None:
+                self.stopped = True
+
+            def status(self) -> dict[str, object]:
+                return {"running": self.started}
+
+        class FakeGateway:
+            def __init__(self) -> None:
+                self.started = False
+                self.stopped = False
+
+            def start(self) -> None:
+                self.started = True
+
+            def stop(self) -> None:
+                self.stopped = True
+
+            def status(self) -> dict[str, object]:
+                return {"running": self.started}
+
+        agent = FakeAgent()
+        gateway = FakeGateway()
+        result = ReachabilityResult(
+            ok=True,
+            probe="probe",
+            target_host="192.168.1.20",
+            target_port=9766,
+            listen_host="0.0.0.0",
+            elapsed_ms=3,
+            received_from="192.168.1.30:40000",
+            bytes_received=5,
+            command="nc",
+        )
+        runner = RecordingRunner()
+        config = ShadowConfig(android_agent_jar="/tmp/agent.jar", webrtc_transport="udp_rtp")
+        adb = AdbClient(config, runner=runner)
+        session = ShadowSession(config, adb=adb, android_agent=agent, webrtc_gateway=gateway)
+
+        with (
+            patch("nice_auther.shadow_root.session.check_android_udp_reachability", return_value=result) as probe,
+            patch("nice_auther.shadow_root.session.log_reachability_result") as log_probe,
+        ):
+            session.prepare()
+
+        probe.assert_called_once_with(adb, config)
+        log_probe.assert_called_once_with(result)
+        self.assertTrue(agent.started)
+        self.assertTrue(gateway.started)
+        self.assertEqual(session.status()["reachability"]["ok"], True)
+        self.assertEqual(session.status()["reachability"]["target_host"], "192.168.1.20")
+
+    def test_session_webrtc_tcp_transport_sets_up_adb_reverse(self) -> None:
+        class FakeAgent:
+            def __init__(self) -> None:
+                self.started = False
+
+            def validate_config(self) -> None:
+                return
+
+            def start(self) -> None:
+                self.started = True
+
+            def stop(self) -> None:
+                return
+
+            def status(self) -> dict[str, object]:
+                return {"running": self.started}
+
+        class FakeGateway:
+            def __init__(self) -> None:
+                self.started = False
+
+            def start(self) -> None:
+                self.started = True
+
+            def stop(self) -> None:
+                return
+
+            def status(self) -> dict[str, object]:
+                return {"running": self.started}
+
+        runner = RecordingRunner()
+        config = ShadowConfig(android_agent_jar="/tmp/agent.jar", port=8765, webrtc_transport="adb_reverse_tcp")
+        adb = AdbClient(config, runner=runner)
+        session = ShadowSession(config, adb=adb, android_agent=FakeAgent(), webrtc_gateway=FakeGateway())
+
+        session.prepare()
+        session.close()
+
+        self.assertIn(["adb", "reverse", "tcp:9766", "tcp:9766"], runner.calls)
+        self.assertIn(["adb", "reverse", "--remove", "tcp:9766"], runner.calls)
+
+    def test_reachability_log_outputs_json(self) -> None:
+        result = ReachabilityResult(
+            ok=False,
+            probe="probe",
+            target_host="127.0.0.1",
+            target_port=9766,
+            listen_host="0.0.0.0",
+            elapsed_ms=1500,
+            error="timeout waiting for Android UDP probe",
+            command="nc",
+        )
+
+        with patch("sys.stdout", new_callable=StringIO) as stdout:
+            log_reachability_result(result)
+
+        payload = stdout.getvalue()
+        self.assertIn('"component": "shadow_root.reachability"', payload)
+        self.assertIn('"ok": false', payload)
+        self.assertIn('"target_host": "127.0.0.1"', payload)
+
+    def test_webrtc_missing_agent_jar_does_not_abort_http_session(self) -> None:
+        runner = RecordingRunner()
+        config = ShadowConfig()
+        adb = AdbClient(config, runner=runner)
+        session = ShadowSession(config, adb=adb)
+
+        session.prepare()
+        status = session.status()
+        offer_result = session.handle_webrtc_offer({"type": "offer", "sdp": "offer-sdp"})
+
+        self.assertIn("SHADOW_ANDROID_AGENT_JAR is required", status["webrtc_error"])
+        self.assertEqual(offer_result["ok"], False)
+        self.assertIn("SHADOW_ANDROID_AGENT_JAR is required", offer_result["error"])
+
+    def test_web_ui_displays_webrtc_configuration_error(self) -> None:
+        self.assertIn('data.webrtc_error', INDEX_HTML)
+        self.assertIn('state.textContent = "webrtc config error"', INDEX_HTML)
+        self.assertIn('WebRTC unavailable', INDEX_HTML)
+
+    def test_android_agent_build_script_reports_missing_sdk(self) -> None:
+        build_script = Path(__file__).resolve().parents[1] / "nice_auther" / "shadow_root" / "android_agent_project" / "build_android_agent.py"
+        spec = importlib.util.spec_from_file_location("build_android_agent", build_script)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.dict("os.environ", {"ANDROID_HOME": "", "ANDROID_SDK_ROOT": ""}, clear=False),
+                patch.object(module.Path, "home", return_value=Path(tmp)),
+                patch("sys.stderr", new_callable=StringIO) as stderr,
+            ):
+                result = module.main()
+
+        self.assertEqual(result, 2)
+        self.assertIn("ANDROID_HOME or ANDROID_SDK_ROOT is required", stderr.getvalue())
+
+    def test_webrtc_gateway_build_script_exists(self) -> None:
+        build_script = Path(__file__).resolve().parents[1] / "nice_auther" / "shadow_root" / "webrtc_gateway" / "build_gateway.py"
+
+        self.assertTrue(build_script.exists())
+
+    def test_android_agent_project_contains_real_rtp_sender_logic(self) -> None:
+        root = Path(__file__).resolve().parents[1] / "nice_auther" / "shadow_root" / "android_agent_project" / "src" / "nice" / "auther" / "shadow"
+
+        packetizer = (root / "H264RtpPacketizer.java").read_text()
+        annexb = (root / "H264AnnexB.java").read_text()
+        sender = (root / "UdpRtpSender.java").read_text()
+        tcp_sender = (root / "TcpRtpSender.java").read_text()
+        control = (root / "ControlServer.java").read_text()
+        encoder = (root / "H264SurfaceEncoder.java").read_text()
+        main = (root / "AgentMain.java").read_text()
+        config = (root / "AgentConfig.java").read_text()
+        mirror = (root / "DisplayMirror.java").read_text()
+
+        self.assertIn("FU-A", packetizer)
+        self.assertIn("nalSummary", packetizer)
+        self.assertIn("splitAvccNalUnits", annexb)
+        self.assertIn("concat(byte[] first, byte[] second)", annexb)
+        self.assertIn("packet[1] = (byte) ((marker ? 0x80 : 0) | 96)", packetizer)
+        self.assertIn("DatagramSocket", sender)
+        self.assertIn("sendAnnexBFrame", sender)
+        self.assertIn("new Socket(host, port)", tcp_sender)
+        self.assertIn("setTcpNoDelay(true)", tcp_sender)
+        self.assertIn("output.write((length >>> 8) & 0xff)", tcp_sender)
+        self.assertIn("consumeIdrRequest", control)
+        self.assertIn("MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface", encoder)
+        self.assertIn("PARAMETER_KEY_REQUEST_SYNC_FRAME", encoder)
+        self.assertIn("BUFFER_FLAG_CODEC_CONFIG", encoder)
+        self.assertIn("frameSink.onFrame(frame, info.presentationTimeUs, true)", encoder)
+        self.assertIn("--self-test-rtp", config)
+        self.assertIn("--transport", config)
+        self.assertIn("TcpRtpSender", main)
+        self.assertIn("sendSelfTestFrame", main)
+        self.assertIn("SurfaceControl", mirror)
+        self.assertIn("DisplayManager", mirror)
+        self.assertIn("createVirtualDisplay", mirror)
+        self.assertIn("setDisplaySurface", mirror)
+        self.assertIn("setDisplayProjection", mirror)
+        self.assertIn("IDisplayManager$Stub", mirror)
+        self.assertIn("DisplayMirror.create(inputSurface", main)
 
 
 if __name__ == "__main__":

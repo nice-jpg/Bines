@@ -1,0 +1,41 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"net/http"
+
+	gateway "bines/nice_auther/shadow_root/webrtc_gateway"
+)
+
+func main() {
+	listenHost := flag.String("listen-host", "127.0.0.1", "HTTP signaling listen host")
+	listenPort := flag.Int("listen-port", 9765, "HTTP signaling listen port")
+	transport := flag.String("transport", "adb_reverse_tcp", "Android-to-gateway media transport: adb_reverse_tcp or udp_rtp")
+	rtpListenHost := flag.String("rtp-listen-host", "0.0.0.0", "H.264 RTP listen host")
+	rtpPort := flag.Int("rtp-port", 9766, "H.264 RTP listen port")
+	agentControlPort := flag.Int("agent-control-port", 9767, "Android agent control port")
+	eventsURL := flag.String("events-url", "", "shadow_root /events URL")
+	eventsToken := flag.String("events-token", "", "shadow_root token")
+	flag.Parse()
+
+	server := gateway.New(gateway.Config{
+		ListenHost:       *listenHost,
+		ListenPort:       *listenPort,
+		Transport:        *transport,
+		RTPListenHost:    *rtpListenHost,
+		RTPPort:          *rtpPort,
+		AgentControlPort: *agentControlPort,
+		EventsURL:        *eventsURL,
+		EventsToken:      *eventsToken,
+	})
+	if err := server.StartMedia(); err != nil {
+		log.Fatal(err)
+	}
+	defer server.Close()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/offer", server.ServeOffer)
+	addr := fmt.Sprintf("%s:%d", *listenHost, *listenPort)
+	log.Fatal(http.ListenAndServe(addr, mux))
+}

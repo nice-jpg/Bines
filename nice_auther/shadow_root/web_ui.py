@@ -11,8 +11,9 @@ INDEX_HTML = """<!doctype html>
     body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; touch-action: none; }
     header { height: 48px; display: flex; gap: 8px; align-items: center; padding: 0 12px; background: #1f2933; }
     button { height: 32px; padding: 0 12px; border: 0; border-radius: 4px; background: #e5e7eb; color: #111; }
-    #screen { display: block; max-width: 100vw; max-height: calc(100vh - 48px); margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
-    body.debug-on #screen { max-height: calc(100vh - 188px); }
+    #screenVideo, #screenImage { display: none; max-width: 100vw; max-height: calc(100vh - 48px); margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; background: #000; }
+    #screenVideo.active, #screenImage.active { display: block; }
+    body.debug-on #screenVideo, body.debug-on #screenImage { max-height: calc(100vh - 188px); }
     #state { margin-left: auto; font-size: 13px; color: #cbd5e1; }
     #debugLog { display: none; position: fixed; left: 0; right: 0; bottom: 0; height: 140px; overflow: auto; box-sizing: border-box; padding: 6px 8px; background: rgba(0,0,0,.86); color: #d1fae5; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; border-top: 1px solid #374151; z-index: 10; }
     body.debug-on #debugLog { display: block; }
@@ -27,12 +28,14 @@ INDEX_HTML = """<!doctype html>
     <button id="debugToggle">Debug</button>
     <span id="state">idle</span>
   </header>
-  <img id="screen" draggable="false">
+  <video id="screenVideo" autoplay playsinline muted></video>
+  <img id="screenImage" draggable="false">
   <div id="debugLog" aria-live="polite"></div>
   <script>
     const params = new URLSearchParams(location.search);
     const token = params.get("token") || "";
-    const screen = document.getElementById("screen");
+    const screenVideo = document.getElementById("screenVideo");
+    const screenImage = document.getElementById("screenImage");
     const state = document.getElementById("state");
     const debugLog = document.getElementById("debugLog");
     const debugToggle = document.getElementById("debugToggle");
@@ -41,10 +44,13 @@ INDEX_HTML = """<!doctype html>
     const debugLines = [];
     const debugStorageKey = "nice_auther_debug";
     const gestureFlushTimeoutMs = 2500;
+    let activeScreen = screenVideo;
     let debugEnabled = params.get("debug") === "1" || params.get("debug") === "true" || localStorage.getItem(debugStorageKey) === "1";
     let flushScheduled = false;
     let flushing = false;
     let flushTimer = 0;
+    let peerConnection = null;
+    let controlChannel = null;
 
     function log(message, data = null, level = "info") {
       if (!debugEnabled) return;
@@ -102,13 +108,15 @@ INDEX_HTML = """<!doctype html>
         const data = await res.json();
         state.textContent = data.recording ? "recording" : "idle";
         log("status", data);
+        return data;
       } catch (err) {
         log("status failed", {name: err.name, message: err.message}, "error");
+        return {ok: false, video: {backend: "webrtc_h264"}};
       }
     }
 
     function payloadFromPoint(point, type, pointerId, timeStamp, pressure = 0.5) {
-      const rect = screen.getBoundingClientRect();
+      const rect = activeScreen.getBoundingClientRect();
       return {
         type,
         pointer_id: pointerId || 1,
@@ -189,6 +197,14 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    async function sendEvents(events) {
+      if (controlChannel && controlChannel.readyState === "open") {
+        controlChannel.send(JSON.stringify({events}));
+        return {ok: true, transport: "datachannel", events: events.length};
+      }
+      return await post("/events", {events});
+    }
+
     async function flushEvents() {
       if (flushing) return;
       flushScheduled = false;
@@ -197,12 +213,73 @@ INDEX_HTML = """<!doctype html>
       const events = pendingEvents.splice(0, pendingEvents.length);
       log("flush start", {events: events.length, first: events[0], last: events[events.length - 1]});
       try {
-        const result = await post("/events", {events});
+        const result = await sendEvents(events);
         log("flush complete", result);
       } finally {
         flushing = false;
         if (pendingEvents.length) scheduleGestureFlush(activePointers.size === 0);
       }
+    }
+
+    function bindScreenEvents(target) {
+      target.addEventListener("contextmenu", ev => ev.preventDefault());
+      if (window.PointerEvent) {
+        log("binding pointer events");
+        target.addEventListener("pointerdown", ev => { target.setPointerCapture(ev.pointerId); queuePointerEvent(ev, "pointerdown"); }, {passive: false});
+        target.addEventListener("pointermove", ev => queuePointerEvent(ev, "pointermove"), {passive: false});
+        target.addEventListener("pointerup", ev => queuePointerEvent(ev, "pointerup"), {passive: false});
+        target.addEventListener("pointercancel", ev => queuePointerEvent(ev, "pointercancel"), {passive: false});
+      } else {
+        log("binding touch events");
+        target.addEventListener("touchstart", ev => queueTouchEvent(ev, "pointerdown"), {passive: false});
+        target.addEventListener("touchmove", ev => queueTouchEvent(ev, "pointermove"), {passive: false});
+        target.addEventListener("touchend", ev => queueTouchEvent(ev, "pointerup"), {passive: false});
+        target.addEventListener("touchcancel", ev => queueTouchEvent(ev, "pointercancel"), {passive: false});
+      }
+    }
+
+    function waitForIceGatheringComplete(pc) {
+      if (pc.iceGatheringState === "complete") return Promise.resolve();
+      return new Promise(resolve => {
+        const done = () => {
+          if (pc.iceGatheringState === "complete") {
+            pc.removeEventListener("icegatheringstatechange", done);
+            resolve();
+          }
+        };
+        pc.addEventListener("icegatheringstatechange", done);
+      });
+    }
+
+    async function startWebRtc() {
+      activeScreen = screenVideo;
+      screenVideo.classList.add("active");
+      screenImage.classList.remove("active");
+      peerConnection = new RTCPeerConnection();
+      controlChannel = peerConnection.createDataChannel("control", {ordered: true});
+      controlChannel.onopen = () => log("DataChannel open");
+      controlChannel.onclose = () => log("DataChannel closed", null, "warn");
+      peerConnection.ontrack = ev => {
+        screenVideo.srcObject = ev.streams[0];
+        void screenVideo.play();
+        log("WebRTC track", {kind: ev.track.kind});
+      };
+      peerConnection.addTransceiver("video", {direction: "recvonly"});
+      const offer = await peerConnection.createOffer();
+      await peerConnection.setLocalDescription(offer);
+      await waitForIceGatheringComplete(peerConnection);
+      const answer = await post("/webrtc/offer", peerConnection.localDescription);
+      if (!answer.sdp) throw new Error(answer.error || "WebRTC answer missing sdp");
+      await peerConnection.setRemoteDescription(answer);
+      log("WebRTC connected", {type: answer.type});
+    }
+
+    function startMjpeg() {
+      activeScreen = screenImage;
+      screenImage.classList.add("active");
+      screenVideo.classList.remove("active");
+      screenImage.src = "/stream.mjpg" + (token ? "?token=" + encodeURIComponent(token) : "");
+      log("stream started", {src: screenImage.src});
     }
 
     document.getElementById("start").onclick = async () => { log("start clicked"); await post("/recording/start"); await refreshStatus(); };
@@ -214,26 +291,21 @@ INDEX_HTML = """<!doctype html>
       log("recording bundle", {hasBundle: !!result.bundle, operations: result.bundle && result.bundle.operations ? result.bundle.operations.length : 0});
     };
     debugToggle.onclick = () => setDebugEnabled(!debugEnabled);
-    screen.addEventListener("contextmenu", ev => ev.preventDefault());
     setDebugEnabled(debugEnabled);
     log("page loaded", {pointerEvent: !!window.PointerEvent, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints || 0});
-    if (window.PointerEvent) {
-      log("binding pointer events");
-      screen.addEventListener("pointerdown", ev => { screen.setPointerCapture(ev.pointerId); queuePointerEvent(ev, "pointerdown"); }, {passive: false});
-      screen.addEventListener("pointermove", ev => queuePointerEvent(ev, "pointermove"), {passive: false});
-      screen.addEventListener("pointerup", ev => queuePointerEvent(ev, "pointerup"), {passive: false});
-      screen.addEventListener("pointercancel", ev => queuePointerEvent(ev, "pointercancel"), {passive: false});
-    } else {
-      log("binding touch events");
-      screen.addEventListener("touchstart", ev => queueTouchEvent(ev, "pointerdown"), {passive: false});
-      screen.addEventListener("touchmove", ev => queueTouchEvent(ev, "pointermove"), {passive: false});
-      screen.addEventListener("touchend", ev => queueTouchEvent(ev, "pointerup"), {passive: false});
-      screen.addEventListener("touchcancel", ev => queueTouchEvent(ev, "pointercancel"), {passive: false});
-    }
-
-    screen.src = "/stream.mjpg" + (token ? "?token=" + encodeURIComponent(token) : "");
-    log("stream started", {src: screen.src});
-    refreshStatus();
+    bindScreenEvents(screenVideo);
+    bindScreenEvents(screenImage);
+    refreshStatus().then(data => {
+      if (data.video && data.video.backend === "mjpeg_screencap") startMjpeg();
+      else if (data.webrtc_error) {
+        state.textContent = "webrtc config error";
+        log("WebRTC unavailable", {error: data.webrtc_error}, "error");
+      }
+      else startWebRtc().catch(err => {
+        state.textContent = "webrtc error";
+        log("WebRTC failed", {name: err.name, message: err.message}, "error");
+      });
+    });
   </script>
 </body>
 </html>

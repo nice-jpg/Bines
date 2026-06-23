@@ -52,21 +52,9 @@ class _ShadowHandler(BaseHTTPRequestHandler):
             self._write_body(frame)
             self._log("GET frame ok", path=path, bytes=len(frame), ms=_elapsed_ms(started))
         elif path == "/status":
-            session = self.server.session
-            payload = {
-                "ok": True,
-                "recording": session.is_recording,
-                "screen": {"width": session.screen_width, "height": session.screen_height},
-                "frame_interval_ms": session.config.frame_interval_ms,
-                "video": {
-                    "backend": session.config.video_backend,
-                    "format": session.config.video_format,
-                    "quality": session.config.video_quality,
-                    "scale": session.config.video_scale,
-                },
-            }
+            payload = self.server.session.status()
             self._send_json(payload)
-            self._log("GET status ok", path=path, recording=session.is_recording, ms=_elapsed_ms(started))
+            self._log("GET status ok", path=path, recording=self.server.session.is_recording, ms=_elapsed_ms(started))
         else:
             self._log("GET not found", path=path)
             self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
@@ -97,6 +85,11 @@ class _ShadowHandler(BaseHTTPRequestHandler):
                 result = self.server.session.handle_pointer_batch(payload)
                 self._send_json(result)
                 self._log("POST events ok", path=path, result=result, ms=_elapsed_ms(started))
+            elif path == "/webrtc/offer":
+                result = self.server.session.handle_webrtc_offer(payload)
+                status = HTTPStatus.OK if "sdp" in result else HTTPStatus.BAD_REQUEST
+                self._send_json(result, status)
+                self._log("POST webrtc offer ok", path=path, keys=sorted(result.keys()), ms=_elapsed_ms(started))
             else:
                 self._log("POST not found", path=path)
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)

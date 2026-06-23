@@ -22,6 +22,19 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
     parser.add_argument("--bind-host", help="Local address to bind, usually 127.0.0.1 or 0.0.0.0.")
     parser.add_argument("--port", type=int, help="Local shadow_root HTTP port.")
     parser.add_argument("--token", help="Optional browser/API access token.")
+    parser.add_argument("--video-backend", choices=["webrtc_h264", "mjpeg_screencap"], help="Display backend.")
+    parser.add_argument("--webrtc-gateway-path", help="Path to the external WebRTC gateway binary.")
+    parser.add_argument("--android-agent-jar", help="Path to the Android H.264 shadow agent jar.")
+    parser.add_argument("--android-agent-main-class", help="Android app_process main class.")
+    parser.add_argument("--video-max-size", type=int, help="Maximum encoded video dimension.")
+    parser.add_argument("--video-fps", type=int, help="Maximum encoded video FPS.")
+    parser.add_argument("--video-bitrate", help='Encoded video bitrate, for example "2M" or "900k".')
+    parser.add_argument("--video-iframe-interval-ms", type=int, help="H.264 IDR/GOP interval in milliseconds.")
+    parser.add_argument("--webrtc-transport", choices=["adb_reverse_tcp", "udp_rtp"], help="Android-to-gateway media transport.")
+    parser.add_argument("--webrtc-rtp-host", help="Host/IP the Android agent should send RTP to.")
+    parser.add_argument("--webrtc-rtp-listen-host", help="Local host/IP the gateway should bind for RTP, usually 0.0.0.0.")
+    parser.add_argument("--webrtc-rtp-mtu", type=int, help="RTP packet MTU for Android H.264 sender.")
+    parser.add_argument("--android-agent-self-test-rtp", action="store_true", help="Start agent in one-shot synthetic RTP packet test mode.")
     parser.add_argument("--tunnel", action="store_true", help="Enable SSH reverse tunnel.")
     parser.add_argument("--tunnel-ssh-host", help="SSH target, for example user@example.com.")
     parser.add_argument("--tunnel-ssh-port", type=int, help="SSH port. Defaults to 22.")
@@ -38,6 +51,18 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
         "bind_host": args.bind_host,
         "port": args.port,
         "token": args.token,
+        "video_backend": args.video_backend,
+        "webrtc_gateway_path": args.webrtc_gateway_path,
+        "android_agent_jar": args.android_agent_jar,
+        "android_agent_main_class": args.android_agent_main_class,
+        "video_max_size": args.video_max_size,
+        "video_fps": args.video_fps,
+        "video_bitrate": args.video_bitrate,
+        "video_iframe_interval_ms": args.video_iframe_interval_ms,
+        "webrtc_transport": args.webrtc_transport,
+        "webrtc_rtp_host": args.webrtc_rtp_host,
+        "webrtc_rtp_listen_host": args.webrtc_rtp_listen_host,
+        "webrtc_rtp_mtu": args.webrtc_rtp_mtu,
         "tunnel_ssh_host": args.tunnel_ssh_host,
         "tunnel_ssh_port": args.tunnel_ssh_port,
         "tunnel_ssh_key": args.tunnel_ssh_key,
@@ -48,6 +73,8 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
     }
     if args.tunnel:
         overrides["tunnel_enabled"] = True
+    if args.android_agent_self_test_rtp:
+        overrides["android_agent_self_test_rtp"] = True
     return replace(config, **{key: value for key, value in overrides.items() if value is not None})
 
 

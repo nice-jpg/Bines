@@ -113,26 +113,26 @@ class MjpegScreencapStreamer(DisplayStreamer):
             self._stop.wait(max(0.0, delay - elapsed))
 
 
-class ScrcpyH264Streamer(DisplayStreamer):
+class WebRtcH264Streamer(DisplayStreamer):
     def start(self) -> None:
-        raise NotImplementedError("scrcpy_h264 backend is reserved but not implemented yet")
+        return
 
     def stop(self) -> None:
         return
 
     def latest_frame(self, timeout: float | None = None) -> bytes:
-        raise NotImplementedError("scrcpy_h264 backend does not expose PNG frames")
+        raise RuntimeError("webrtc_h264 backend does not expose PNG frames")
 
     def mjpeg_frames(self) -> Iterator[bytes]:
-        raise NotImplementedError("scrcpy_h264 backend does not expose MJPEG frames")
+        raise RuntimeError("webrtc_h264 backend does not expose MJPEG frames")
 
 
 def create_display_streamer(adb: AdbClient, config: ShadowConfig) -> DisplayStreamer:
     backend = config.video_backend.strip().lower()
     if backend == "mjpeg_screencap":
         return MjpegScreencapStreamer(adb, config)
-    if backend == "scrcpy_h264":
-        return MjpegScreencapStreamer(adb, config)
+    if backend in {"webrtc_h264", "scrcpy_h264"}:
+        return WebRtcH264Streamer()
     raise ValueError(f"unsupported video backend: {config.video_backend}")
 
 
