@@ -3,13 +3,16 @@ from __future__ import annotations
 import subprocess
 import sys
 import unittest
-from io import BytesIO
+from io import BytesIO, StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from nice_auther.shadow_root import AdbClient, ShadowConfig, ShadowSession
 from nice_auther.shadow_root.display import MjpegScreencapStreamer, create_display_streamer
 from nice_auther.shadow_root.input_stream import ABS_MT_POSITION_X, ABS_MT_POSITION_Y, PIAR_MAGIC, TouchEventEncoder, parse_input_capabilities
-from nice_auther.shadow_root.server import _ShadowHandler
+from nice_auther.shadow_root.run import _config_from_args
+from nice_auther.shadow_root.server import _ShadowHandler, _access_url_for_config, _bind_host_for_config, start_shadow_session
+from nice_auther.shadow_root.tunnel import SshReverseTunnel, tunnel_access_url
 
 
 class FakeStdin(BytesIO):
@@ -43,6 +46,9 @@ class FakeProcess:
 
     def kill(self) -> None:
         self.killed = True
+
+    def poll(self) -> None:
+        return None
 
 
 class RecordingRunner:
@@ -93,6 +99,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         config = ShadowConfig.from_env(
             {
                 "SHADOW_HOST": "0.0.0.0",
+                "SHADOW_BIND_HOST": "127.0.0.1",
                 "SHADOW_PORT": "9000",
                 "SHADOW_ADB_PATH": "/opt/adb",
                 "SHADOW_ADB_SERIAL": "device-1",
@@ -103,6 +110,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         )
 
         self.assertEqual(config.host, "0.0.0.0")
+        self.assertEqual(config.bind_host, "127.0.0.1")
         self.assertEqual(config.port, 9000)
         self.assertEqual(config.adb_path, "/opt/adb")
         self.assertEqual(config.adb_serial, "device-1")
@@ -120,6 +128,155 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertEqual(quality_config.video_format, "png")
         self.assertEqual(quality_config.video_quality, 70)
         self.assertEqual(quality_config.video_scale, 0.4)
+        tunnel_config = ShadowConfig.from_env(
+            {
+                "SHADOW_TUNNEL_ENABLED": "true",
+                "SHADOW_TUNNEL_SSH_HOST": "user@remote.example.com",
+                "SHADOW_TUNNEL_SSH_PORT": "2222",
+                "SHADOW_TUNNEL_SSH_KEY": "/tmp/key",
+                "SHADOW_TUNNEL_REMOTE_BIND_HOST": "0.0.0.0",
+                "SHADOW_TUNNEL_REMOTE_PORT": "19000",
+                "SHADOW_TUNNEL_LOCAL_HOST": "127.0.0.1",
+                "SHADOW_TUNNEL_EXTRA_ARGS": "-o StrictHostKeyChecking=no",
+            }
+        )
+        self.assertTrue(tunnel_config.tunnel_enabled)
+        self.assertEqual(tunnel_config.tunnel_ssh_host, "user@remote.example.com")
+        self.assertEqual(tunnel_config.tunnel_ssh_port, 2222)
+        self.assertEqual(tunnel_config.tunnel_ssh_key, "/tmp/key")
+        self.assertEqual(tunnel_config.tunnel_remote_port, 19000)
+        self.assertEqual(tunnel_config.tunnel_extra_args, "-o StrictHostKeyChecking=no")
+
+    def test_remote_public_host_binds_to_wildcard_by_default(self) -> None:
+        config = ShadowConfig(host="remote.example.com", port=9000)
+
+        self.assertEqual(_bind_host_for_config(config), "0.0.0.0")
+        self.assertEqual(_access_url_for_config(config), "http://remote.example.com:9000")
+
+    def test_explicit_bind_host_wins_over_public_host(self) -> None:
+        config = ShadowConfig(host="remote.example.com", bind_host="127.0.0.1", port=9000)
+
+        self.assertEqual(_bind_host_for_config(config), "127.0.0.1")
+
+    def test_reverse_tunnel_builds_ssh_command(self) -> None:
+        config = ShadowConfig(
+            host="remote.example.com",
+            port=8765,
+            tunnel_enabled=True,
+            tunnel_ssh_host="user@remote.example.com",
+            tunnel_ssh_port=2222,
+            tunnel_ssh_key="/tmp/key",
+            tunnel_remote_bind_host="0.0.0.0",
+            tunnel_remote_port=19000,
+            tunnel_local_host="127.0.0.1",
+            tunnel_extra_args="-o StrictHostKeyChecking=no",
+        )
+
+        command = SshReverseTunnel(config).command()
+
+        self.assertEqual(command[:3], ["ssh", "-N", "-T"])
+        self.assertIn("ExitOnForwardFailure=yes", command)
+        self.assertIn("-i", command)
+        self.assertIn("/tmp/key", command)
+        self.assertIn("StrictHostKeyChecking=no", command)
+        self.assertIn("-R", command)
+        self.assertIn("0.0.0.0:19000:127.0.0.1:8765", command)
+        self.assertEqual(command[-1], "user@remote.example.com")
+        self.assertEqual(tunnel_access_url(config), "http://remote.example.com:19000")
+
+    def test_reverse_tunnel_start_stop_lifecycle(self) -> None:
+        started: list[list[str]] = []
+        process = FakeProcess()
+        config = ShadowConfig(tunnel_enabled=True, tunnel_ssh_host="remote.example.com")
+
+        tunnel = SshReverseTunnel(
+            config,
+            popen_factory=lambda args, **kwargs: started.append(args) or process,
+        )
+
+        tunnel.start()
+        tunnel.stop()
+
+        self.assertEqual(started[0][-1], "remote.example.com")
+        self.assertTrue(process.terminated)
+
+    def test_run_script_args_override_environment_config(self) -> None:
+        config = _config_from_args(
+            [
+                "--host",
+                "remote.example.com",
+                "--bind-host",
+                "127.0.0.1",
+                "--port",
+                "19000",
+                "--tunnel",
+                "--tunnel-ssh-host",
+                "user@remote.example.com",
+                "--tunnel-remote-port",
+                "29000",
+            ]
+        )
+
+        self.assertEqual(config.host, "remote.example.com")
+        self.assertEqual(config.bind_host, "127.0.0.1")
+        self.assertEqual(config.port, 19000)
+        self.assertTrue(config.tunnel_enabled)
+        self.assertEqual(config.tunnel_ssh_host, "user@remote.example.com")
+        self.assertEqual(config.tunnel_remote_port, 29000)
+
+    def test_start_shadow_session_starts_and_stops_tunnel(self) -> None:
+        events: list[str] = []
+
+        class FakeTunnel:
+            enabled = True
+
+            def __init__(self, config: ShadowConfig) -> None:
+                events.append(f"tunnel:init:{config.tunnel_ssh_host}")
+
+            def start(self) -> None:
+                events.append("tunnel:start")
+
+            def stop(self) -> None:
+                events.append("tunnel:stop")
+
+        class FakeServer:
+            def __init__(self, address: tuple[str, int], session: object) -> None:
+                events.append(f"server:init:{address[0]}:{address[1]}")
+
+            def serve_forever(self) -> None:
+                events.append("server:serve")
+
+            def server_close(self) -> None:
+                events.append("server:close")
+
+        session = SimpleNamespace(
+            config=ShadowConfig(port=8765, tunnel_enabled=True, tunnel_ssh_host="remote.example.com"),
+            prepare=lambda: events.append("session:prepare"),
+            close=lambda: events.append("session:close"),
+        )
+
+        with (
+            patch.dict(
+                start_shadow_session.__globals__,
+                {"SshReverseTunnel": FakeTunnel, "ShadowHTTPServer": FakeServer},
+            ),
+            patch("sys.stdout", new_callable=StringIO),
+        ):
+            start_shadow_session(session=session)
+
+        self.assertEqual(
+            events,
+            [
+                "session:prepare",
+                "tunnel:init:remote.example.com",
+                "server:init:127.0.0.1:8765",
+                "tunnel:start",
+                "server:serve",
+                "tunnel:stop",
+                "session:close",
+                "server:close",
+            ],
+        )
 
     def test_session_maps_client_coordinates_to_device_coordinates(self) -> None:
         session = ShadowSession(ShadowConfig())

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -10,6 +11,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .config import ShadowConfig
 from .session import ShadowSession
+from .tunnel import SshReverseTunnel, tunnel_access_url
 from .web_ui import INDEX_HTML
 
 
@@ -143,11 +145,55 @@ class _ShadowHandler(BaseHTTPRequestHandler):
 def start_shadow_session(config: ShadowConfig | None = None, *, session: ShadowSession | None = None) -> ShadowSession:
     shadow = session or ShadowSession(config)
     shadow.prepare()
-    server = ShadowHTTPServer((shadow.config.host, shadow.config.port), shadow)
-    print(f"shadow_root listening on http://{shadow.config.host}:{shadow.config.port}")
+    bind_host = _bind_host_for_config(shadow.config)
+    tunnel = SshReverseTunnel(shadow.config)
+    try:
+        server = ShadowHTTPServer((bind_host, shadow.config.port), shadow)
+    except OSError as exc:
+        if exc.errno in {errno.EADDRNOTAVAIL, 49}:
+            raise RuntimeError(
+                "shadow_root cannot bind to the configured address. "
+                "Use SHADOW_BIND_HOST/ShadowConfig.bind_host for the local listen address "
+                "(usually 0.0.0.0 or 127.0.0.1), and use SHADOW_HOST/ShadowConfig.host "
+                "only for the remote/public access host."
+            ) from exc
+        raise
+    print(f"shadow_root listening on http://{_format_url_host(bind_host)}:{shadow.config.port}")
+    access_url = _access_url_for_config(shadow.config)
+    if access_url != f"http://{_format_url_host(bind_host)}:{shadow.config.port}":
+        print(f"shadow_root access URL: {access_url}")
+    if tunnel.enabled:
+        tunnel.start()
+        print(f"shadow_root tunnel URL: {tunnel_access_url(shadow.config)}")
     try:
         server.serve_forever()
     finally:
+        tunnel.stop()
         shadow.close()
         server.server_close()
     return shadow
+
+
+def _bind_host_for_config(config: ShadowConfig) -> str:
+    if config.bind_host:
+        return config.bind_host
+    if _is_local_bind_host(config.host):
+        return config.host
+    return "0.0.0.0"
+
+
+def _access_url_for_config(config: ShadowConfig) -> str:
+    host = config.host
+    if host in {"", "0.0.0.0", "::"}:
+        host = "127.0.0.1"
+    return f"http://{_format_url_host(host)}:{config.port}"
+
+
+def _is_local_bind_host(host: str) -> bool:
+    return host in {"", "0.0.0.0", "::", "127.0.0.1", "::1", "localhost"}
+
+
+def _format_url_host(host: str) -> str:
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host

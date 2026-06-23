@@ -6,6 +6,7 @@ from .display import DisplayStreamer, MjpegScreencapStreamer
 from .input_stream import InputCapabilities, InputStreamInjector, TouchEventEncoder
 from .server import ShadowHTTPServer, start_shadow_session
 from .session import ShadowSession
+from .tunnel import SshReverseTunnel, tunnel_access_url
 
 __all__ = [
     "AdbClient",
@@ -18,6 +19,8 @@ __all__ = [
     "ShadowConfig",
     "ShadowHTTPServer",
     "ShadowSession",
+    "SshReverseTunnel",
     "TouchEventEncoder",
     "start_shadow_session",
+    "tunnel_access_url",
 ]
