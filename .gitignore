@@ -9,5 +9,5 @@ deprecated
 .env
 
 workspace
-src/test.py
+test.py
 src/channel/lark-samples-main/
