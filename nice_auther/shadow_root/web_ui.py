@@ -11,9 +11,11 @@ INDEX_HTML = """<!doctype html>
     body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; touch-action: none; }
     header { height: 48px; display: flex; gap: 8px; align-items: center; padding: 0 12px; background: #1f2933; }
     button { height: 32px; padding: 0 12px; border: 0; border-radius: 4px; background: #e5e7eb; color: #111; }
-    #screen { display: block; max-width: 100vw; max-height: calc(100vh - 188px); margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    #screen { display: block; max-width: 100vw; max-height: calc(100vh - 48px); margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    body.debug-on #screen { max-height: calc(100vh - 188px); }
     #state { margin-left: auto; font-size: 13px; color: #cbd5e1; }
-    #debugLog { position: fixed; left: 0; right: 0; bottom: 0; height: 140px; overflow: auto; box-sizing: border-box; padding: 6px 8px; background: rgba(0,0,0,.86); color: #d1fae5; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; border-top: 1px solid #374151; z-index: 10; }
+    #debugLog { display: none; position: fixed; left: 0; right: 0; bottom: 0; height: 140px; overflow: auto; box-sizing: border-box; padding: 6px 8px; background: rgba(0,0,0,.86); color: #d1fae5; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; border-top: 1px solid #374151; z-index: 10; }
+    body.debug-on #debugLog { display: block; }
     .log-warn { color: #fde68a; }
     .log-error { color: #fecaca; }
   </style>
@@ -22,6 +24,7 @@ INDEX_HTML = """<!doctype html>
   <header>
     <button id="start">开始</button>
     <button id="stop">结束</button>
+    <button id="debugToggle">Debug</button>
     <span id="state">idle</span>
   </header>
   <img id="screen" draggable="false">
@@ -32,12 +35,19 @@ INDEX_HTML = """<!doctype html>
     const screen = document.getElementById("screen");
     const state = document.getElementById("state");
     const debugLog = document.getElementById("debugLog");
+    const debugToggle = document.getElementById("debugToggle");
     const pendingEvents = [];
+    const activePointers = new Set();
     const debugLines = [];
+    const debugStorageKey = "nice_auther_debug";
+    const gestureFlushTimeoutMs = 2500;
+    let debugEnabled = params.get("debug") === "1" || params.get("debug") === "true" || localStorage.getItem(debugStorageKey) === "1";
     let flushScheduled = false;
     let flushing = false;
+    let flushTimer = 0;
 
     function log(message, data = null, level = "info") {
+      if (!debugEnabled) return;
       const time = new Date().toLocaleTimeString();
       const suffix = data === null ? "" : " " + safeJson(data);
       const line = `[${time}] ${message}${suffix}`;
@@ -48,6 +58,14 @@ INDEX_HTML = """<!doctype html>
       if (level === "error") console.error(message, data);
       else if (level === "warn") console.warn(message, data);
       else console.log(message, data);
+    }
+
+    function setDebugEnabled(enabled) {
+      debugEnabled = !!enabled;
+      document.body.classList.toggle("debug-on", debugEnabled);
+      debugToggle.textContent = debugEnabled ? "Debug On" : "Debug";
+      localStorage.setItem(debugStorageKey, debugEnabled ? "1" : "0");
+      if (debugEnabled) log("debug enabled");
     }
 
     function safeJson(value) {
@@ -107,13 +125,20 @@ INDEX_HTML = """<!doctype html>
       return payloadFromPoint(ev, type, ev.pointerId || 1, ev.timeStamp, ev.pressure || 0.5);
     }
 
+    function updatePointerState(pointerId, type) {
+      const key = String(pointerId || 1);
+      if (type === "pointerdown") activePointers.add(key);
+      else if (type === "pointerup" || type === "pointercancel") activePointers.delete(key);
+    }
+
     function queuePointerEvent(ev, type) {
       ev.preventDefault();
       const coalesced = typeof ev.getCoalescedEvents === "function" ? ev.getCoalescedEvents() : [];
       const source = coalesced.length ? coalesced : [ev];
       for (const item of source) pendingEvents.push(pointerPayload(item, type));
+      updatePointerState(ev.pointerId, type);
       log(`pointer ${type}`, {pointerId: ev.pointerId, pointerType: ev.pointerType, count: source.length, pending: pendingEvents.length});
-      scheduleFlush(type === "pointerup" || type === "pointercancel");
+      scheduleGestureFlush(type === "pointerup" || type === "pointercancel");
     }
 
     function queueTouchEvent(ev, type) {
@@ -121,9 +146,34 @@ INDEX_HTML = """<!doctype html>
       const touches = ev.changedTouches || [];
       for (const touch of touches) {
         pendingEvents.push(payloadFromPoint(touch, type, touch.identifier + 1, ev.timeStamp, type === "pointerup" ? 0 : 0.5));
+        updatePointerState(touch.identifier + 1, type);
       }
       log(`touch ${type}`, {changed: touches.length, pending: pendingEvents.length});
-      scheduleFlush(type === "pointerup" || type === "pointercancel");
+      scheduleGestureFlush(type === "pointerup" || type === "pointercancel");
+    }
+
+    function scheduleGestureFlush(gestureEnded = false) {
+      if (gestureEnded || activePointers.size === 0) {
+        clearFlushTimer();
+        scheduleFlush(true);
+        return;
+      }
+      scheduleFlushTimeout();
+    }
+
+    function scheduleFlushTimeout() {
+      if (flushTimer) return;
+      flushTimer = window.setTimeout(() => {
+        flushTimer = 0;
+        log("flush scheduled timeout", {pending: pendingEvents.length, active: activePointers.size});
+        void flushEvents();
+      }, gestureFlushTimeoutMs);
+    }
+
+    function clearFlushTimer() {
+      if (!flushTimer) return;
+      window.clearTimeout(flushTimer);
+      flushTimer = 0;
     }
 
     function scheduleFlush(immediate = false) {
@@ -151,7 +201,7 @@ INDEX_HTML = """<!doctype html>
         log("flush complete", result);
       } finally {
         flushing = false;
-        if (pendingEvents.length) scheduleFlush();
+        if (pendingEvents.length) scheduleGestureFlush(activePointers.size === 0);
       }
     }
 
@@ -163,7 +213,9 @@ INDEX_HTML = """<!doctype html>
       console.log("recording bundle", result.bundle);
       log("recording bundle", {hasBundle: !!result.bundle, operations: result.bundle && result.bundle.operations ? result.bundle.operations.length : 0});
     };
+    debugToggle.onclick = () => setDebugEnabled(!debugEnabled);
     screen.addEventListener("contextmenu", ev => ev.preventDefault());
+    setDebugEnabled(debugEnabled);
     log("page loaded", {pointerEvent: !!window.PointerEvent, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints || 0});
     if (window.PointerEvent) {
       log("binding pointer events");

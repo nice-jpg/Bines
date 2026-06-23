@@ -365,12 +365,32 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertIn('ev.preventDefault()', INDEX_HTML)
         self.assertIn('-webkit-touch-callout: none', INDEX_HTML)
 
+    def test_web_ui_batches_pointer_events_until_gesture_end(self) -> None:
+        self.assertIn('const activePointers = new Set();', INDEX_HTML)
+        self.assertIn('const gestureFlushTimeoutMs = 2500;', INDEX_HTML)
+        self.assertIn('function scheduleGestureFlush(gestureEnded = false)', INDEX_HTML)
+        self.assertIn('scheduleGestureFlush(type === "pointerup" || type === "pointercancel")', INDEX_HTML)
+        self.assertIn('scheduleFlushTimeout()', INDEX_HTML)
+        self.assertIn('flush scheduled timeout', INDEX_HTML)
+        self.assertIn('if (pendingEvents.length) scheduleGestureFlush(activePointers.size === 0);', INDEX_HTML)
+
     def test_web_ui_has_visible_debug_log(self) -> None:
         self.assertIn('id="debugLog"', INDEX_HTML)
+        self.assertIn('display: none', INDEX_HTML)
+        self.assertIn('body.debug-on #debugLog', INDEX_HTML)
+        self.assertIn('body.debug-on #screen', INDEX_HTML)
         self.assertIn('function log(', INDEX_HTML)
+        self.assertIn('if (!debugEnabled) return;', INDEX_HTML)
         self.assertIn('flush start', INDEX_HTML)
         self.assertIn('POST ${path}', INDEX_HTML)
         self.assertIn('page loaded', INDEX_HTML)
+        self.assertIn('id="debugToggle"', INDEX_HTML)
+        self.assertIn('params.get("debug") === "1"', INDEX_HTML)
+        self.assertIn('params.get("debug") === "true"', INDEX_HTML)
+        self.assertIn('localStorage.getItem(debugStorageKey)', INDEX_HTML)
+        self.assertIn('function setDebugEnabled(enabled)', INDEX_HTML)
+        self.assertIn('document.body.classList.toggle("debug-on", debugEnabled)', INDEX_HTML)
+        self.assertIn('debugToggle.onclick', INDEX_HTML)
 
     def test_server_payload_summary_keeps_event_logs_compact(self) -> None:
         summary = _payload_summary(
