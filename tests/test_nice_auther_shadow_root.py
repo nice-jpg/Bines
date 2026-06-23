@@ -7,7 +7,14 @@ from io import BytesIO
 from unittest.mock import patch
 
 from nice_auther.shadow_root import AdbClient, ShadowConfig, ShadowSession
+from nice_auther.shadow_root.display import MjpegScreencapStreamer, create_display_streamer
+from nice_auther.shadow_root.input_stream import ABS_MT_POSITION_X, ABS_MT_POSITION_Y, PIAR_MAGIC, TouchEventEncoder, parse_input_capabilities
 from nice_auther.shadow_root.server import _ShadowHandler
+
+
+class FakeStdin(BytesIO):
+    def flush(self) -> None:
+        return
 
 
 class FakeStdout:
@@ -22,7 +29,9 @@ class FakeStdout:
 
 class FakeProcess:
     def __init__(self) -> None:
+        self.stdin = FakeStdin()
         self.stdout = FakeStdout()
+        self.stderr = BytesIO()
         self.terminated = False
         self.killed = False
 
@@ -64,6 +73,14 @@ class RecordingBinaryRunner:
         return subprocess.CompletedProcess(args, 0, b"\x89PNGDATA", b"")
 
 
+def sample_png() -> bytes:
+    from PIL import Image
+
+    output = BytesIO()
+    Image.new("RGB", (20, 20), color=(255, 0, 0)).save(output, format="PNG")
+    return output.getvalue()
+
+
 class NiceAutherShadowRootTests(unittest.TestCase):
     def test_importing_server_does_not_start_shadow_session(self) -> None:
         sys.modules.pop("nice_auther.shadow_root.server", None)
@@ -92,6 +109,17 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertEqual(config.input_device, "/dev/input/event9")
         self.assertEqual(config.frame_interval_ms, 250)
         self.assertEqual(config.token, "secret")
+        self.assertEqual(ShadowConfig.from_env({"SHADOW_VIDEO_FPS": "12"}).video_fps, 12)
+        quality_config = ShadowConfig.from_env(
+            {
+                "SHADOW_VIDEO_FORMAT": "png",
+                "SHADOW_VIDEO_QUALITY": "70",
+                "SHADOW_VIDEO_SCALE": "0.4",
+            }
+        )
+        self.assertEqual(quality_config.video_format, "png")
+        self.assertEqual(quality_config.video_quality, 70)
+        self.assertEqual(quality_config.video_scale, 0.4)
 
     def test_session_maps_client_coordinates_to_device_coordinates(self) -> None:
         session = ShadowSession(ShadowConfig())
@@ -118,22 +146,35 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertEqual(bundle["screen"], {"width": 1080, "height": 2400})
         self.assertEqual(bundle["device_info"]["model"], "Pixel Test")
         self.assertIn("BTN_TOUCH DOWN", bundle["raw_getevent_log"])
+        self.assertTrue(any(call[:2] == ["adb", "push"] for call in runner.calls))
 
-    def test_pointer_events_inject_tap_and_record_audit(self) -> None:
+    def test_pointer_events_stream_piar_frames_and_record_audit(self) -> None:
         runner = RecordingRunner()
+        process = FakeProcess()
         config = ShadowConfig()
-        adb = AdbClient(config, runner=runner, popen_factory=lambda *args, **kwargs: FakeProcess())
+        adb = AdbClient(config, runner=runner, popen_factory=lambda *args, **kwargs: process)
         session = ShadowSession(config, adb=adb)
         session.screen_width = 1080
         session.screen_height = 2400
+        session.input_capabilities = parse_input_capabilities("", (1080, 2400))
+        session.touch_encoder = TouchEventEncoder(session.input_capabilities, (1080, 2400))
         session.start_recording()
 
-        session.handle_pointer_event({"type": "pointerdown", "pointer_id": 1, "x": 10, "y": 10, "width": 100, "height": 100})
-        result = session.handle_pointer_event({"type": "pointerup", "pointer_id": 1, "x": 10, "y": 10, "width": 100, "height": 100})
+        result = session.handle_pointer_batch(
+            {
+                "events": [
+                    {"type": "pointerdown", "pointer_id": 1, "x": 10, "y": 10, "width": 100, "height": 100, "client_time_ms": 1},
+                    {"type": "pointermove", "pointer_id": 1, "x": 20, "y": 25, "width": 100, "height": 100, "client_time_ms": 5},
+                    {"type": "pointerup", "pointer_id": 1, "x": 30, "y": 40, "width": 100, "height": 100, "client_time_ms": 9},
+                ]
+            }
+        )
 
-        self.assertEqual(result["action"], "tap")
-        self.assertIn(["adb", "shell", "input", "tap", "108", "240"], runner.calls)
-        self.assertEqual(session.operations[-1]["action"], "tap")
+        self.assertEqual(result["accepted"], 3)
+        self.assertTrue(process.stdin.getvalue().startswith(PIAR_MAGIC))
+        self.assertNotIn(["adb", "shell", "input", "tap", "108", "240"], runner.calls)
+        self.assertEqual(session.operations[-1]["type"], "pointerup")
+        self.assertTrue(session.build_bundle()["piar_base64"])
         session.stop_recording()
 
     def test_frame_png_uses_adb_exec_out(self) -> None:
@@ -154,6 +195,74 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         handler.wfile = ResettingWriter()
 
         self.assertIsNone(handler._write_body(b"frame"))
+
+    def test_touch_event_encoder_preserves_move_frames(self) -> None:
+        capabilities = parse_input_capabilities(
+            """
+add 1: /dev/input/event3
+  ABS_MT_POSITION_X    : value 0, min 0, max 999
+  ABS_MT_POSITION_Y    : value 0, min 0, max 1999
+  ABS_MT_SLOT          : value 0, min 0, max 9
+""",
+            (100, 200),
+        )
+        encoder = TouchEventEncoder(capabilities, (100, 200))
+        packet, audits = encoder.encode_batch(
+            [
+                {"type": "pointerdown", "pointer_id": 1, "x": 0, "y": 0, "width": 100, "height": 200, "client_time_ms": 1},
+                {"type": "pointermove", "pointer_id": 1, "x": 50, "y": 100, "width": 100, "height": 200, "client_time_ms": 6},
+                {"type": "pointermove", "pointer_id": 1, "x": 80, "y": 120, "width": 100, "height": 200, "client_time_ms": 10},
+                {"type": "pointerup", "pointer_id": 1, "x": 100, "y": 200, "width": 100, "height": 200, "client_time_ms": 12},
+            ]
+        )
+
+        self.assertEqual(len(audits), 4)
+        self.assertEqual(audits[1]["device"], {"x": 500, "y": 1000})
+        self.assertIn(ABS_MT_POSITION_X.to_bytes(2, "little"), packet)
+        self.assertIn(ABS_MT_POSITION_Y.to_bytes(2, "little"), packet)
+
+    def test_display_streamer_reuses_single_capture_worker(self) -> None:
+        runner = RecordingBinaryRunner()
+        config = ShadowConfig(video_fps=30)
+        adb = AdbClient(config, binary_runner=runner)
+        streamer = MjpegScreencapStreamer(adb, config)
+
+        streamer.start()
+        frame = streamer.latest_frame(timeout=1)
+        streamer.stop()
+
+        self.assertEqual(frame, b"\x89PNGDATA")
+        self.assertLessEqual(streamer.max_active_captures, 1)
+
+    def test_display_streamer_can_downscale_and_encode_jpeg(self) -> None:
+        class PngRunner:
+            def __init__(self) -> None:
+                self.calls: list[list[str]] = []
+
+            def __call__(self, args: list[str]) -> subprocess.CompletedProcess[bytes]:
+                self.calls.append(args)
+                return subprocess.CompletedProcess(args, 0, sample_png(), b"")
+
+        config = ShadowConfig(video_format="jpeg", video_quality=30, video_scale=0.5, video_fps=30)
+        adb = AdbClient(config, binary_runner=PngRunner())
+        streamer = MjpegScreencapStreamer(adb, config)
+
+        streamer.start()
+        frame = streamer.latest_frame(timeout=1)
+        streamer.stop()
+
+        self.assertEqual(streamer.content_type, "image/jpeg")
+        self.assertTrue(frame.startswith(b"\xff\xd8"))
+        from PIL import Image
+
+        with Image.open(BytesIO(frame)) as image:
+            self.assertEqual(image.size, (10, 10))
+
+    def test_scrcpy_backend_currently_falls_back_to_mjpeg(self) -> None:
+        config = ShadowConfig(video_backend="scrcpy_h264")
+        adb = AdbClient(config, binary_runner=RecordingBinaryRunner())
+
+        self.assertIsInstance(create_display_streamer(adb, config), MjpegScreencapStreamer)
 
 
 if __name__ == "__main__":

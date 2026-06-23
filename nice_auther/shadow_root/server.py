@@ -29,6 +29,8 @@ class _ShadowHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/":
             self._send_html(INDEX_HTML)
+        elif path == "/stream.mjpg":
+            self._send_mjpeg()
         elif path == "/frame.png":
             try:
                 frame = self.server.session.frame_png()
@@ -36,7 +38,7 @@ class _ShadowHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
                 return
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Type", self.server.session.display_streamer.content_type)
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self._write_body(frame)
@@ -48,6 +50,12 @@ class _ShadowHandler(BaseHTTPRequestHandler):
                     "recording": session.is_recording,
                     "screen": {"width": session.screen_width, "height": session.screen_height},
                     "frame_interval_ms": session.config.frame_interval_ms,
+                    "video": {
+                        "backend": session.config.video_backend,
+                        "format": session.config.video_format,
+                        "quality": session.config.video_quality,
+                        "scale": session.config.video_scale,
+                    },
                 }
             )
         else:
@@ -66,6 +74,8 @@ class _ShadowHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True, "bundle": self.server.session.stop_recording()})
             elif path == "/event":
                 self._send_json(self.server.session.handle_pointer_event(payload))
+            elif path == "/events":
+                self._send_json(self.server.session.handle_pointer_batch(payload))
             else:
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
@@ -111,6 +121,24 @@ class _ShadowHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
 
+    def _send_mjpeg(self) -> None:
+        boundary = "nice-auther-frame"
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={boundary}")
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        try:
+            for frame in self.server.session.mjpeg_frames():
+                chunk = (
+                    f"--{boundary}\r\n"
+                    f"Content-Type: {self.server.session.display_streamer.content_type}\r\n"
+                    f"Content-Length: {len(frame)}\r\n\r\n"
+                ).encode("ascii") + frame + b"\r\n"
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+
 
 def start_shadow_session(config: ShadowConfig | None = None, *, session: ShadowSession | None = None) -> ShadowSession:
     shadow = session or ShadowSession(config)
@@ -120,7 +148,6 @@ def start_shadow_session(config: ShadowConfig | None = None, *, session: ShadowS
     try:
         server.serve_forever()
     finally:
-        if shadow.is_recording:
-            shadow.stop_recording()
+        shadow.close()
         server.server_close()
     return shadow

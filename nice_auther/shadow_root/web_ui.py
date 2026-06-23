@@ -26,7 +26,8 @@ INDEX_HTML = """<!doctype html>
     const token = params.get("token") || "";
     const screen = document.getElementById("screen");
     const state = document.getElementById("state");
-    let intervalMs = 500;
+    const pendingEvents = [];
+    let flushScheduled = false;
 
     async function post(path, payload = {}) {
       const res = await fetch(path + (token ? "?token=" + encodeURIComponent(token) : ""), {
@@ -40,13 +41,7 @@ INDEX_HTML = """<!doctype html>
     async function refreshStatus() {
       const res = await fetch("/status" + (token ? "?token=" + encodeURIComponent(token) : ""), {headers: {"X-Shadow-Token": token}});
       const data = await res.json();
-      intervalMs = data.frame_interval_ms || 500;
       state.textContent = data.recording ? "recording" : "idle";
-    }
-
-    function refreshFrame() {
-      screen.src = "/frame.png?t=" + Date.now() + (token ? "&token=" + encodeURIComponent(token) : "");
-      setTimeout(refreshFrame, intervalMs);
     }
 
     function pointerPayload(ev, type) {
@@ -57,8 +52,27 @@ INDEX_HTML = """<!doctype html>
         x: ev.clientX - rect.left,
         y: ev.clientY - rect.top,
         width: rect.width,
-        height: rect.height
+        height: rect.height,
+        pressure: ev.pressure || 0.5,
+        client_time_ms: ev.timeStamp
       };
+    }
+
+    function queuePointerEvent(ev, type) {
+      const coalesced = typeof ev.getCoalescedEvents === "function" ? ev.getCoalescedEvents() : [];
+      const source = coalesced.length ? coalesced : [ev];
+      for (const item of source) pendingEvents.push(pointerPayload(item, type));
+      if (!flushScheduled) {
+        flushScheduled = true;
+        requestAnimationFrame(flushEvents);
+      }
+    }
+
+    async function flushEvents() {
+      flushScheduled = false;
+      if (!pendingEvents.length) return;
+      const events = pendingEvents.splice(0, pendingEvents.length);
+      await post("/events", {events});
     }
 
     document.getElementById("start").onclick = async () => { await post("/recording/start"); await refreshStatus(); };
@@ -67,12 +81,14 @@ INDEX_HTML = """<!doctype html>
       await refreshStatus();
       console.log("recording bundle", result.bundle);
     };
-    screen.addEventListener("pointerdown", ev => { screen.setPointerCapture(ev.pointerId); post("/event", pointerPayload(ev, "pointerdown")); });
-    screen.addEventListener("pointerup", ev => post("/event", pointerPayload(ev, "pointerup")));
+    screen.addEventListener("pointerdown", ev => { screen.setPointerCapture(ev.pointerId); queuePointerEvent(ev, "pointerdown"); });
+    screen.addEventListener("pointermove", ev => queuePointerEvent(ev, "pointermove"));
+    screen.addEventListener("pointerup", ev => queuePointerEvent(ev, "pointerup"));
+    screen.addEventListener("pointercancel", ev => queuePointerEvent(ev, "pointercancel"));
 
-    refreshStatus().finally(refreshFrame);
+    screen.src = "/stream.mjpg" + (token ? "?token=" + encodeURIComponent(token) : "");
+    refreshStatus();
   </script>
 </body>
 </html>
 """
-

@@ -5,9 +5,14 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+from pathlib import Path
+from posixpath import dirname
 from typing import Callable
 
 from .config import ShadowConfig
+
+
+DEFAULT_LOCAL_INPUT_STREAM_HELPER = Path(__file__).resolve().parent / "native" / "pi_input_stream"
 
 
 class AdbClient:
@@ -90,6 +95,31 @@ class AdbClient:
             text=True,
             encoding="utf-8",
             errors="replace",
+        )
+
+    def input_capabilities(self, input_device: str) -> str:
+        return self.shell(["getevent", "-lp", input_device], root=True)
+
+    def ensure_input_stream_helper(self, helper_path: str) -> str:
+        if not DEFAULT_LOCAL_INPUT_STREAM_HELPER.exists():
+            return helper_path
+        helper_dir = dirname(helper_path.rstrip("/")) or "/data/local/tmp"
+        self.shell(["mkdir", "-p", helper_dir])
+        result = self.runner(self._adb_args(["push", str(DEFAULT_LOCAL_INPUT_STREAM_HELPER), helper_path]))
+        if result.returncode != 0:
+            output = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(output or f"adb push failed: {helper_path}")
+        self.shell(["chmod", "755", helper_path])
+        return helper_path
+
+    def start_input_stream(self, input_device: str, helper_path: str) -> subprocess.Popen[bytes]:
+        command = " ".join([shlex.quote(helper_path), shlex.quote(input_device)])
+        args = self._adb_args(["shell", "su", "-c", command])
+        return self.popen_factory(
+            args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
 
     def _adb_args(self, args: list[str]) -> list[str]:

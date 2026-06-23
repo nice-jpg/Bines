@@ -35,6 +35,7 @@ def sample_bundle() -> dict[str, object]:
 [ 1.010000] /dev/input/event3: EV_KEY BTN_TOUCH UP
 [ 1.010000] /dev/input/event3: EV_SYN SYN_REPORT 00000000
 """,
+        "raw_browser_events": [],
         "operations": [],
     }
 
@@ -83,4 +84,3 @@ class NiceAutherReplayerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

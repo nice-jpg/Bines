@@ -21,6 +21,7 @@ class ReplayBundle:
     raw_getevent_log: str
     device_info: dict[str, Any]
     operations: list[dict[str, Any]]
+    raw_browser_events: list[dict[str, Any]]
     piar_base64: str = ""
 
     @classmethod
@@ -28,7 +29,7 @@ class ReplayBundle:
         if not isinstance(data, dict):
             raise ValueError("bundle must be a JSON object")
 
-        required = ["schema_version", "created_at", "input_device", "screen", "raw_getevent_log"]
+        required = ["schema_version", "created_at", "input_device", "screen"]
         missing = [name for name in required if name not in data]
         if missing:
             raise ValueError(f"bundle missing required fields: {', '.join(missing)}")
@@ -55,11 +56,15 @@ class ReplayBundle:
         raw_log = str(data.get("raw_getevent_log") or "")
         piar_base64 = str(data.get("piar_base64") or "")
         if not raw_log and not piar_base64:
-            raise ValueError("raw_getevent_log must not be empty")
+            raise ValueError("raw_getevent_log or piar_base64 must not be empty")
 
         operations = data.get("operations") or []
         if not isinstance(operations, list):
             raise ValueError("operations must be a list")
+
+        raw_browser_events = data.get("raw_browser_events") or []
+        if not isinstance(raw_browser_events, list):
+            raise ValueError("raw_browser_events must be a list")
 
         device_info = data.get("device_info") or {}
         if not isinstance(device_info, dict):
@@ -74,6 +79,7 @@ class ReplayBundle:
             raw_getevent_log=raw_log,
             device_info=device_info,
             operations=operations,
+            raw_browser_events=raw_browser_events,
             piar_base64=piar_base64,
         )
 
@@ -92,4 +98,3 @@ def coerce_bundle(bundle: ReplayBundle | dict[str, Any] | str | Path) -> ReplayB
     if isinstance(bundle, dict):
         return ReplayBundle.from_dict(bundle)
     return ReplayBundle.from_file(Path(bundle))
-
