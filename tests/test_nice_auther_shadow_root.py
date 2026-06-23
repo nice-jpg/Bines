@@ -3,9 +3,11 @@ from __future__ import annotations
 import subprocess
 import sys
 import unittest
+from io import BytesIO
 from unittest.mock import patch
 
 from nice_auther.shadow_root import AdbClient, ShadowConfig, ShadowSession
+from nice_auther.shadow_root.server import _ShadowHandler
 
 
 class FakeStdout:
@@ -142,6 +144,16 @@ class NiceAutherShadowRootTests(unittest.TestCase):
 
         self.assertEqual(session.frame_png(), b"\x89PNGDATA")
         self.assertIn(["adb", "exec-out", "screencap", "-p"], runner.calls)
+
+    def test_response_write_ignores_client_disconnect(self) -> None:
+        class ResettingWriter(BytesIO):
+            def write(self, value: bytes) -> int:
+                raise ConnectionResetError("client closed")
+
+        handler = object.__new__(_ShadowHandler)
+        handler.wfile = ResettingWriter()
+
+        self.assertIsNone(handler._write_body(b"frame"))
 
 
 if __name__ == "__main__":
