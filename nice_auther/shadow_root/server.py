@@ -39,7 +39,7 @@ class _ShadowHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "image/png")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(frame)
+            self._write_body(frame)
         elif path == "/status":
             session = self.server.session
             self._send_json(
@@ -95,7 +95,7 @@ class _ShadowHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_body(body)
 
     def _send_html(self, html: str) -> None:
         body = html.encode("utf-8")
@@ -103,7 +103,13 @@ class _ShadowHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        self._write_body(body)
+
+    def _write_body(self, body: bytes) -> None:
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
 
 
 def start_shadow_session(config: ShadowConfig | None = None, *, session: ShadowSession | None = None) -> ShadowSession:
