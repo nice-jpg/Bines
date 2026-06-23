@@ -112,9 +112,15 @@ class ShadowSession:
             self.touch_encoder = TouchEventEncoder(capabilities, (self.screen_width, self.screen_height))
 
         packet_body, audits = self.touch_encoder.encode_batch([event for event in events if isinstance(event, dict)])
-        self.input_injector.write_frames(packet_body)
+        injector_status = self.input_injector.write_frames(packet_body)
         self._record_low_level_input(packet_body, audits)
-        return {"ok": True, "events": len(events), "frames_bytes": len(packet_body), "accepted": len(audits)}
+        return {
+            "ok": injector_status.get("ok", True),
+            "events": len(events),
+            "frames_bytes": len(packet_body),
+            "accepted": len(audits),
+            "injector": injector_status,
+        }
 
     def map_client_point(self, payload: dict[str, Any]) -> tuple[int, int]:
         if self.screen_width <= 0 or self.screen_height <= 0:

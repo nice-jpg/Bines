@@ -6,6 +6,7 @@ import errno
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import time
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -25,18 +26,23 @@ class _ShadowHandler(BaseHTTPRequestHandler):
     server: ShadowHTTPServer
 
     def do_GET(self) -> None:
+        started = time.monotonic()
         if not self._authorized():
+            self._log("GET unauthorized", path=self.path)
             self._send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
             return
         path = urlparse(self.path).path
+        self._log("GET start", path=path)
         if path == "/":
             self._send_html(INDEX_HTML)
         elif path == "/stream.mjpg":
             self._send_mjpeg()
+            self._log("GET stream end", path=path, ms=_elapsed_ms(started))
         elif path == "/frame.png":
             try:
                 frame = self.server.session.frame_png()
             except Exception as exc:
+                self._log("GET frame error", path=path, error=str(exc))
                 self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_GATEWAY)
                 return
             self.send_response(HTTPStatus.OK)
@@ -44,43 +50,58 @@ class _ShadowHandler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self._write_body(frame)
+            self._log("GET frame ok", path=path, bytes=len(frame), ms=_elapsed_ms(started))
         elif path == "/status":
             session = self.server.session
-            self._send_json(
-                {
-                    "ok": True,
-                    "recording": session.is_recording,
-                    "screen": {"width": session.screen_width, "height": session.screen_height},
-                    "frame_interval_ms": session.config.frame_interval_ms,
-                    "video": {
-                        "backend": session.config.video_backend,
-                        "format": session.config.video_format,
-                        "quality": session.config.video_quality,
-                        "scale": session.config.video_scale,
-                    },
-                }
-            )
+            payload = {
+                "ok": True,
+                "recording": session.is_recording,
+                "screen": {"width": session.screen_width, "height": session.screen_height},
+                "frame_interval_ms": session.config.frame_interval_ms,
+                "video": {
+                    "backend": session.config.video_backend,
+                    "format": session.config.video_format,
+                    "quality": session.config.video_quality,
+                    "scale": session.config.video_scale,
+                },
+            }
+            self._send_json(payload)
+            self._log("GET status ok", path=path, recording=session.is_recording, ms=_elapsed_ms(started))
         else:
+            self._log("GET not found", path=path)
             self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        started = time.monotonic()
         if not self._authorized():
+            self._log("POST unauthorized", path=self.path)
             self._send_json({"ok": False, "error": "unauthorized"}, HTTPStatus.UNAUTHORIZED)
             return
         path = urlparse(self.path).path
         try:
             payload = self._read_json()
+            self._log("POST start", path=path, summary=_payload_summary(payload))
             if path == "/recording/start":
-                self._send_json(self.server.session.start_recording())
+                result = self.server.session.start_recording()
+                self._send_json(result)
+                self._log("POST recording start ok", path=path, result=result, ms=_elapsed_ms(started))
             elif path == "/recording/stop":
-                self._send_json({"ok": True, "bundle": self.server.session.stop_recording()})
+                bundle = self.server.session.stop_recording()
+                self._send_json({"ok": True, "bundle": bundle})
+                self._log("POST recording stop ok", path=path, operations=len(bundle.get("operations", [])), ms=_elapsed_ms(started))
             elif path == "/event":
-                self._send_json(self.server.session.handle_pointer_event(payload))
+                result = self.server.session.handle_pointer_event(payload)
+                self._send_json(result)
+                self._log("POST event ok", path=path, result=result, ms=_elapsed_ms(started))
             elif path == "/events":
-                self._send_json(self.server.session.handle_pointer_batch(payload))
+                result = self.server.session.handle_pointer_batch(payload)
+                self._send_json(result)
+                self._log("POST events ok", path=path, result=result, ms=_elapsed_ms(started))
             else:
+                self._log("POST not found", path=path)
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)
         except Exception as exc:
+            self._log("POST error", path=path, error=repr(exc), ms=_elapsed_ms(started))
             self._send_json({"ok": False, "error": str(exc)}, HTTPStatus.BAD_REQUEST)
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -121,6 +142,7 @@ class _ShadowHandler(BaseHTTPRequestHandler):
         try:
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self._log("client disconnected", path=getattr(self, "path", ""), bytes=len(body))
             return
 
     def _send_mjpeg(self) -> None:
@@ -129,8 +151,10 @@ class _ShadowHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={boundary}")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
+        frames = 0
         try:
             for frame in self.server.session.mjpeg_frames():
+                frames += 1
                 chunk = (
                     f"--{boundary}\r\n"
                     f"Content-Type: {self.server.session.display_streamer.content_type}\r\n"
@@ -139,7 +163,18 @@ class _ShadowHandler(BaseHTTPRequestHandler):
                 self.wfile.write(chunk)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self._log("stream disconnected", path=self.path, frames=frames)
             return
+
+    def _log(self, message: str, **fields: Any) -> None:
+        client_address = getattr(self, "client_address", None)
+        payload = {
+            "component": "shadow_root.server",
+            "message": message,
+            "client": client_address[0] if client_address else "",
+            **fields,
+        }
+        print(json.dumps(payload, ensure_ascii=False, default=str), flush=True)
 
 
 def start_shadow_session(config: ShadowConfig | None = None, *, session: ShadowSession | None = None) -> ShadowSession:
@@ -197,3 +232,24 @@ def _format_url_host(host: str) -> str:
     if ":" in host and not host.startswith("["):
         return f"[{host}]"
     return host
+
+
+def _elapsed_ms(started: float) -> int:
+    return round((time.monotonic() - started) * 1000)
+
+
+def _payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {"type": type(payload).__name__}
+    events = payload.get("events")
+    summary: dict[str, Any] = {"keys": sorted(payload.keys())}
+    if isinstance(events, list):
+        summary["events"] = len(events)
+        if events:
+            first = events[0] if isinstance(events[0], dict) else {}
+            last = events[-1] if isinstance(events[-1], dict) else {}
+            summary["first"] = {key: first.get(key) for key in ("type", "pointer_id", "x", "y")}
+            summary["last"] = {key: last.get(key) for key in ("type", "pointer_id", "x", "y")}
+    else:
+        summary.update({key: payload.get(key) for key in ("type", "pointer_id", "x", "y") if key in payload})
+    return summary

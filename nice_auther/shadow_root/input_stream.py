@@ -70,7 +70,7 @@ class TouchEventEncoder:
 
     def encode_event(self, event: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
         event_type = str(event.get("type") or event.get("event") or "").strip().lower()
-        pointer_id = int(event.get("pointer_id", event.get("pointerId", 1)))
+        pointer_id = _normalize_pointer_id(event.get("pointer_id", event.get("pointerId", 1)))
         raw_x, raw_y = self.map_client_point(event)
         delay_us = self._delay_us(event.get("client_time_ms"))
         events: list[tuple[int, int, int]] = []
@@ -87,7 +87,7 @@ class TouchEventEncoder:
                     (EV_ABS, ABS_MT_TRACKING_ID, tracking_id),
                     (EV_ABS, ABS_MT_POSITION_X, raw_x),
                     (EV_ABS, ABS_MT_POSITION_Y, raw_y),
-                    (EV_ABS, ABS_MT_PRESSURE, int(event.get("pressure") or 50)),
+                    (EV_ABS, ABS_MT_PRESSURE, _normalize_pressure(event.get("pressure"))),
                     (EV_KEY, BTN_TOUCH, 1),
                     (EV_SYN, SYN_REPORT, 0),
                 ]
@@ -174,15 +174,35 @@ class InputStreamInjector:
         self._started = False
         self.writes: list[bytes] = []
 
-    def write_frames(self, frames: bytes) -> None:
+    def write_frames(self, frames: bytes) -> dict[str, Any]:
         if not frames:
-            return
+            return self.status(extra={"written_bytes": 0})
         with self._lock:
             self._ensure_started()
             assert self.process is not None and self.process.stdin is not None
+            returncode = self.process.poll()
+            if returncode is not None:
+                return self.status(extra={"ok": False, "returncode": returncode, "written_bytes": 0})
             self.process.stdin.write(frames)
             self.process.stdin.flush()
             self.writes.append(frames)
+            return self.status(extra={"written_bytes": len(frames)})
+
+    def status(self, *, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        process = self.process
+        status = {
+            "ok": True,
+            "started": self._started,
+            "pid": getattr(process, "pid", None) if process is not None else None,
+            "returncode": process.poll() if process is not None else None,
+            "writes": len(self.writes),
+            "total_written_bytes": sum(len(chunk) for chunk in self.writes),
+        }
+        if extra:
+            status.update(extra)
+            if extra.get("ok") is False:
+                status["ok"] = False
+        return status
 
     def stop(self) -> None:
         with self._lock:
@@ -247,3 +267,25 @@ def _build_frame(delay_us: int, events: list[tuple[int, int, int]]) -> bytes:
     for event_type, code, value in events:
         body.extend(struct.pack("<HHi", event_type, code, int(value)))
     return bytes(body)
+
+
+def _normalize_pointer_id(value: object) -> int:
+    try:
+        pointer_id = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return abs(pointer_id) or 1
+
+
+def _normalize_pressure(value: object) -> int:
+    if value is None:
+        return 50
+    try:
+        pressure = float(value)
+    except (TypeError, ValueError):
+        return 50
+    if pressure <= 0:
+        return 50
+    if pressure <= 1:
+        return max(1, round(pressure * 100))
+    return max(1, round(pressure))

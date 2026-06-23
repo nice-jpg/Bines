@@ -9,10 +9,11 @@ from unittest.mock import patch
 
 from nice_auther.shadow_root import AdbClient, ShadowConfig, ShadowSession
 from nice_auther.shadow_root.display import MjpegScreencapStreamer, create_display_streamer
-from nice_auther.shadow_root.input_stream import ABS_MT_POSITION_X, ABS_MT_POSITION_Y, PIAR_MAGIC, TouchEventEncoder, parse_input_capabilities
+from nice_auther.shadow_root.input_stream import ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_PRESSURE, PIAR_MAGIC, TouchEventEncoder, parse_input_capabilities
 from nice_auther.shadow_root.run import _config_from_args
-from nice_auther.shadow_root.server import _ShadowHandler, _access_url_for_config, _bind_host_for_config, start_shadow_session
+from nice_auther.shadow_root.server import _ShadowHandler, _access_url_for_config, _bind_host_for_config, _payload_summary, start_shadow_session
 from nice_auther.shadow_root.tunnel import SshReverseTunnel, tunnel_access_url
+from nice_auther.shadow_root.web_ui import INDEX_HTML
 
 
 class FakeStdin(BytesIO):
@@ -328,6 +329,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         )
 
         self.assertEqual(result["accepted"], 3)
+        self.assertEqual(result["injector"]["written_bytes"], result["frames_bytes"])
         self.assertTrue(process.stdin.getvalue().startswith(PIAR_MAGIC))
         self.assertNotIn(["adb", "shell", "input", "tap", "108", "240"], runner.calls)
         self.assertEqual(session.operations[-1]["type"], "pointerup")
@@ -351,7 +353,52 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         handler = object.__new__(_ShadowHandler)
         handler.wfile = ResettingWriter()
 
-        self.assertIsNone(handler._write_body(b"frame"))
+        with patch("sys.stdout", new_callable=StringIO):
+            self.assertIsNone(handler._write_body(b"frame"))
+
+    def test_web_ui_supports_real_mobile_touch_events(self) -> None:
+        self.assertIn('window.PointerEvent', INDEX_HTML)
+        self.assertIn('touchstart', INDEX_HTML)
+        self.assertIn('touchmove', INDEX_HTML)
+        self.assertIn('touchend', INDEX_HTML)
+        self.assertIn('passive: false', INDEX_HTML)
+        self.assertIn('ev.preventDefault()', INDEX_HTML)
+        self.assertIn('-webkit-touch-callout: none', INDEX_HTML)
+
+    def test_web_ui_has_visible_debug_log(self) -> None:
+        self.assertIn('id="debugLog"', INDEX_HTML)
+        self.assertIn('function log(', INDEX_HTML)
+        self.assertIn('flush start', INDEX_HTML)
+        self.assertIn('POST ${path}', INDEX_HTML)
+        self.assertIn('page loaded', INDEX_HTML)
+
+    def test_server_payload_summary_keeps_event_logs_compact(self) -> None:
+        summary = _payload_summary(
+            {
+                "events": [
+                    {"type": "pointerdown", "pointer_id": 1, "x": 10, "y": 20, "width": 100},
+                    {"type": "pointerup", "pointer_id": 1, "x": 30, "y": 40, "width": 100},
+                ],
+            }
+        )
+
+        self.assertEqual(summary["events"], 2)
+        self.assertEqual(summary["first"], {"type": "pointerdown", "pointer_id": 1, "x": 10, "y": 20})
+        self.assertEqual(summary["last"], {"type": "pointerup", "pointer_id": 1, "x": 30, "y": 40})
+
+    def test_touch_event_encoder_scales_browser_pressure_and_normalizes_pointer_id(self) -> None:
+        encoder = TouchEventEncoder(parse_input_capabilities("", (100, 200)), (100, 200))
+
+        packet, audits = encoder.encode_batch(
+            [
+                {"type": "pointerdown", "pointer_id": -1171356434, "x": 10, "y": 20, "width": 100, "height": 200, "pressure": 0.5},
+                {"type": "pointerup", "pointer_id": -1171356434, "x": 10, "y": 20, "width": 100, "height": 200, "pressure": 0},
+            ]
+        )
+
+        self.assertEqual(audits[0]["pointer_id"], 1171356434)
+        self.assertEqual(audits[1]["pointer_id"], 1171356434)
+        self.assertIn(ABS_MT_PRESSURE.to_bytes(2, "little") + (50).to_bytes(4, "little", signed=True), packet)
 
     def test_touch_event_encoder_preserves_move_frames(self) -> None:
         capabilities = parse_input_capabilities(
