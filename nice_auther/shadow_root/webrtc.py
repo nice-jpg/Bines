@@ -43,6 +43,8 @@ class WebRtcGateway:
         return self.config.webrtc_control_port or (self.config.port + 1002)
 
     def command(self) -> list[str]:
+        if not self.config.webrtc_gateway_managed:
+            return []
         path = Path(self.config.webrtc_gateway_path) if self.config.webrtc_gateway_path else DEFAULT_WEBRTC_GATEWAY_PATH
         if not path.exists():
             raise RuntimeError(
@@ -58,6 +60,12 @@ class WebRtcGateway:
             self.host,
             "--listen-port",
             str(self.port),
+            "--ice-public-ip",
+            self.config.webrtc_ice_public_ip,
+            "--ice-udp-port-min",
+            str(self.config.webrtc_ice_udp_port_min),
+            "--ice-udp-port-max",
+            str(self.config.webrtc_ice_udp_port_max),
             "--rtp-listen-host",
             self.config.webrtc_rtp_listen_host,
             "--rtp-port",
@@ -72,6 +80,9 @@ class WebRtcGateway:
         return command
 
     def start(self) -> None:
+        if not self.config.webrtc_gateway_managed:
+            log_event("shadow_root.webrtc_gateway", "external gateway configured", host=self.host, port=self.port)
+            return
         if self.process is not None and self.process.poll() is None:
             return
         command = self.command()
@@ -90,6 +101,8 @@ class WebRtcGateway:
     def stop(self) -> None:
         process = self.process
         self.process = None
+        if not self.config.webrtc_gateway_managed:
+            return
         if process is None:
             return
         try:
@@ -128,14 +141,18 @@ class WebRtcGateway:
         effective_rtp_host = "127.0.0.1" if self.config.webrtc_transport.strip().lower() == "adb_reverse_tcp" else self.config.webrtc_rtp_host
         return {
             "enabled": True,
+            "managed": self.config.webrtc_gateway_managed,
             "transport": self.config.webrtc_transport,
             "host": self.host,
             "port": self.port,
+            "ice_public_ip": self.config.webrtc_ice_public_ip,
+            "ice_udp_port_min": self.config.webrtc_ice_udp_port_min,
+            "ice_udp_port_max": self.config.webrtc_ice_udp_port_max,
             "rtp_listen_host": self.config.webrtc_rtp_listen_host,
             "rtp_port": self.rtp_port,
             "android_rtp_host": effective_rtp_host,
             "control_port": self.control_port,
             "pid": getattr(process, "pid", None) if process is not None else None,
             "returncode": process.poll() if process is not None else None,
-            "running": process is not None and process.poll() is None,
+            "running": (process is not None and process.poll() is None) if self.config.webrtc_gateway_managed else True,
         }

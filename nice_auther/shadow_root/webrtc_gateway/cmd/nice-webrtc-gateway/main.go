@@ -12,6 +12,9 @@ import (
 func main() {
 	listenHost := flag.String("listen-host", "127.0.0.1", "HTTP signaling listen host")
 	listenPort := flag.Int("listen-port", 9765, "HTTP signaling listen port")
+	icePublicIP := flag.String("ice-public-ip", "", "IP advertised in WebRTC ICE candidates")
+	iceUDPPortMin := flag.Int("ice-udp-port-min", 0, "minimum UDP port for WebRTC ICE")
+	iceUDPPortMax := flag.Int("ice-udp-port-max", 0, "maximum UDP port for WebRTC ICE")
 	transport := flag.String("transport", "adb_reverse_tcp", "Android-to-gateway media transport: adb_reverse_tcp or udp_rtp")
 	rtpListenHost := flag.String("rtp-listen-host", "0.0.0.0", "H.264 RTP listen host")
 	rtpPort := flag.Int("rtp-port", 9766, "H.264 RTP listen port")
@@ -23,6 +26,9 @@ func main() {
 	server := gateway.New(gateway.Config{
 		ListenHost:       *listenHost,
 		ListenPort:       *listenPort,
+		ICEPublicIP:      *icePublicIP,
+		ICEUDPPortMin:    *iceUDPPortMin,
+		ICEUDPPortMax:    *iceUDPPortMax,
 		Transport:        *transport,
 		RTPListenHost:    *rtpListenHost,
 		RTPPort:          *rtpPort,

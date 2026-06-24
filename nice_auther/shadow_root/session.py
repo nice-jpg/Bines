@@ -97,6 +97,33 @@ class ShadowSession:
             }
         return answer
 
+    def wake_display(self) -> dict[str, Any]:
+        control_port = self.config.webrtc_control_port or (self.config.port + 1002)
+        actions: list[dict[str, Any]] = []
+        for command in (
+            ["input", "keyevent", "KEYCODE_WAKEUP"],
+            ["input", "keyevent", "KEYCODE_MENU"],
+        ):
+            try:
+                self.adb.shell(command, root=True)
+                actions.append({"command": command, "ok": True})
+            except Exception as exc:
+                actions.append({"command": command, "ok": False, "error": str(exc)})
+        try:
+            self.adb.start_shell(
+                "sh -c 'printf PLI | (toybox nc -u -w 1 127.0.0.1 "
+                + str(control_port)
+                + " || nc -u -w 1 127.0.0.1 "
+                + str(control_port)
+                + ")'",
+                root=False,
+            )
+            actions.append({"command": "agent PLI", "ok": True, "port": control_port})
+        except Exception as exc:
+            actions.append({"command": "agent PLI", "ok": False, "port": control_port, "error": str(exc)})
+        log_event("shadow_root.session", "wake display", actions=actions)
+        return {"ok": any(action.get("ok") for action in actions), "actions": actions}
+
     def status(self) -> dict[str, Any]:
         transport = self.config.webrtc_transport
         effective_rtp_host = "127.0.0.1" if transport.strip().lower() == "adb_reverse_tcp" else self.config.webrtc_rtp_host

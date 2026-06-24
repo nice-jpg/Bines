@@ -36,6 +36,7 @@ final class H264SurfaceEncoder implements Closeable {
         format.setInteger(MediaFormat.KEY_FRAME_RATE, config.fps);
         format.setInteger(MediaFormat.KEY_BIT_RATE, config.bitrateBitsPerSecond());
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, Math.max(1, config.iFrameIntervalMs / 1000));
+        forceBaselineProfile(format);
         encoder = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC);
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         inputSurface = encoder.createInputSurface();
@@ -50,6 +51,16 @@ final class H264SurfaceEncoder implements Closeable {
         }, "nice-shadow-h264-drain");
         drainThread.start();
         return inputSurface;
+    }
+
+    private void forceBaselineProfile(MediaFormat format) {
+        try {
+            format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
+            format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31);
+            System.err.println("nice_shadow_agent encoder profile baseline level=31");
+        } catch (Exception exc) {
+            System.err.println("nice_shadow_agent encoder profile baseline unavailable " + exc);
+        }
     }
 
     void requestKeyFrame() {

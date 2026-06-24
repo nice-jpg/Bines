@@ -136,6 +136,10 @@ class NiceAutherShadowRootTests(unittest.TestCase):
                 "SHADOW_VIDEO_BITRATE": "900k",
                 "SHADOW_VIDEO_IFRAME_INTERVAL_MS": "750",
                 "SHADOW_WEBRTC_GATEWAY_PATH": "/tmp/gateway",
+                "SHADOW_WEBRTC_GATEWAY_MANAGED": "false",
+                "SHADOW_WEBRTC_ICE_PUBLIC_IP": "192.168.1.20",
+                "SHADOW_WEBRTC_ICE_UDP_PORT_MIN": "30000",
+                "SHADOW_WEBRTC_ICE_UDP_PORT_MAX": "30010",
                 "SHADOW_ANDROID_AGENT_JAR": "/tmp/agent.jar",
                 "SHADOW_ANDROID_AGENT_MAIN_CLASS": "example.Agent",
                 "SHADOW_WEBRTC_RTP_MTU": "1000",
@@ -152,6 +156,10 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertEqual(quality_config.video_bitrate, "900k")
         self.assertEqual(quality_config.video_iframe_interval_ms, 750)
         self.assertEqual(quality_config.webrtc_gateway_path, "/tmp/gateway")
+        self.assertFalse(quality_config.webrtc_gateway_managed)
+        self.assertEqual(quality_config.webrtc_ice_public_ip, "192.168.1.20")
+        self.assertEqual(quality_config.webrtc_ice_udp_port_min, 30000)
+        self.assertEqual(quality_config.webrtc_ice_udp_port_max, 30010)
         self.assertEqual(quality_config.android_agent_jar, "/tmp/agent.jar")
         self.assertEqual(quality_config.android_agent_main_class, "example.Agent")
         self.assertEqual(quality_config.webrtc_rtp_mtu, 1000)
@@ -425,6 +433,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
     def test_web_ui_uses_webrtc_video_and_datachannel(self) -> None:
         self.assertIn('id="screenVideo"', INDEX_HTML)
         self.assertIn('autoplay playsinline muted', INDEX_HTML)
+        self.assertIn('object-fit: contain', INDEX_HTML)
         self.assertIn('new RTCPeerConnection()', INDEX_HTML)
         self.assertIn('createDataChannel("control"', INDEX_HTML)
         self.assertIn('waitForIceGatheringComplete(peerConnection)', INDEX_HTML)
@@ -433,6 +442,17 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertIn('controlChannel.readyState === "open"', INDEX_HTML)
         self.assertIn('return await post("/events", {events});', INDEX_HTML)
         self.assertIn('startMjpeg()', INDEX_HTML)
+        self.assertIn('id="wake"', INDEX_HTML)
+        self.assertIn('function wakeDisplay(reason = "manual")', INDEX_HTML)
+        self.assertIn('post("/wake", {reason})', INDEX_HTML)
+        self.assertIn('wakeDisplay("webrtc-connected")', INDEX_HTML)
+        self.assertIn('wakeDisplay("button")', INDEX_HTML)
+        self.assertIn('screenVideo.onloadedmetadata', INDEX_HTML)
+        self.assertIn('screenVideo.onerror', INDEX_HTML)
+        self.assertIn('function sdpCandidates(sdp)', INDEX_HTML)
+        self.assertIn('remote ICE candidates', INDEX_HTML)
+        self.assertNotIn('id="start"', INDEX_HTML)
+        self.assertNotIn('id="stop"', INDEX_HTML)
 
     def test_server_payload_summary_keeps_event_logs_compact(self) -> None:
         summary = _payload_summary(
@@ -581,6 +601,8 @@ add 1: /dev/input/event3
         self.assertEqual(started[0][0], str(gateway_bin))
         self.assertIn("--transport", started[0])
         self.assertIn("adb_reverse_tcp", started[0])
+        self.assertIn("--ice-public-ip", started[0])
+        self.assertIn("--ice-udp-port-min", started[0])
         self.assertIn("--rtp-port", started[0])
         self.assertIn("--rtp-listen-host", started[0])
         self.assertIn("0.0.0.0", started[0])
@@ -791,6 +813,20 @@ add 1: /dev/input/event3
         self.assertIn('"ok": false', payload)
         self.assertIn('"target_host": "127.0.0.1"', payload)
 
+    def test_session_wake_display_sends_keyevents_and_agent_pli(self) -> None:
+        runner = RecordingRunner()
+        started: list[list[str]] = []
+        config = ShadowConfig(port=8765)
+        adb = AdbClient(config, runner=runner, popen_factory=lambda args, **kwargs: started.append(args) or FakeProcess())
+        session = ShadowSession(config, adb=adb)
+
+        result = session.wake_display()
+
+        self.assertTrue(result["ok"])
+        self.assertIn(["adb", "shell", "su", "-c", "input keyevent KEYCODE_WAKEUP"], runner.calls)
+        self.assertIn(["adb", "shell", "su", "-c", "input keyevent KEYCODE_MENU"], runner.calls)
+        self.assertTrue(any("printf PLI" in " ".join(call) and "9767" in " ".join(call) for call in started))
+
     def test_webrtc_missing_agent_jar_does_not_abort_http_session(self) -> None:
         runner = RecordingRunner()
         config = ShadowConfig()
@@ -857,6 +893,8 @@ add 1: /dev/input/event3
         self.assertIn("output.write((length >>> 8) & 0xff)", tcp_sender)
         self.assertIn("consumeIdrRequest", control)
         self.assertIn("MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface", encoder)
+        self.assertIn("AVCProfileBaseline", encoder)
+        self.assertIn("MediaFormat.KEY_LEVEL", encoder)
         self.assertIn("PARAMETER_KEY_REQUEST_SYNC_FRAME", encoder)
         self.assertIn("BUFFER_FLAG_CODEC_CONFIG", encoder)
         self.assertIn("frameSink.onFrame(frame, info.presentationTimeUs, true)", encoder)

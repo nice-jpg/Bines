@@ -32,8 +32,12 @@ class ShadowConfig:
     video_bitrate: str = "2M"
     video_iframe_interval_ms: int = 1000
     webrtc_gateway_path: str = ""
+    webrtc_gateway_managed: bool = True
     webrtc_gateway_host: str = "127.0.0.1"
     webrtc_gateway_port: int = 0
+    webrtc_ice_public_ip: str = ""
+    webrtc_ice_udp_port_min: int = 0
+    webrtc_ice_udp_port_max: int = 0
     webrtc_transport: str = "adb_reverse_tcp"
     webrtc_rtp_host: str = ""
     webrtc_rtp_listen_host: str = "0.0.0.0"
@@ -80,8 +84,12 @@ class ShadowConfig:
             video_bitrate=source.get("SHADOW_VIDEO_BITRATE", "2M"),
             video_iframe_interval_ms=int(source.get("SHADOW_VIDEO_IFRAME_INTERVAL_MS", "1000")),
             webrtc_gateway_path=source.get("SHADOW_WEBRTC_GATEWAY_PATH", ""),
+            webrtc_gateway_managed=_env_bool(source.get("SHADOW_WEBRTC_GATEWAY_MANAGED", "true")),
             webrtc_gateway_host=source.get("SHADOW_WEBRTC_GATEWAY_HOST", "127.0.0.1"),
             webrtc_gateway_port=int(source.get("SHADOW_WEBRTC_GATEWAY_PORT", "0")),
+            webrtc_ice_public_ip=source.get("SHADOW_WEBRTC_ICE_PUBLIC_IP", ""),
+            webrtc_ice_udp_port_min=int(source.get("SHADOW_WEBRTC_ICE_UDP_PORT_MIN", "0")),
+            webrtc_ice_udp_port_max=int(source.get("SHADOW_WEBRTC_ICE_UDP_PORT_MAX", "0")),
             webrtc_transport=source.get("SHADOW_WEBRTC_TRANSPORT", "adb_reverse_tcp"),
             webrtc_rtp_host=source.get("SHADOW_WEBRTC_RTP_HOST", ""),
             webrtc_rtp_listen_host=source.get("SHADOW_WEBRTC_RTP_LISTEN_HOST", "0.0.0.0"),

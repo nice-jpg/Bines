@@ -24,12 +24,16 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
     parser.add_argument("--token", help="Optional browser/API access token.")
     parser.add_argument("--video-backend", choices=["webrtc_h264", "mjpeg_screencap"], help="Display backend.")
     parser.add_argument("--webrtc-gateway-path", help="Path to the external WebRTC gateway binary.")
+    parser.add_argument("--webrtc-gateway-unmanaged", action="store_true", help="Do not start/stop the gateway process locally.")
     parser.add_argument("--android-agent-jar", help="Path to the Android H.264 shadow agent jar.")
     parser.add_argument("--android-agent-main-class", help="Android app_process main class.")
     parser.add_argument("--video-max-size", type=int, help="Maximum encoded video dimension.")
     parser.add_argument("--video-fps", type=int, help="Maximum encoded video FPS.")
     parser.add_argument("--video-bitrate", help='Encoded video bitrate, for example "2M" or "900k".')
     parser.add_argument("--video-iframe-interval-ms", type=int, help="H.264 IDR/GOP interval in milliseconds.")
+    parser.add_argument("--webrtc-ice-public-ip", help="IP advertised in WebRTC ICE candidates for remote browsers.")
+    parser.add_argument("--webrtc-ice-udp-port-min", type=int, help="Minimum UDP port for WebRTC ICE.")
+    parser.add_argument("--webrtc-ice-udp-port-max", type=int, help="Maximum UDP port for WebRTC ICE.")
     parser.add_argument("--webrtc-transport", choices=["adb_reverse_tcp", "udp_rtp"], help="Android-to-gateway media transport.")
     parser.add_argument("--webrtc-rtp-host", help="Host/IP the Android agent should send RTP to.")
     parser.add_argument("--webrtc-rtp-listen-host", help="Local host/IP the gateway should bind for RTP, usually 0.0.0.0.")
@@ -59,6 +63,9 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
         "video_fps": args.video_fps,
         "video_bitrate": args.video_bitrate,
         "video_iframe_interval_ms": args.video_iframe_interval_ms,
+        "webrtc_ice_public_ip": args.webrtc_ice_public_ip,
+        "webrtc_ice_udp_port_min": args.webrtc_ice_udp_port_min,
+        "webrtc_ice_udp_port_max": args.webrtc_ice_udp_port_max,
         "webrtc_transport": args.webrtc_transport,
         "webrtc_rtp_host": args.webrtc_rtp_host,
         "webrtc_rtp_listen_host": args.webrtc_rtp_listen_host,
@@ -71,6 +78,8 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
         "tunnel_local_host": args.tunnel_local_host,
         "tunnel_extra_args": args.tunnel_extra_args,
     }
+    if args.webrtc_gateway_unmanaged:
+        overrides["webrtc_gateway_managed"] = False
     if args.tunnel:
         overrides["tunnel_enabled"] = True
     if args.android_agent_self_test_rtp:

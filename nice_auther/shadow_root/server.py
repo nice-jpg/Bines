@@ -90,6 +90,10 @@ class _ShadowHandler(BaseHTTPRequestHandler):
                 status = HTTPStatus.OK if "sdp" in result else HTTPStatus.BAD_REQUEST
                 self._send_json(result, status)
                 self._log("POST webrtc offer ok", path=path, keys=sorted(result.keys()), ms=_elapsed_ms(started))
+            elif path == "/wake":
+                result = self.server.session.wake_display()
+                self._send_json(result)
+                self._log("POST wake ok", path=path, result=result, ms=_elapsed_ms(started))
             else:
                 self._log("POST not found", path=path)
                 self._send_json({"ok": False, "error": "not found"}, HTTPStatus.NOT_FOUND)

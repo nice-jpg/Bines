@@ -11,9 +11,9 @@ INDEX_HTML = """<!doctype html>
     body { margin: 0; font-family: system-ui, sans-serif; background: #111; color: #eee; touch-action: none; }
     header { height: 48px; display: flex; gap: 8px; align-items: center; padding: 0 12px; background: #1f2933; }
     button { height: 32px; padding: 0 12px; border: 0; border-radius: 4px; background: #e5e7eb; color: #111; }
-    #screenVideo, #screenImage { display: none; max-width: 100vw; max-height: calc(100vh - 48px); margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; background: #000; }
+    #screenVideo, #screenImage { display: none; width: 100vw; height: calc(100vh - 48px); object-fit: contain; margin: 0 auto; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; background: #000; }
     #screenVideo.active, #screenImage.active { display: block; }
-    body.debug-on #screenVideo, body.debug-on #screenImage { max-height: calc(100vh - 188px); }
+    body.debug-on #screenVideo, body.debug-on #screenImage { height: calc(100vh - 188px); }
     #state { margin-left: auto; font-size: 13px; color: #cbd5e1; }
     #debugLog { display: none; position: fixed; left: 0; right: 0; bottom: 0; height: 140px; overflow: auto; box-sizing: border-box; padding: 6px 8px; background: rgba(0,0,0,.86); color: #d1fae5; font: 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; border-top: 1px solid #374151; z-index: 10; }
     body.debug-on #debugLog { display: block; }
@@ -23,8 +23,7 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
   <header>
-    <button id="start">开始</button>
-    <button id="stop">结束</button>
+    <button id="wake">唤醒</button>
     <button id="debugToggle">Debug</button>
     <span id="state">idle</span>
   </header>
@@ -51,6 +50,7 @@ INDEX_HTML = """<!doctype html>
     let flushTimer = 0;
     let peerConnection = null;
     let controlChannel = null;
+    let wakeInFlight = false;
 
     function log(message, data = null, level = "info") {
       if (!debugEnabled) return;
@@ -80,6 +80,10 @@ INDEX_HTML = """<!doctype html>
 
     function escapeHtml(value) {
       return String(value).replace(/[&<>"']/g, ch => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch]));
+    }
+
+    function sdpCandidates(sdp) {
+      return String(sdp || "").split(/\\r?\\n/).filter(line => line.startsWith("a=candidate:")).slice(0, 8);
     }
 
     async function post(path, payload = {}) {
@@ -205,6 +209,22 @@ INDEX_HTML = """<!doctype html>
       return await post("/events", {events});
     }
 
+    async function wakeDisplay(reason = "manual") {
+      if (wakeInFlight) return {ok: true, skipped: true};
+      wakeInFlight = true;
+      log("wake", {reason});
+      try {
+        if (screenVideo.srcObject) {
+          try { await screenVideo.play(); } catch (err) { log("video play failed", {name: err.name, message: err.message}, "warn"); }
+        }
+        const result = await post("/wake", {reason});
+        log("wake complete", result);
+        return result;
+      } finally {
+        window.setTimeout(() => { wakeInFlight = false; }, 500);
+      }
+    }
+
     async function flushEvents() {
       if (flushing) return;
       flushScheduled = false;
@@ -257,21 +277,35 @@ INDEX_HTML = """<!doctype html>
       screenImage.classList.remove("active");
       peerConnection = new RTCPeerConnection();
       controlChannel = peerConnection.createDataChannel("control", {ordered: true});
-      controlChannel.onopen = () => log("DataChannel open");
+      controlChannel.onopen = () => { log("DataChannel open"); void wakeDisplay("datachannel-open"); };
       controlChannel.onclose = () => log("DataChannel closed", null, "warn");
+      peerConnection.onconnectionstatechange = () => {
+        log("WebRTC connection state", {state: peerConnection.connectionState});
+        if (peerConnection.connectionState === "connected") void wakeDisplay("webrtc-connected");
+      };
+      peerConnection.oniceconnectionstatechange = () => log("WebRTC ice state", {state: peerConnection.iceConnectionState});
       peerConnection.ontrack = ev => {
         screenVideo.srcObject = ev.streams[0];
-        void screenVideo.play();
+        void screenVideo.play().catch(err => log("video play failed", {name: err.name, message: err.message}, "warn"));
         log("WebRTC track", {kind: ev.track.kind});
+        void wakeDisplay("track");
       };
+      screenVideo.onwaiting = () => { log("video waiting", null, "warn"); void wakeDisplay("video-waiting"); };
+      screenVideo.onplaying = () => log("video playing", {width: screenVideo.videoWidth, height: screenVideo.videoHeight});
+      screenVideo.onloadedmetadata = () => log("video metadata", {width: screenVideo.videoWidth, height: screenVideo.videoHeight, readyState: screenVideo.readyState});
+      screenVideo.onresize = () => log("video resize", {width: screenVideo.videoWidth, height: screenVideo.videoHeight});
+      screenVideo.onerror = () => log("video error", {code: screenVideo.error && screenVideo.error.code, message: screenVideo.error && screenVideo.error.message}, "error");
       peerConnection.addTransceiver("video", {direction: "recvonly"});
       const offer = await peerConnection.createOffer();
       await peerConnection.setLocalDescription(offer);
       await waitForIceGatheringComplete(peerConnection);
+      log("local ICE candidates", sdpCandidates(peerConnection.localDescription && peerConnection.localDescription.sdp));
       const answer = await post("/webrtc/offer", peerConnection.localDescription);
       if (!answer.sdp) throw new Error(answer.error || "WebRTC answer missing sdp");
+      log("remote ICE candidates", sdpCandidates(answer.sdp));
       await peerConnection.setRemoteDescription(answer);
       log("WebRTC connected", {type: answer.type});
+      void wakeDisplay("answer");
     }
 
     function startMjpeg() {
@@ -282,14 +316,7 @@ INDEX_HTML = """<!doctype html>
       log("stream started", {src: screenImage.src});
     }
 
-    document.getElementById("start").onclick = async () => { log("start clicked"); await post("/recording/start"); await refreshStatus(); };
-    document.getElementById("stop").onclick = async () => {
-      log("stop clicked");
-      const result = await post("/recording/stop");
-      await refreshStatus();
-      console.log("recording bundle", result.bundle);
-      log("recording bundle", {hasBundle: !!result.bundle, operations: result.bundle && result.bundle.operations ? result.bundle.operations.length : 0});
-    };
+    document.getElementById("wake").onclick = async () => { await wakeDisplay("button"); };
     debugToggle.onclick = () => setDebugEnabled(!debugEnabled);
     setDebugEnabled(debugEnabled);
     log("page loaded", {pointerEvent: !!window.PointerEvent, userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints || 0});

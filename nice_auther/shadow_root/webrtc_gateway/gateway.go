@@ -21,6 +21,9 @@ import (
 type Config struct {
 	ListenHost       string
 	ListenPort       int
+	ICEPublicIP      string
+	ICEUDPPortMin    int
+	ICEUDPPortMax    int
 	Transport        string
 	RTPListenHost    string
 	RTPPort          int
@@ -52,7 +55,7 @@ type Gateway struct {
 }
 
 func New(config Config) *Gateway {
-	api, track := newWebRTCAPIAndTrack()
+	api, track := newWebRTCAPIAndTrack(config)
 	return &Gateway{
 		Config:     config,
 		Client:     &http.Client{Timeout: 5 * time.Second},
@@ -299,7 +302,7 @@ func (g *Gateway) requestIDR() {
 	_, _ = conn.Write([]byte("PLI"))
 }
 
-func newWebRTCAPIAndTrack() (*webrtc.API, *webrtc.TrackLocalStaticRTP) {
+func newWebRTCAPIAndTrack(config Config) (*webrtc.API, *webrtc.TrackLocalStaticRTP) {
 	codec := webrtc.RTPCodecCapability{
 		MimeType:     webrtc.MimeTypeH264,
 		ClockRate:    90000,
@@ -311,7 +314,22 @@ func newWebRTCAPIAndTrack() (*webrtc.API, *webrtc.TrackLocalStaticRTP) {
 		RTPCodecCapability: codec,
 		PayloadType:        96,
 	}, webrtc.RTPCodecTypeVideo)
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine))
+	settingEngine := webrtc.SettingEngine{}
+	settingEngine.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+	if config.ICEPublicIP != "" {
+		settingEngine.SetNAT1To1IPs([]string{config.ICEPublicIP}, webrtc.ICECandidateTypeHost)
+		log.Printf("webrtc ice public ip=%s", config.ICEPublicIP)
+	}
+	if config.ICEUDPPortMin > 0 || config.ICEUDPPortMax > 0 {
+		if config.ICEUDPPortMin <= 0 || config.ICEUDPPortMax <= 0 {
+			panic("both ICE UDP port min and max are required")
+		}
+		if err := settingEngine.SetEphemeralUDPPortRange(uint16(config.ICEUDPPortMin), uint16(config.ICEUDPPortMax)); err != nil {
+			panic(err)
+		}
+		log.Printf("webrtc ice udp port range=%d-%d", config.ICEUDPPortMin, config.ICEUDPPortMax)
+	}
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine), webrtc.WithSettingEngine(settingEngine))
 	track, err := webrtc.NewTrackLocalStaticRTP(codec, "video", "screen")
 	if err != nil {
 		panic(err)
