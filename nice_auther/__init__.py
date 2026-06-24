@@ -1,2 +1,0 @@
-"""Remote Android operation helpers."""
-
