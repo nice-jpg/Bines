@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -52,6 +51,8 @@ type Gateway struct {
 	rtpOnce     sync.Once
 	rtpStartErr error
 	controlAddr *net.UDPAddr
+	controlMu   sync.Mutex
+	controlConn net.Conn
 }
 
 func New(config Config) *Gateway {
@@ -116,24 +117,27 @@ func (g *Gateway) StartMedia() error {
 }
 
 func (g *Gateway) ForwardEvents(payload []byte) error {
-	if g.Config.EventsURL == "" {
-		return errors.New("events url is required")
+	return g.ForwardAgentControl(payload)
+}
+
+func (g *Gateway) ForwardAgentControl(payload []byte) error {
+	if len(payload) == 0 {
+		return nil
 	}
-	req, err := http.NewRequest(http.MethodPost, g.Config.EventsURL, bytes.NewReader(payload))
-	if err != nil {
+	if len(payload) > 0xffff {
+		return errors.New("agent control payload is too large")
+	}
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
+	if g.controlConn == nil {
+		return errors.New("android agent control connection is not ready")
+	}
+	header := []byte{byte(len(payload) >> 8), byte(len(payload))}
+	if _, err := g.controlConn.Write(header); err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	if g.Config.EventsToken != "" {
-		req.Header.Set("X-Shadow-Token", g.Config.EventsToken)
-	}
-	resp, err := g.Client.Do(req)
-	if err != nil {
+	if _, err := g.controlConn.Write(payload); err != nil {
 		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return errors.New(resp.Status)
 	}
 	return nil
 }
@@ -157,7 +161,7 @@ func (g *Gateway) startRTPForwarder() error {
 		if g.Config.AgentControlPort > 0 {
 			g.controlAddr, _ = net.ResolveUDPAddr("udp", fmt.Sprintf("127.0.0.1:%d", g.Config.AgentControlPort))
 		}
-		if transport == "adb_reverse_tcp" {
+		if transport == "adb_reverse_tcp" || transport == "tcp_direct" {
 			g.rtpStartErr = g.startTCPForwarder()
 			return
 		}
@@ -177,7 +181,14 @@ func (g *Gateway) startRTPForwarder() error {
 }
 
 func (g *Gateway) startTCPForwarder() error {
-	addr := fmt.Sprintf("127.0.0.1:%d", g.Config.RTPPort)
+	listenHost := "127.0.0.1"
+	if g.Config.Transport == "tcp_direct" {
+		listenHost = g.Config.RTPListenHost
+		if listenHost == "" {
+			listenHost = "0.0.0.0"
+		}
+	}
+	addr := fmt.Sprintf("%s:%d", listenHost, g.Config.RTPPort)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -202,6 +213,8 @@ func (g *Gateway) acceptTCPRTP() {
 
 func (g *Gateway) forwardTCPRTP(conn net.Conn) {
 	defer conn.Close()
+	g.setControlConn(conn)
+	defer g.clearControlConn(conn)
 	header := make([]byte, 2)
 	packets := 0
 	bytesForwarded := 0
@@ -238,6 +251,22 @@ func (g *Gateway) forwardTCPRTP(conn net.Conn) {
 			log.Printf("rtp tcp forwarded remote=%s packets=%d bytes=%d seq=%d timestamp=%d marker=%t", conn.RemoteAddr(), packets, bytesForwarded, packet.SequenceNumber, packet.Timestamp, packet.Marker)
 		}
 		_ = g.videoTrack.WriteRTP(&packet)
+	}
+}
+
+func (g *Gateway) setControlConn(conn net.Conn) {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
+	g.controlConn = conn
+	log.Printf("agent control attached remote=%s", conn.RemoteAddr())
+}
+
+func (g *Gateway) clearControlConn(conn net.Conn) {
+	g.controlMu.Lock()
+	defer g.controlMu.Unlock()
+	if g.controlConn == conn {
+		g.controlConn = nil
+		log.Printf("agent control detached remote=%s", conn.RemoteAddr())
 	}
 }
 
@@ -291,6 +320,9 @@ func (g *Gateway) readRTCP(sender *webrtc.RTPSender) {
 }
 
 func (g *Gateway) requestIDR() {
+	if err := g.ForwardAgentControl([]byte("PLI")); err == nil {
+		return
+	}
 	if g.controlAddr == nil {
 		return
 	}
@@ -356,4 +388,69 @@ func (g *Gateway) ServeOffer(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(answer)
+}
+
+func (g *Gateway) ServeIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write([]byte(indexHTML))
+}
+
+func (g *Gateway) ServeStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	g.controlMu.Lock()
+	controlReady := g.controlConn != nil
+	g.controlMu.Unlock()
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":        true,
+		"recording": false,
+		"video": map[string]any{
+			"backend":   "webrtc_h264",
+			"transport": g.Config.Transport,
+			"rtp_port":  g.Config.RTPPort,
+		},
+		"webrtc_gateway": map[string]any{
+			"running":       true,
+			"control_ready": controlReady,
+			"listen_host":   g.Config.ListenHost,
+			"listen_port":   g.Config.ListenPort,
+			"ice_public_ip": g.Config.ICEPublicIP,
+		},
+	})
+}
+
+func (g *Gateway) ServeEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := g.ForwardAgentControl(payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(ErrorResponse{OK: false, Error: err.Error()})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
+}
+
+func (g *Gateway) ServeWake(w http.ResponseWriter, r *http.Request) {
+	payload := []byte(`{"type":"wake"}`)
+	if err := g.ForwardAgentControl(payload); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(ErrorResponse{OK: false, Error: err.Error()})
+		return
+	}
+	_ = g.ForwardAgentControl([]byte("PLI"))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 }

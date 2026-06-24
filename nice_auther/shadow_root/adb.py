@@ -160,18 +160,21 @@ class AdbClient:
         )
 
     def kill_processes_matching(self, pattern: str, *, root: bool = True) -> None:
-        quoted_pattern = shlex.quote(pattern)
-        command = (
-            "for pid in $(toybox pgrep -f "
-            + quoted_pattern
-            + " 2>/dev/null || pgrep -f "
-            + quoted_pattern
-            + " 2>/dev/null); do kill -9 \"$pid\" 2>/dev/null || true; done"
-        )
         try:
-            self.shell(command, root=root)
+            output = self.shell(["ps", "-A", "-o", "PID,ARGS"], root=root)
         except Exception:
             return
+        for line in output.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) != 2 or not parts[0].isdigit():
+                continue
+            pid, args = parts
+            if pattern not in args:
+                continue
+            try:
+                self.shell(["kill", "-9", pid], root=root)
+            except Exception:
+                continue
 
     def _adb_args(self, args: list[str]) -> list[str]:
         adb_args = [self.config.adb_path]

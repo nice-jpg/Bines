@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import socket
 import subprocess
 
 
 DEFAULT_INPUT_DEVICE = "/dev/input/event3"
+ENV_DIR = Path(__file__).resolve().parent / "env"
 SCHEMA_VERSION = 1
 TRUE_VALUES = {"1", "true", "yes", "on"}
 
@@ -65,7 +67,7 @@ class ShadowConfig:
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> "ShadowConfig":
-        source = os.environ if env is None else env
+        source = _config_source(env)
         return cls(
             host=source.get("SHADOW_HOST", "127.0.0.1"),
             bind_host=source.get("SHADOW_BIND_HOST", ""),
@@ -111,6 +113,53 @@ class ShadowConfig:
             tunnel_local_host=source.get("SHADOW_TUNNEL_LOCAL_HOST", "127.0.0.1"),
             tunnel_extra_args=source.get("SHADOW_TUNNEL_EXTRA_ARGS", ""),
         )
+
+
+def _config_source(env: dict[str, str] | None) -> dict[str, str]:
+    if env is not None:
+        return env
+    source = _load_env_directory(ENV_DIR)
+    source.update(os.environ)
+    return source
+
+
+def _load_env_directory(path: Path = ENV_DIR) -> dict[str, str]:
+    if path.is_file():
+        return _read_env_file(path)
+    if not path.is_dir():
+        return {}
+    values: dict[str, str] = {}
+    for env_file in sorted(path.glob("*.env")):
+        values.update(_read_env_file(env_file))
+    return values
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].strip()
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        key = key.strip()
+        if not key:
+            continue
+        values[key] = _strip_env_value(value.strip())
+    return values
+
+
+def _strip_env_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1]
+    return value
 
 
 def _env_bool(value: str) -> bool:

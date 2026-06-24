@@ -94,7 +94,7 @@ final class AgentConfig {
         if (fps <= 0 || maxSize <= 0 || mtu < 256) {
             throw new IllegalArgumentException("max-size/fps/mtu are invalid");
         }
-        if (!"adb_reverse_tcp".equals(transport) && !"udp_rtp".equals(transport)) {
+        if (!"adb_reverse_tcp".equals(transport) && !"tcp_direct".equals(transport) && !"udp_rtp".equals(transport)) {
             throw new IllegalArgumentException("unsupported transport: " + transport);
         }
     }

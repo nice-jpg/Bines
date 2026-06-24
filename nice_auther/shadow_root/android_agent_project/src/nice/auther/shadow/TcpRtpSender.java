@@ -1,6 +1,7 @@
 package nice.auther.shadow;
 
 import java.io.BufferedOutputStream;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Socket;
 import java.util.List;
@@ -8,16 +9,29 @@ import java.util.List;
 final class TcpRtpSender implements RtpSender {
     private final Socket socket;
     private final OutputStream output;
+    private final RemoteControlHandler controlHandler;
     private final H264RtpPacketizer packetizer;
+    private final Thread controlThread;
     private int packetCount;
     private int byteCount;
 
-    TcpRtpSender(String host, int port, int mtu) throws Exception {
+    TcpRtpSender(String host, int port, int mtu, RemoteControlHandler controlHandler) throws Exception {
         System.err.println("nice_shadow_agent tcp connect start host=" + host + " port=" + port);
         this.socket = connectWithRetry(host, port);
         this.socket.setTcpNoDelay(true);
         this.output = new BufferedOutputStream(socket.getOutputStream(), 64 * 1024);
+        this.controlHandler = controlHandler;
         this.packetizer = new H264RtpPacketizer(mtu);
+        this.controlThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                readControlLoop();
+            }
+        }, "nice-shadow-tcp-control");
+        this.controlThread.setDaemon(true);
+        if (controlHandler != null) {
+            this.controlThread.start();
+        }
         System.err.println("nice_shadow_agent tcp connected local=" + socket.getLocalSocketAddress() + " remote=" + socket.getRemoteSocketAddress());
     }
 
@@ -32,6 +46,38 @@ final class TcpRtpSender implements RtpSender {
             }
         }
         throw last;
+    }
+
+    private void readControlLoop() {
+        byte[] header = new byte[2];
+        try {
+            InputStream input = socket.getInputStream();
+            while (!socket.isClosed()) {
+                readFully(input, header, 0, header.length);
+                int length = ((header[0] & 0xff) << 8) | (header[1] & 0xff);
+                if (length <= 0 || length > 65535) {
+                    continue;
+                }
+                byte[] payload = new byte[length];
+                readFully(input, payload, 0, payload.length);
+                controlHandler.handleMessage(new String(payload, "UTF-8"));
+            }
+        } catch (Exception exc) {
+            if (!socket.isClosed()) {
+                System.err.println("nice_shadow_agent tcp control end " + exc);
+            }
+        }
+    }
+
+    private static void readFully(InputStream input, byte[] buffer, int offset, int length) throws Exception {
+        int done = 0;
+        while (done < length) {
+            int read = input.read(buffer, offset + done, length - done);
+            if (read < 0) {
+                throw new java.io.EOFException();
+            }
+            done += read;
+        }
     }
 
     @Override

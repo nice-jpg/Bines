@@ -12,3 +12,4 @@ workspace
 test.py
 src/channel/lark-samples-main/
 nice_auther/shadow_root/android_agent_project/build
+nice_auther/shadow_root/env/local.env

@@ -1,9 +1,10 @@
 package gateway
 
 import (
-	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,35 +50,39 @@ func TestServeOfferRejectsInvalidOfferAsJson(t *testing.T) {
 	}
 }
 
-func TestForwardEventsPostsPayload(t *testing.T) {
-	var receivedBody string
-	var receivedToken string
-	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.String() != "http://127.0.0.1:8765/events" {
-			t.Fatalf("unexpected path: %s", r.URL.Path)
+func TestForwardEventsWritesLengthPrefixedAgentControlPayload(t *testing.T) {
+	gatewaySide, agentSide := net.Pipe()
+	defer gatewaySide.Close()
+	defer agentSide.Close()
+	gateway := New(Config{})
+	gateway.setControlConn(gatewaySide)
+	payloadCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		header := make([]byte, 2)
+		if _, err := io.ReadFull(agentSide, header); err != nil {
+			errCh <- err
+			return
 		}
-		defer r.Body.Close()
-		buf, _ := io.ReadAll(r.Body)
-		receivedBody = string(buf)
-		receivedToken = r.Header.Get("X-Shadow-Token")
-		return &http.Response{StatusCode: 200, Body: io.NopCloser(bytes.NewReader(nil))}, nil
-	})}
-	gateway := New(Config{EventsURL: "http://127.0.0.1:8765/events", EventsToken: "secret"})
-	gateway.Client = client
+		length := int(binary.BigEndian.Uint16(header))
+		payload := make([]byte, length)
+		if _, err := io.ReadFull(agentSide, payload); err != nil {
+			errCh <- err
+			return
+		}
+		payloadCh <- payload
+	}()
 
 	if err := gateway.ForwardEvents([]byte(`{"events":[{"type":"pointerup"}]}`)); err != nil {
 		t.Fatal(err)
 	}
-	if receivedBody != `{"events":[{"type":"pointerup"}]}` {
-		t.Fatalf("unexpected forwarded payload: %s", receivedBody)
+	var payload []byte
+	select {
+	case err := <-errCh:
+		t.Fatal(err)
+	case payload = <-payloadCh:
 	}
-	if receivedToken != "secret" {
-		t.Fatalf("missing token header")
+	if string(payload) != `{"events":[{"type":"pointerup"}]}` {
+		t.Fatalf("unexpected forwarded payload: %s", payload)
 	}
-}
-
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
-	return fn(r)
 }

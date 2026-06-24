@@ -264,11 +264,14 @@ class ShadowSession:
             if self.android_agent is None or self.webrtc_gateway is None:
                 raise RuntimeError("webrtc_h264 backend requires Android agent and WebRTC gateway")
             self.android_agent.validate_config()
-            if self.config.webrtc_transport.strip().lower() == "adb_reverse_tcp":
+            transport = self.config.webrtc_transport.strip().lower()
+            if transport == "adb_reverse_tcp":
                 self._setup_adb_reverse()
-            else:
+            elif transport == "udp_rtp":
                 self._reachability = check_android_udp_reachability(self.adb, self.config)
                 log_reachability_result(self._reachability)
+            elif transport != "tcp_direct":
+                raise RuntimeError(f"unsupported WebRTC transport: {transport}")
             self.webrtc_gateway.start()
             self.android_agent.start()
         except Exception as exc:

@@ -5,16 +5,21 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 
+from .agent_runner import start_android_agent
 from .config import ShadowConfig
 from .server import start_shadow_session
 
 
 def main(argv: list[str] | None = None) -> int:
-    start_shadow_session(config=_config_from_args(argv))
+    config, agent_only = _config_from_args(argv)
+    if agent_only:
+        start_android_agent(config)
+    else:
+        start_shadow_session(config=config)
     return 0
 
 
-def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
+def _config_from_args(argv: list[str] | None = None) -> tuple[ShadowConfig, bool]:
     parser = argparse.ArgumentParser(
         description="Start shadow_root and optionally expose it through an SSH reverse tunnel.",
     )
@@ -34,11 +39,12 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
     parser.add_argument("--webrtc-ice-public-ip", help="IP advertised in WebRTC ICE candidates for remote browsers.")
     parser.add_argument("--webrtc-ice-udp-port-min", type=int, help="Minimum UDP port for WebRTC ICE.")
     parser.add_argument("--webrtc-ice-udp-port-max", type=int, help="Maximum UDP port for WebRTC ICE.")
-    parser.add_argument("--webrtc-transport", choices=["adb_reverse_tcp", "udp_rtp"], help="Android-to-gateway media transport.")
+    parser.add_argument("--webrtc-transport", choices=["adb_reverse_tcp", "tcp_direct", "udp_rtp"], help="Android-to-gateway media transport.")
     parser.add_argument("--webrtc-rtp-host", help="Host/IP the Android agent should send RTP to.")
     parser.add_argument("--webrtc-rtp-listen-host", help="Local host/IP the gateway should bind for RTP, usually 0.0.0.0.")
     parser.add_argument("--webrtc-rtp-mtu", type=int, help="RTP packet MTU for Android H.264 sender.")
     parser.add_argument("--android-agent-self-test-rtp", action="store_true", help="Start agent in one-shot synthetic RTP packet test mode.")
+    parser.add_argument("--agent-only", action="store_true", help="Only start the local Android agent; the Web UI and gateway run remotely.")
     parser.add_argument("--tunnel", action="store_true", help="Enable SSH reverse tunnel.")
     parser.add_argument("--tunnel-ssh-host", help="SSH target, for example user@example.com.")
     parser.add_argument("--tunnel-ssh-port", type=int, help="SSH port. Defaults to 22.")
@@ -84,7 +90,7 @@ def _config_from_args(argv: list[str] | None = None) -> ShadowConfig:
         overrides["tunnel_enabled"] = True
     if args.android_agent_self_test_rtp:
         overrides["android_agent_self_test_rtp"] = True
-    return replace(config, **{key: value for key, value in overrides.items() if value is not None})
+    return replace(config, **{key: value for key, value in overrides.items() if value is not None}), args.agent_only
 
 
 if __name__ == "__main__":

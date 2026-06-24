@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from nice_auther.shadow_root import AdbClient, ShadowConfig, ShadowSession
+from nice_auther.shadow_root import config as shadow_config
 from nice_auther.shadow_root.android_agent import AndroidShadowAgent
 from nice_auther.shadow_root.display import MjpegScreencapStreamer, WebRtcH264Streamer, create_display_streamer
 from nice_auther.shadow_root.input_stream import ABS_MT_POSITION_X, ABS_MT_POSITION_Y, ABS_MT_PRESSURE, PIAR_MAGIC, TouchEventEncoder, parse_input_capabilities
@@ -186,6 +188,53 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertEqual(tunnel_config.tunnel_remote_port, 19000)
         self.assertEqual(tunnel_config.tunnel_extra_args, "-o StrictHostKeyChecking=no")
 
+    def test_config_reads_shadow_root_env_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_dir = Path(tmp)
+            (env_dir / "10-default.env").write_text(
+                "\n".join(
+                    [
+                        "# comment",
+                        "SHADOW_PORT=9001",
+                        "export SHADOW_WEBRTC_TRANSPORT=tcp_direct",
+                        "SHADOW_WEBRTC_GATEWAY_MANAGED=false",
+                        "SHADOW_WEBRTC_RTP_HOST='139.224.44.6'",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            (env_dir / "20-local.env").write_text("SHADOW_PORT=9002\n", encoding="utf-8")
+
+            with patch.object(shadow_config, "ENV_DIR", env_dir), patch.dict(os.environ, {}, clear=True):
+                config = ShadowConfig.from_env()
+
+            self.assertEqual(config.port, 9002)
+            self.assertEqual(config.webrtc_transport, "tcp_direct")
+            self.assertFalse(config.webrtc_gateway_managed)
+            self.assertEqual(config.webrtc_rtp_host, "139.224.44.6")
+
+    def test_os_environment_overrides_shadow_root_env_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_dir = Path(tmp)
+            (env_dir / "shadow_root.env").write_text("SHADOW_PORT=9001\n", encoding="utf-8")
+
+            with patch.object(shadow_config, "ENV_DIR", env_dir), patch.dict(os.environ, {"SHADOW_PORT": "9999"}, clear=True):
+                config = ShadowConfig.from_env()
+
+            self.assertEqual(config.port, 9999)
+
+    def test_checked_in_shadow_root_env_only_exposes_active_direct_webrtc_variables(self) -> None:
+        env_text = (Path(__file__).resolve().parents[1] / "nice_auther/shadow_root/env/shadow_root.env").read_text(encoding="utf-8")
+
+        self.assertIn("SHADOW_WEBRTC_TRANSPORT=tcp_direct", env_text)
+        self.assertIn("SHADOW_WEBRTC_GATEWAY_HOST=139.224.44.6", env_text)
+        self.assertIn("SHADOW_ANDROID_AGENT_JAR=", env_text)
+        self.assertNotIn("SHADOW_TUNNEL_", env_text)
+        self.assertNotIn("SHADOW_FRAME_INTERVAL_MS", env_text)
+        self.assertNotIn("SHADOW_VIDEO_FORMAT", env_text)
+        self.assertNotIn("SHADOW_WEBRTC_RTP_LISTEN_HOST", env_text)
+        self.assertNotIn("SHADOW_WEBRTC_GATEWAY_PATH", env_text)
+
     def test_remote_public_host_binds_to_wildcard_by_default(self) -> None:
         config = ShadowConfig(host="remote.example.com", port=9000)
 
@@ -240,7 +289,7 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertTrue(process.terminated)
 
     def test_run_script_args_override_environment_config(self) -> None:
-        config = _config_from_args(
+        config, agent_only = _config_from_args(
             [
                 "--host",
                 "remote.example.com",
@@ -262,6 +311,13 @@ class NiceAutherShadowRootTests(unittest.TestCase):
         self.assertTrue(config.tunnel_enabled)
         self.assertEqual(config.tunnel_ssh_host, "user@remote.example.com")
         self.assertEqual(config.tunnel_remote_port, 29000)
+        self.assertFalse(agent_only)
+
+    def test_run_script_agent_only_flag(self) -> None:
+        config, agent_only = _config_from_args(["--agent-only", "--webrtc-rtp-host", "139.224.44.6"])
+
+        self.assertTrue(agent_only)
+        self.assertEqual(config.webrtc_rtp_host, "139.224.44.6")
 
     def test_start_shadow_session_starts_and_stops_tunnel(self) -> None:
         events: list[str] = []
@@ -587,6 +643,18 @@ add 1: /dev/input/event3
         agent.stop()
         self.assertTrue(process.terminated)
 
+    def test_android_agent_tcp_direct_uses_configured_remote_host(self) -> None:
+        config = ShadowConfig(webrtc_transport="tcp_direct", webrtc_rtp_host="139.224.44.6", webrtc_rtp_port=9081)
+        agent = AndroidShadowAgent(AdbClient(config), config)
+
+        args = agent.agent_args()
+
+        self.assertIn("--transport", args)
+        self.assertIn("tcp_direct", args)
+        self.assertIn("--rtp-host", args)
+        self.assertIn("139.224.44.6", args)
+        self.assertIn("9081", args)
+
     def test_webrtc_gateway_builds_external_process_command(self) -> None:
         started: list[list[str]] = []
         process = FakeProcess()
@@ -607,8 +675,8 @@ add 1: /dev/input/event3
         self.assertIn("--rtp-listen-host", started[0])
         self.assertIn("0.0.0.0", started[0])
         self.assertIn("9766", started[0])
-        self.assertIn("--events-url", started[0])
-        self.assertIn("http://127.0.0.1:8765/events", started[0])
+        self.assertNotIn("--events-url", started[0])
+        self.assertNotIn("http://127.0.0.1:8765/events", started[0])
         gateway.stop()
         self.assertTrue(process.terminated)
 
@@ -792,6 +860,39 @@ add 1: /dev/input/event3
 
         self.assertIn(["adb", "reverse", "tcp:9766", "tcp:9766"], runner.calls)
         self.assertIn(["adb", "reverse", "--remove", "tcp:9766"], runner.calls)
+
+    def test_session_webrtc_tcp_direct_skips_adb_reverse(self) -> None:
+        class FakeAgent:
+            def validate_config(self) -> None:
+                return
+
+            def start(self) -> None:
+                return
+
+            def stop(self) -> None:
+                return
+
+            def status(self) -> dict[str, object]:
+                return {"running": True}
+
+        class FakeGateway:
+            def start(self) -> None:
+                return
+
+            def stop(self) -> None:
+                return
+
+            def status(self) -> dict[str, object]:
+                return {"running": True}
+
+        runner = RecordingRunner()
+        config = ShadowConfig(android_agent_jar="/tmp/agent.jar", port=8765, webrtc_transport="tcp_direct", webrtc_rtp_host="139.224.44.6")
+        adb = AdbClient(config, runner=runner)
+        session = ShadowSession(config, adb=adb, android_agent=FakeAgent(), webrtc_gateway=FakeGateway())
+
+        session.prepare()
+
+        self.assertNotIn(["adb", "reverse", "tcp:9766", "tcp:9766"], runner.calls)
 
     def test_reachability_log_outputs_json(self) -> None:
         result = ReachabilityResult(

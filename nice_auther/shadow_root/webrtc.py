@@ -72,11 +72,7 @@ class WebRtcGateway:
             str(self.rtp_port),
             "--agent-control-port",
             str(self.control_port),
-            "--events-url",
-            f"http://127.0.0.1:{self.config.port}/events",
         ]
-        if self.config.token:
-            command.extend(["--events-token", self.config.token])
         return command
 
     def start(self) -> None:
