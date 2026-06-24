@@ -1,0 +1,3 @@
+[submodule "nScreen"]
+	path = nScreen
+	url = https://github.com/nice-jpg/nScreen.git
