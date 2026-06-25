@@ -13,7 +13,10 @@ class SystemPromptTests(unittest.TestCase):
     def test_prompt_keeps_generic_tool_and_scanning_rules(self) -> None:
         self.assertIn("run_package: open the target app by Android package name", SYSTEM_PROMPT)
         self.assertIn("notify_user: tell the user what external operation", SYSTEM_PROMPT)
-        self.assertIn("authenticate_captcha: pause for human captcha authentication", SYSTEM_PROMPT)
+        self.assertNotIn("start_shadow_service:", SYSTEM_PROMPT)
+        self.assertNotIn("stop_shadow_service:", SYSTEM_PROMPT)
+        self.assertIn("authenticate_captcha: start human captcha authentication", SYSTEM_PROMPT)
+        self.assertIn("captcha_authenticated: close the captcha remote control service", SYSTEM_PROMPT)
         self.assertIn("think: reflect on complex tool outputs", SYSTEM_PROMPT)
         self.assertIn("query_manual: read the PAGE.md manual", SYSTEM_PROMPT)
         self.assertIn("spawn_subagent: create an independent or delegated synchronous subagent", SYSTEM_PROMPT)
@@ -68,8 +71,12 @@ class SystemPromptTests(unittest.TestCase):
 
     def test_prompt_requires_captcha_authentication_tool(self) -> None:
         self.assertIn("first call notify_user, then call authenticate_captcha", SYSTEM_PROMPT)
-        self.assertIn("Do not continue tap, swipe, back, device reading, subagent, or Excel output", SYSTEM_PROMPT)
-        self.assertIn("After authenticate_captcha returns, call uiautomate or screenshot", SYSTEM_PROMPT)
+        self.assertIn("authenticate_captcha opens remote control access", SYSTEM_PROMPT)
+        self.assertIn("http://139.224.44.6:9080", SYSTEM_PROMPT)
+        self.assertIn("End the turn and wait for the user to report completion", SYSTEM_PROMPT)
+        self.assertIn("call captcha_authenticated before any device or Excel action", SYSTEM_PROMPT)
+        self.assertIn("do not continue tap, swipe, back, device reading, subagent, or Excel output", SYSTEM_PROMPT)
+        self.assertIn("After captcha_authenticated returns, call uiautomate or screenshot", SYSTEM_PROMPT)
 
     def test_prompt_guides_subagent_delegation(self) -> None:
         self.assertIn("Independent subagents solve standalone analysis tasks", SYSTEM_PROMPT)

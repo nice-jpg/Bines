@@ -58,6 +58,9 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         class BaseMessage:
             pass
 
+        class AIMessage(BaseMessage):
+            pass
+
         class StructuredTool:
             @classmethod
             def from_function(cls, **kwargs):
@@ -94,6 +97,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         langchain_agents_middleware_summarization.SummarizationMiddleware = SummarizationMiddleware
         langchain_agents_middleware_types.AgentMiddleware = AgentMiddleware
         langchain_core_chat_models.BaseChatModel = BaseChatModel
+        langchain_core_messages.AIMessage = AIMessage
         langchain_core_messages.BaseMessage = BaseMessage
         langchain_core_tools.StructuredTool = StructuredTool
 
@@ -126,7 +130,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
             [
                 "DeviceContextCompressionMiddleware",
                 "RuntimeContextCaptureMiddleware",
-                "HumanInTheLoopMiddleware",
+                "CaptchaHumanInTheLoopMiddleware",
                 "SummarizationMiddleware",
             ],
         )
@@ -142,10 +146,43 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
         hitl = middleware.create_captcha_human_in_the_loop_middleware()
 
-        self.assertEqual(type(hitl).__name__, "HumanInTheLoopMiddleware")
+        self.assertEqual(type(hitl).__name__, "CaptchaHumanInTheLoopMiddleware")
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertEqual(middleware.CAPTCHA_AUTHENTICATION_TOOL_NAME, "authenticate_captcha")
+
+    def test_captcha_middleware_starts_authentication_tool_once_before_interrupt(self) -> None:
+        self.test_build_agent_registers_context_compression_before_summarization()
+        middleware = importlib.import_module("middleware")
+
+        calls = []
+
+        class FakeTool:
+            name = "authenticate_captcha"
+
+            def invoke(self, args):
+                calls.append(args)
+                return "started"
+
+        hitl = middleware.create_captcha_human_in_the_loop_middleware([FakeTool()])
+        hitl._should_interrupt = lambda tool_call, config, state, runtime: True
+        state = {
+            "messages": [
+                sys.modules["langchain_core.messages"].AIMessage(),
+            ]
+        }
+        state["messages"][0].tool_calls = [
+            {
+                "name": "authenticate_captcha",
+                "args": {"current_path": "meituan/外卖", "reason": "captcha"},
+                "id": "tool-call-1",
+            }
+        ]
+
+        hitl._start_pending_authentication_sessions(state, runtime=object())
+        hitl._start_pending_authentication_sessions(state, runtime=object())
+
+        self.assertEqual(calls, [{"current_path": "meituan/外卖", "reason": "captcha"}])
 
 
 if __name__ == "__main__":

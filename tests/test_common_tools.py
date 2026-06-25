@@ -25,7 +25,13 @@ if "langchain_core.tools" not in sys.modules:
     sys.modules["langchain_core"] = langchain_core
     sys.modules["langchain_core.tools"] = langchain_core_tools
 
-from tools.common import CaptchaAuthenticationTool, ManualTool, OperationNoticeTool, ThinkingTool, create_common_tools
+from tools.common import (
+    CaptchaAuthenticationTool,
+    ManualTool,
+    OperationNoticeTool,
+    ThinkingTool,
+    create_common_tools,
+)
 
 
 class FakeLogger:
@@ -34,6 +40,19 @@ class FakeLogger:
 
     def log(self, category, message, details=None) -> None:
         self.records.append((category, message, details or {}))
+
+
+class FakeShadowService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def start_shadow_service(self):
+        self.calls.append("start")
+        return {"ok": True, "running": True}
+
+    def stop_shadow_service(self):
+        self.calls.append("stop")
+        return {"ok": True, "running": False}
 
 
 class CommonToolTests(unittest.TestCase):
@@ -107,34 +126,102 @@ class CommonToolTests(unittest.TestCase):
     def test_think_handles_empty_input(self) -> None:
         self.assertEqual(ThinkingTool().think("  "), "No thought was recorded because the input was empty.")
 
-    def test_authenticate_captcha_records_placeholder_result(self) -> None:
+    def test_authenticate_captcha_starts_service_and_notifies_user(self) -> None:
         logger = FakeLogger()
+        delivered = []
+        service = FakeShadowService()
 
-        result = CaptchaAuthenticationTool(logger=logger).authenticate_captcha(
+        result = CaptchaAuthenticationTool(
+            logger=logger,
+            notifier=delivered.append,
+            service_module=service,
+        ).authenticate_captcha(
             current_path="meituan/外卖",
             reason="security check blocks the shop list",
             evidence="XML contains 验证码",
         )
 
-        self.assertIn("<captcha_authentication", result)
-        self.assertIn("Re-read the current UI", result)
+        self.assertEqual(service.calls, ["start"])
+        self.assertIn("<shadow_service", result)
+        self.assertIn('operation="start"', result)
+        self.assertIn("http://139.224.44.6:9080", result)
         self.assertEqual(logger.records[0][0], "captcha_authentication")
         self.assertEqual(logger.records[0][2]["current_path"], "meituan/外卖")
         self.assertEqual(logger.records[0][2]["reason"], "security check blocks the shop list")
+        self.assertEqual(logger.records[1][0], "shadow_service_start")
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("http://139.224.44.6:9080", delivered[0])
 
     def test_authenticate_captcha_handles_empty_inputs_without_raising(self) -> None:
-        result = CaptchaAuthenticationTool(logger=FakeLogger()).authenticate_captcha("", "", "")
+        result = CaptchaAuthenticationTool(
+            logger=FakeLogger(),
+            service_module=FakeShadowService(),
+        ).authenticate_captcha("", "", "")
 
-        self.assertIn("status=\"placeholder\"", result)
+        self.assertIn('operation="start"', result)
+
+    def test_start_shadow_service_starts_service_and_notifies_user(self) -> None:
+        logger = FakeLogger()
+        delivered = []
+        service = FakeShadowService()
+
+        result = CaptchaAuthenticationTool(
+            logger=logger,
+            notifier=delivered.append,
+            service_module=service,
+        ).start_authentication_session()
+
+        self.assertEqual(service.calls, ["start"])
+        self.assertIn('operation="start"', result)
+        self.assertIn("http://139.224.44.6:9080", result)
+        self.assertEqual(logger.records[0][0], "shadow_service_start")
+        self.assertEqual(len(delivered), 1)
+        self.assertIn("http://139.224.44.6:9080", delivered[0])
+        self.assertIn("done", delivered[0])
+
+    def test_stop_shadow_service_stops_service(self) -> None:
+        logger = FakeLogger()
+        service = FakeShadowService()
+
+        result = CaptchaAuthenticationTool(logger=logger, service_module=service).stop_authentication_session()
+
+        self.assertEqual(service.calls, ["stop"])
+        self.assertIn('operation="stop"', result)
+        self.assertEqual(logger.records[0][0], "shadow_service_stop")
+
+    def test_captcha_authenticated_stops_service(self) -> None:
+        logger = FakeLogger()
+        service = FakeShadowService()
+
+        result = CaptchaAuthenticationTool(logger=logger, service_module=service).captcha_authenticated(
+            current_path="meituan/外卖",
+            evidence="user replied done",
+        )
+
+        self.assertEqual(service.calls, ["stop"])
+        self.assertIn('operation="stop"', result)
+        self.assertEqual(logger.records[0][0], "captcha_authenticated")
+        self.assertEqual(logger.records[0][2]["current_path"], "meituan/外卖")
+        self.assertEqual(logger.records[1][0], "shadow_service_stop")
 
     def test_create_common_tools_registers_think_tool(self) -> None:
         tools = create_common_tools()
 
-        self.assertEqual([tool.name for tool in tools], ["notify_user", "authenticate_captcha", "think", "query_manual"])
+        self.assertEqual(
+            [tool.name for tool in tools],
+            [
+                "notify_user",
+                "authenticate_captcha",
+                "captcha_authenticated",
+                "think",
+                "query_manual",
+            ],
+        )
         self.assertIn("before any external device or Excel operation", tools[0].description)
         self.assertIn("human captcha authentication", tools[1].description)
-        self.assertIn("complex tool outputs", tools[2].description)
-        self.assertIn("does not fetch new information", tools[2].description)
+        self.assertIn("captcha has been completed", tools[2].description)
+        self.assertIn("complex tool outputs", tools[3].description)
+        self.assertIn("does not fetch new information", tools[3].description)
 
     def test_query_manual_returns_only_current_page_doc_for_operation_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
