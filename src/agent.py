@@ -191,16 +191,16 @@ def build_agent(
         tool_factory=lambda: collect_tools(include_subagents=False),
         system_prompt=SYSTEM_PROMPT,
     )
-    middlewares: list[AgentMiddleware] = []
-    # middlewares.append(TodoListMiddleware())
-    middlewares.append(DeviceContextCompressionMiddleware())
-    middlewares.append(RuntimeContextCaptureMiddleware(set_runtime_messages))
-    middlewares.append(create_captcha_human_in_the_loop_middleware())
-    middlewares.append(SummarizationMiddleware(model=model))
     registered_tools = _with_collected_tools(
         tools,
         collect_tools(include_subagents=True, subagent_manager=subagent_manager),
     )
+    middlewares: list[AgentMiddleware] = []
+    # middlewares.append(TodoListMiddleware())
+    middlewares.append(DeviceContextCompressionMiddleware())
+    middlewares.append(RuntimeContextCaptureMiddleware(set_runtime_messages))
+    middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
+    middlewares.append(SummarizationMiddleware(model=model))
 
     return create_agent(
         model=model,

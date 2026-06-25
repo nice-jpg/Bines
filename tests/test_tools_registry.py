@@ -44,11 +44,15 @@ class ToolsRegistryTests(unittest.TestCase):
 
         self.assertNotIn("spawn_subagent", tool_names)
         self.assertIn("notify_user", tool_names)
+        self.assertNotIn("start_shadow_service", tool_names)
+        self.assertNotIn("stop_shadow_service", tool_names)
         self.assertIn("authenticate_captcha", tool_names)
+        self.assertIn("captcha_authenticated", tool_names)
         self.assertIn("think", tool_names)
         self.assertIn("query_manual", tool_names)
         self.assertLess(tool_names.index("notify_user"), tool_names.index("tap"))
         self.assertLess(tool_names.index("authenticate_captcha"), tool_names.index("tap"))
+        self.assertLess(tool_names.index("captcha_authenticated"), tool_names.index("tap"))
         self.assertLess(tool_names.index("think"), tool_names.index("tap"))
         self.assertLess(tool_names.index("query_manual"), tool_names.index("tap"))
 

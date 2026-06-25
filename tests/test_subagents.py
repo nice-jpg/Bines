@@ -34,6 +34,7 @@ class SubagentManagerTests(unittest.TestCase):
                 lambda: [
                     FakeTool("notify_user"),
                     FakeTool("authenticate_captcha"),
+                    FakeTool("captcha_authenticated"),
                     FakeTool("think"),
                     FakeTool("query_manual"),
                     FakeTool("tap"),
@@ -72,6 +73,7 @@ class SubagentManagerTests(unittest.TestCase):
             tool_factory=lambda: [
                 FakeTool("notify_user"),
                 FakeTool("authenticate_captcha"),
+                FakeTool("captcha_authenticated"),
                 FakeTool("think"),
                 FakeTool("query_manual"),
                 FakeTool("tap"),
@@ -89,6 +91,7 @@ class SubagentManagerTests(unittest.TestCase):
             [
                 "notify_user",
                 "authenticate_captcha",
+                "captcha_authenticated",
                 "think",
                 "query_manual",
                 "tap",
@@ -108,6 +111,7 @@ class SubagentManagerTests(unittest.TestCase):
         tool_names = [tool.name for tool in manager._records["subagent-1"].tools]
         self.assertIn("notify_user", tool_names)
         self.assertIn("authenticate_captcha", tool_names)
+        self.assertIn("captcha_authenticated", tool_names)
         self.assertIn("think", tool_names)
         self.assertIn("query_manual", tool_names)
         self.assertIn("tap", tool_names)

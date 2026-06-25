@@ -23,7 +23,13 @@ except ModuleNotFoundError:  # Lightweight fallback for unit tests without LangC
 
 
 SUBAGENT_TOOL_NAMES = {"spawn_subagent", "call_subagent", "kill_subagent"}
-REQUIRED_SUBAGENT_TOOL_NAMES = {"notify_user", "authenticate_captcha", "think", "query_manual"}
+REQUIRED_SUBAGENT_TOOL_NAMES = {
+    "notify_user",
+    "authenticate_captcha",
+    "captcha_authenticated",
+    "think",
+    "query_manual",
+}
 FORK_BOILERPLATE_TAG = "fork_subagent_boilerplate"
 SUBAGENT_RULES = """
 
@@ -32,7 +38,7 @@ Subagent rules:
 - Do not create, call, or delegate to any other subagent.
 - Follow the instructions provided by the main agent and stay within that task boundary.
 - Device operations must remain serial; finish your work and return a concise result before the main agent continues.
-- If you discover a captcha, security check, slider verification, or human verification, call notify_user and authenticate_captcha. Do not bypass or solve captcha screens yourself.
+- If you discover a captcha, security check, slider verification, or human verification, call notify_user and authenticate_captcha. Do not bypass or solve captcha screens yourself. When the user reports completion, call captcha_authenticated before reading or operating the device again.
 - Final output must summarize what was solved, what was collected or written, and any blockers.
 """
 

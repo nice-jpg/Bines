@@ -8,15 +8,14 @@ try:
     from src.agent import AgentRuntime
     from src.channel.feishu import FeishuChannelRuntime, load_feishu_config
     from src.model import build_model
-    from src.tools.common import OperationNoticeTool, create_common_tools
+    from src.tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from agent import AgentRuntime
     from channel.feishu import FeishuChannelRuntime, load_feishu_config
     from model import build_model
-    from tools.common import OperationNoticeTool, create_common_tools
+    from tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
 
 CAPTCHA_RESUME_TEXT = "done"
-CAPTCHA_PAUSED_MESSAGE = "验证码认证已暂停，请人工处理后回复 `done`。"
 
 
 class MutableNotifier:
@@ -44,9 +43,13 @@ def main() -> None:
     channel = FeishuChannelRuntime(load_feishu_config())
     notifier = MutableNotifier()
     operation_notice = OperationNoticeTool(notifier=notifier)
+    captcha_authentication = CaptchaAuthenticationTool(notifier=notifier)
     runtime = AgentRuntime(
         model=build_model(),
-        tools=create_common_tools(operation_notice_tool=operation_notice),
+        tools=create_common_tools(
+            operation_notice_tool=operation_notice,
+            captcha_authentication_tool=captcha_authentication,
+        ),
         name="feishu-agent",
     )
 
@@ -65,10 +68,8 @@ def main() -> None:
                 session_id=session_id,
                 max_iterations=args.max_iterations,
             )
-        if result.interrupted:
-            channel.send_text(message.target, CAPTCHA_PAUSED_MESSAGE)
-            return
-        channel.send_text(message.target, result.output)
+        if result.output:
+            channel.send_text(message.target, result.output)
 
     channel.start(on_message)
 

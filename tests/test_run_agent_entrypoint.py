@@ -73,6 +73,10 @@ class RunAgentEntrypointTests(unittest.TestCase):
             def __init__(self, notifier):
                 self.notifier = notifier
 
+        class FakeCaptchaAuthenticationTool:
+            def __init__(self, notifier):
+                self.notifier = notifier
+
         fake_agent = types.ModuleType("src.agent")
         fake_agent.AgentRuntime = FakeRuntime
         fake_channel = types.ModuleType("src.channel.feishu")
@@ -81,13 +85,18 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_model = types.ModuleType("src.model")
         fake_model.build_model = lambda: "model"
         fake_tools_common = types.ModuleType("src.tools.common")
+        fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
         fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool
-        fake_tools_common.create_common_tools = lambda operation_notice_tool: [operation_notice_tool]
+        fake_tools_common.create_common_tools = lambda operation_notice_tool, captcha_authentication_tool: [
+            operation_notice_tool,
+            captcha_authentication_tool,
+        ]
 
         sys.modules["src.agent"] = fake_agent
         sys.modules["src.channel.feishu"] = fake_channel
         sys.modules["src.model"] = fake_model
         sys.modules["src.tools.common"] = fake_tools_common
+        sys.modules["tools.common"] = fake_tools_common
         sys.modules.pop("run_agent", None)
 
         run_agent = importlib.import_module("run_agent")
@@ -107,7 +116,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         self.assertEqual(calls["sent"], [("chat_1", "output_1"), ("chat_2", "output_2")])
         self.assertEqual(calls["notices"], [("chat_1", "notice"), ("chat_2", "notice")])
 
-    def test_captcha_resume_message_resumes_pending_workflow_without_llm_turn(self) -> None:
+    def test_done_message_resumes_pending_workflow_without_runner_captcha_coupling(self) -> None:
         calls = {"run_turn": [], "resume_turn": [], "sent": []}
 
         class FakeTarget:
@@ -132,8 +141,8 @@ class RunAgentEntrypointTests(unittest.TestCase):
 
             def start(self, on_message):
                 on_message(FakeMessage("chat_1", "start captcha task"))
-                on_message(FakeMessage("chat_1", "验证码已完成"))
-                on_message(FakeMessage("chat_2", "验证码已完成"))
+                on_message(FakeMessage("chat_1", "done"))
+                on_message(FakeMessage("chat_2", "done"))
 
         class FakeRuntime:
             def __init__(self, *, model, tools, name=None):
@@ -158,6 +167,10 @@ class RunAgentEntrypointTests(unittest.TestCase):
             def __init__(self, notifier):
                 self.notifier = notifier
 
+        class FakeCaptchaAuthenticationTool:
+            def __init__(self, notifier):
+                self.notifier = notifier
+
         fake_agent = types.ModuleType("src.agent")
         fake_agent.AgentRuntime = FakeRuntime
         fake_channel = types.ModuleType("src.channel.feishu")
@@ -166,13 +179,18 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_model = types.ModuleType("src.model")
         fake_model.build_model = lambda: "model"
         fake_tools_common = types.ModuleType("src.tools.common")
+        fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
         fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool
-        fake_tools_common.create_common_tools = lambda operation_notice_tool: [operation_notice_tool]
+        fake_tools_common.create_common_tools = lambda operation_notice_tool, captcha_authentication_tool: [
+            operation_notice_tool,
+            captcha_authentication_tool,
+        ]
 
         sys.modules["src.agent"] = fake_agent
         sys.modules["src.channel.feishu"] = fake_channel
         sys.modules["src.model"] = fake_model
         sys.modules["src.tools.common"] = fake_tools_common
+        sys.modules["tools.common"] = fake_tools_common
         sys.modules.pop("run_agent", None)
 
         run_agent = importlib.import_module("run_agent")
@@ -184,12 +202,12 @@ class RunAgentEntrypointTests(unittest.TestCase):
             sys.argv = old_argv
 
         self.assertEqual(calls["run_turn"][0][0], [{"role": "user", "content": "start captcha task"}])
-        self.assertEqual(calls["resume_turn"], [("feishu:chat_1", "验证码已完成", 1000)])
-        self.assertEqual(calls["run_turn"][1][0], [{"role": "user", "content": "验证码已完成"}])
+        self.assertEqual(calls["run_turn"][1][0], [{"role": "user", "content": "done"}])
+        self.assertEqual([item[1] for item in calls["run_turn"]], ["feishu:chat_1", "feishu:chat_2"])
+        self.assertEqual(calls["resume_turn"], [("feishu:chat_1", "done", 1000)])
         self.assertEqual(
             calls["sent"],
             [
-                ("chat_1", "验证码认证已暂停，请人工处理后回复 `验证码已完成`。"),
                 ("chat_1", "resumed output"),
                 ("chat_2", "normal output"),
             ],
