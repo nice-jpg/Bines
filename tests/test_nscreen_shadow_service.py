@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from nScreen.shadow_root import ShadowConfig
 from nScreen.shadow_root import __all__ as shadow_root_exports
+from nScreen.shadow_root.config import ShadowConfig as ConfigClass
 from nScreen.shadow_root import service
 
 
@@ -98,14 +99,36 @@ class ShadowServiceTests(unittest.TestCase):
     def test_stop_shadow_service_without_running_agent_is_idempotent(self) -> None:
         self.assertEqual(service.stop_shadow_service(), {"ok": True, "running": False})
 
+    def test_start_shadow_service_rejects_missing_rtp_host(self) -> None:
+        config = self._make_config(webrtc_rtp_host="")
+        with patch.object(service, "AdbClient", FakeAdbClient):
+            with self.assertRaisesRegex(RuntimeError, "SHADOW_WEBRTC_RTP_HOST"):
+                service.start_shadow_service(config)
+        self.assertEqual(FakeAdbClient.instances, [])
+
+    def test_config_uses_gateway_host_as_rtp_host_default(self) -> None:
+        config = ConfigClass.from_env(
+            {
+                "SHADOW_WEBRTC_GATEWAY_HOST": "gateway.example.test",
+                "SHADOW_ANDROID_AGENT_JAR": self._agent_jar(),
+            }
+        )
+
+        self.assertEqual(config.webrtc_gateway_host, "gateway.example.test")
+        self.assertEqual(config.webrtc_rtp_host, "gateway.example.test")
+
     def test_shadow_root_exports_service_switch_functions(self) -> None:
         self.assertIn("start_shadow_service", shadow_root_exports)
         self.assertIn("stop_shadow_service", shadow_root_exports)
 
-    def _make_config(self) -> ShadowConfig:
+    def _make_config(self, **overrides: object) -> ShadowConfig:
+        values = {"android_agent_jar": self._agent_jar(), "webrtc_rtp_host": "127.0.0.1", **overrides}
+        return ShadowConfig(**values)
+
+    def _agent_jar(self) -> str:
         path = Path(self.tmp_dir.name) / "agent.jar"
         path.write_bytes(b"jar")
-        return ShadowConfig(android_agent_jar=str(path), webrtc_rtp_host="127.0.0.1")
+        return str(path)
 
 
 if __name__ == "__main__":
