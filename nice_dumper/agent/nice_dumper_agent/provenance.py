@@ -39,7 +39,7 @@ def commit_round(
     ensure_workspace_repo(workspace_dir)
     rounds_dir = workspace_dir / "rounds"
     rounds_dir.mkdir(parents=True, exist_ok=True)
-    report_path = rounds_dir / f"round_{round_result.index:04d}.json"
+    report_path = rounds_dir / f"result.json"
     report_path.write_text(json.dumps(asdict(round_result), ensure_ascii=False, indent=2), encoding="utf-8")
     _git(workspace_dir, "add", _relative(workspace_dir, optimizer_path), _relative(workspace_dir, report_path))
     if _has_staged_changes(workspace_dir):

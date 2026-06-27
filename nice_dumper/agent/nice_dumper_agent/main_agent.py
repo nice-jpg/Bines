@@ -60,7 +60,7 @@ def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
     main_agent = build_main_agent(model, trace, runtime)
     main_agent.invoke(
         {"messages": [{"role": "user", "content": _build_main_run_prompt(config)}]},
-        config={"recursion_limit": max(50, config.max_rounds * 15 + 20)},
+        config={"recursion_limit": max(50, config.max_rounds * 20 + 30)},
     )
 
     return OptimizerRunResult(
@@ -128,8 +128,13 @@ Required workflow:
 3. Call the recognizer subagent with XML0 to create L0.
 4. Repeat optimization rounds until should_stop returns stop=true:
    - call optimize_xml with XML0 to create the next XML result;
-   - call the recognizer subagent with that XML result to create the next L result;
-   - call score_round with XML0, the latest XML result, L0, and the latest L result;
+   - inspect the optimize_xml response. If ok=false, keep its fixed -1000
+     score_ref, include the reported optimizer error in your reasoning, skip
+     recognizer and score_round for that failed XML, and propose a corrected
+     complete optimizer script;
+   - otherwise, call the recognizer subagent with that XML result to create the
+     next L result, then call score_round with XML0, that XML result, L0, and
+     the latest L result;
    - inspect get_optimizer_source and propose a more aggressive optimizer script;
    - call apply_optimizer with score_ref, a concrete reason, and the complete script.
 5. Call kill for the recognizer subagent before finishing.

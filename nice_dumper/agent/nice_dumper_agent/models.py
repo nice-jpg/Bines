@@ -37,6 +37,7 @@ class ScoreResult:
     missing_count: int
     missing_penalty: float
     matches: list[MatchResult] = field(default_factory=list)
+    execution_error: str | None = None
 
 
 @dataclass(frozen=True)

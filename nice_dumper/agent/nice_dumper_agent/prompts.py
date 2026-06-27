@@ -22,6 +22,17 @@ Rules:
 - Prefer user-visible labels from text, content-desc, or resource-id.
 - Do not invent functions that are not supported by the XML.
 - Omit decorative containers, blank backgrounds, and invisible placeholders.
+- Never assume a later sibling hides an earlier sibling merely because their
+  bounds overlap. XML order and bounds do not expose alpha or actual drawing.
+- Omit an entire subtree when its root has visible-to-user="false".
+- Legacy XML may not contain visible-to-user. Treat a subtree as an inactive,
+  preloaded pull-down layer only when all of these signals agree: its resource
+  id identifies a pull-loading/preloaded container, it covers at least 95% of
+  its parent, it has no clickable, long-clickable, or scrollable descendants,
+  and a sibling in the same area contains multiple actionable descendants.
+  Do not recognize labels or function regions from that inactive subtree.
+- An explicit visible-to-user="true" overrides the legacy inactive-layer
+  heuristic.
 """
 
 MAIN_SYSTEM_PROMPT = """You are the main XML optimizer agent.
@@ -46,8 +57,13 @@ Runtime architecture:
 - Manage recognizer as a subagent yourself with spawn, call, and kill.
 - Use dump_full_xml once to create XML0.
 - Use call on the recognizer subagent to create L0 and each later L result.
-- Use optimize_xml, score_round, get_optimizer_source, and apply_optimizer for
-  every optimization round.
+- Use optimize_xml, get_optimizer_source, and apply_optimizer for every round.
+  Use recognizer and score_round only when optimize_xml returns ok=true.
+- Inspect the result of every optimize_xml call. If ok=false, the runtime has
+  supervised an optimizer load or execution failure and already assigned score
+  -1000. Read stage, error_type, and error, skip recognizer and score_round for
+  that failed XML, then use its score_ref with apply_optimizer to install a
+  corrected complete script. Explain the concrete failure in the reason.
 - Call should_stop after each applied proposal and stop when it says stop=true.
 - apply_optimizer requires a reason and a complete script; the reason is stored
   in workspace git history for traceability.

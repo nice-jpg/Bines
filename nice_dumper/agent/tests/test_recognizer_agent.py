@@ -1,4 +1,8 @@
-from nice_dumper_agent.recognizer_agent import parse_recognizer_output, recognize_functions_locally
+from nice_dumper_agent.recognizer_agent import (
+    parse_recognizer_output,
+    prepare_recognizer_xml,
+    recognize_functions_locally,
+)
 
 
 def test_parse_valid_recognizer_output() -> None:
@@ -44,3 +48,79 @@ def test_local_recognizer_extracts_clickable_labeled_nodes() -> None:
         ("[10,20][110,120]", "外卖"),
         ("[0,0][300,80]", "搜索"),
     ]
+
+
+def test_recognizer_removes_explicitly_invisible_subtree() -> None:
+    xml = """<hierarchy bounds="[0,0][100,100]">
+      <node resource-id="main" bounds="[0,0][100,100]" visible-to-user="true">
+        <node text="外卖" bounds="[0,0][50,50]" clickable="true" />
+      </node>
+      <node resource-id="drawer" bounds="[0,0][100,100]" visible-to-user="false">
+        <node text="隐藏入口" bounds="[0,0][50,50]" clickable="true" />
+      </node>
+    </hierarchy>"""
+
+    result = recognize_functions_locally(xml)
+
+    assert result.ok
+    assert [item.label for item in result.functions] == ["外卖"]
+
+
+def test_recognizer_removes_inactive_preloaded_pull_layer_from_legacy_xml() -> None:
+    xml = """<hierarchy bounds="[0,0][1080,2400]">
+      <node resource-id="container" bounds="[0,0][1080,2263]">
+        <node resource-id="main" bounds="[0,0][1080,2263]">
+          <node text="外卖" bounds="[0,0][500,500]" clickable="true" />
+          <node text="搜索" bounds="[500,0][1080,500]" clickable="true" />
+        </node>
+        <node resource-id="com.example:id/pull_loading_bg_container"
+              bounds="[0,0][1080,2263]">
+          <node content-desc="最近使用" resource-id="com.example:id/channel"
+                bounds="[100,100][500,300]" clickable="false" />
+        </node>
+      </node>
+    </hierarchy>"""
+
+    prepared = prepare_recognizer_xml(xml)
+    result = recognize_functions_locally(xml)
+
+    assert "pull_loading_bg_container" not in prepared
+    assert "最近使用" not in prepared
+    assert [item.label for item in result.functions] == ["外卖", "搜索"]
+
+
+def test_explicit_visible_pull_layer_is_not_removed() -> None:
+    xml = """<hierarchy bounds="[0,0][1080,2400]">
+      <node resource-id="container" bounds="[0,0][1080,2263]">
+        <node resource-id="main" bounds="[0,0][1080,2263]">
+          <node text="外卖" bounds="[0,0][500,500]" clickable="true" />
+          <node text="搜索" bounds="[500,0][1080,500]" clickable="true" />
+        </node>
+        <node resource-id="com.example:id/pull_loading_bg_container"
+              bounds="[0,0][1080,2263]" visible-to-user="true">
+          <node content-desc="最近使用" resource-id="com.example:id/channel"
+                bounds="[100,100][500,300]" clickable="false" />
+        </node>
+      </node>
+    </hierarchy>"""
+
+    prepared = prepare_recognizer_xml(xml)
+
+    assert "pull_loading_bg_container" in prepared
+    assert "最近使用" in prepared
+
+
+def test_bounds_and_sibling_order_alone_do_not_hide_active_nodes() -> None:
+    xml = """<hierarchy bounds="[0,0][100,100]">
+      <node resource-id="main" bounds="[0,0][100,100]">
+        <node text="首页" bounds="[0,0][50,50]" clickable="true" />
+      </node>
+      <node resource-id="dialog" bounds="[0,0][100,100]">
+        <node text="确认" bounds="[0,0][50,50]" clickable="true" />
+      </node>
+    </hierarchy>"""
+
+    result = recognize_functions_locally(xml)
+
+    assert result.ok
+    assert [item.label for item in result.functions] == ["首页", "确认"]

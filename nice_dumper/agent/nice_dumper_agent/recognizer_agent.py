@@ -35,11 +35,12 @@ def recognize_functions(
     """Run recognizer agent and parse the JSON function list."""
 
     agent = build_recognizer_agent(model)
-    prompt = "Analyze this XML and return JSON only:\n\n" + xml_text
+    recognizer_xml = prepare_recognizer_xml(xml_text)
+    prompt = "Analyze this XML and return JSON only:\n\n" + recognizer_xml
     last_output = ""
     last_error = ""
     for attempt in range(max_retries + 1):
-        content = prompt if attempt == 0 else _retry_prompt(xml_text, last_output, last_error)
+        content = prompt if attempt == 0 else _retry_prompt(recognizer_xml, last_output, last_error)
         try:
             state = agent.invoke({"messages": [{"role": "user", "content": content}]})
             last_output = _latest_text(state)
@@ -50,7 +51,7 @@ def recognize_functions(
         except Exception as exc:  # noqa: BLE001 - surface structured recognizer errors.
             last_error = f"{type(exc).__name__}: {exc}"
     if allow_fallback:
-        fallback = recognize_functions_locally(xml_text)
+        fallback = recognize_functions_locally(recognizer_xml)
         if fallback.ok:
             return RecognizerResult(
                 functions=fallback.functions,
@@ -63,7 +64,7 @@ def recognize_functions_locally(xml_text: str) -> RecognizerResult:
     """Heuristic XML-only recognizer used when the LLM recognizer is unavailable."""
 
     try:
-        root = ET.fromstring(xml_text)
+        root = ET.fromstring(prepare_recognizer_xml(xml_text))
     except ET.ParseError as exc:
         return RecognizerResult(functions=[], raw_output=str(xml_text or ""), error=f"invalid XML: {exc}")
 
@@ -85,6 +86,111 @@ def recognize_functions_locally(xml_text: str) -> RecognizerResult:
         seen.add(key)
         functions.append(FunctionRegion(bounds=bounds, label=label))
     return RecognizerResult(functions=functions, raw_output="local fallback")
+
+
+def prepare_recognizer_xml(xml_text: str) -> str:
+    """Remove subtrees known to be invisible before function recognition."""
+
+    raw = str(xml_text or "")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return raw
+
+    _remove_hidden_children(root)
+    return ET.tostring(root, encoding="unicode")
+
+
+def _remove_hidden_children(parent: ET.Element) -> None:
+    children = list(parent)
+    for child in children:
+        if _is_hidden_subtree(child, parent, children):
+            parent.remove(child)
+            continue
+        _remove_hidden_children(child)
+
+
+def _is_hidden_subtree(
+    node: ET.Element,
+    parent: ET.Element,
+    siblings: list[ET.Element],
+) -> bool:
+    visibility = _explicit_visibility(node.attrib)
+    if visibility is False:
+        return True
+    if visibility is True:
+        return False
+    return _looks_like_inactive_preloaded_layer(node, parent, siblings)
+
+
+def _explicit_visibility(attrib: Mapping[str, str]) -> bool | None:
+    for key in ("visible-to-user", "visible_to_user"):
+        if key not in attrib:
+            continue
+        return _truthy(attrib.get(key))
+    return None
+
+
+def _looks_like_inactive_preloaded_layer(
+    node: ET.Element,
+    parent: ET.Element,
+    siblings: list[ET.Element],
+) -> bool:
+    resource_id = str(node.attrib.get("resource-id") or "").lower()
+    resource_tail = resource_id.rsplit("/", 1)[-1].rsplit(":", 1)[-1]
+    inactive_markers = (
+        "pull_loading_bg_container",
+        "pull_loading_container",
+        "preloaded_pull_container",
+        "preload_pull_container",
+    )
+    if not any(marker in resource_tail for marker in inactive_markers):
+        return False
+
+    node_bounds = parse_bounds(str(node.attrib.get("bounds") or ""))
+    parent_bounds = parse_bounds(str(parent.attrib.get("bounds") or ""))
+    if node_bounds is None or parent_bounds is None:
+        return False
+    if _coverage(node_bounds, parent_bounds) < 0.95:
+        return False
+    if _actionable_descendant_count(node) != 0:
+        return False
+
+    for sibling in siblings:
+        if sibling is node:
+            continue
+        sibling_bounds = parse_bounds(str(sibling.attrib.get("bounds") or ""))
+        if sibling_bounds is None:
+            continue
+        if _coverage(sibling_bounds, node_bounds) < 0.95:
+            continue
+        if _actionable_descendant_count(sibling) >= 2:
+            return True
+    return False
+
+
+def _actionable_descendant_count(node: ET.Element) -> int:
+    return sum(
+        1
+        for descendant in node.iter()
+        if _truthy(descendant.attrib.get("clickable"))
+        or _truthy(descendant.attrib.get("long-clickable"))
+        or _truthy(descendant.attrib.get("scrollable"))
+    )
+
+
+def _coverage(
+    target: tuple[int, int, int, int],
+    cover: tuple[int, int, int, int],
+) -> float:
+    target_left, target_top, target_right, target_bottom = target
+    cover_left, cover_top, cover_right, cover_bottom = cover
+    target_area = (target_right - target_left) * (target_bottom - target_top)
+    if target_area <= 0:
+        return 0.0
+    width = max(0, min(target_right, cover_right) - max(target_left, cover_left))
+    height = max(0, min(target_bottom, cover_bottom) - max(target_top, cover_top))
+    return (width * height) / target_area
 
 
 def parse_recognizer_output(output: str) -> RecognizerResult:

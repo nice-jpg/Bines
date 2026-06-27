@@ -12,7 +12,12 @@ from .middleware import OptimizerTrace
 from .models import OptimizationRound, RecognizerResult, ScoreResult
 from .optimizer_script import load_optimizer, read_optimizer_source, write_optimizer_source
 from .provenance import commit_round
-from .recognizer_agent import build_recognizer_agent, parse_recognizer_output, recognize_functions_locally
+from .recognizer_agent import (
+    build_recognizer_agent,
+    parse_recognizer_output,
+    prepare_recognizer_xml,
+    recognize_functions_locally,
+)
 from .scorer import score_regions
 
 
@@ -37,6 +42,7 @@ class StoredScore:
     fidelity: float
     compression: float
     missing_count: int
+    execution_error: str | None
     stop: bool
 
 
@@ -57,6 +63,8 @@ class OptimizerRuntime:
         self.xml_store: dict[str, str] = {}
         self.recognition_store: dict[str, RecognizerResult] = {}
         self.score_store: dict[str, ScoreResult] = {}
+        self.optimizer_error_store: dict[str, dict[str, str]] = {}
+        self.optimizer_error_score_refs: dict[str, str] = {}
         self.subagents: dict[str, Any] = {}
         self._subagent_roles: dict[str, str] = {}
         self._next_subagent_id = 1
@@ -146,12 +154,28 @@ class OptimizerRuntime:
         xml = self.xml_store.get(xml_ref)
         if xml is None:
             return _json({"error": f"unknown xml_ref: {xml_ref}"})
-        optimizer = load_optimizer(self.output)
-        optimized = str(optimizer(xml))
+
+        try:
+            optimizer = load_optimizer(self.output)
+        except (Exception, SystemExit) as exc:
+            return self._record_optimizer_error("load", exc)
+
+        try:
+            optimized = str(optimizer(xml))
+        except (Exception, SystemExit) as exc:
+            return self._record_optimizer_error("execute", exc)
+
         self._next_xml_id += 1
         out_ref = f"XML{self._next_xml_id}"
         self.xml_store[out_ref] = optimized
-        return _json({"xml_ref": out_ref, "length": len(optimized), "preview": optimized[:500]})
+        return _json(
+            {
+                "ok": True,
+                "xml_ref": out_ref,
+                "length": len(optimized),
+                "preview": optimized[:500],
+            }
+        )
 
     def score_round_tool(self, xml0_ref: str, xml1_ref: str, l0_ref: str, l1_ref: str) -> str:
         """Score one optimization round and store the score."""
@@ -160,12 +184,14 @@ class OptimizerRuntime:
         xml1 = self.xml_store.get(xml1_ref)
         l0 = self.recognition_store.get(l0_ref)
         l1 = self.recognition_store.get(l1_ref)
+        error_score_ref = self.optimizer_error_score_refs.get(xml1_ref)
+        if error_score_ref is not None:
+            score = self.score_store[error_score_ref]
+            return _json(asdict(self._score_summary(error_score_ref, score)))
         if xml0 is None or xml1 is None or l0 is None or l1 is None:
             return _json({"error": "unknown score input reference"})
         score = score_regions(xml0, xml1, l0, l1)
-        self._next_score_id += 1
-        ref = f"S{self._next_score_id}"
-        self.score_store[ref] = score
+        ref = self._store_score(score)
         return _json(asdict(self._score_summary(ref, score)))
 
     def apply_optimizer_tool(self, score_ref: str, reason: str, script: str) -> str:
@@ -212,6 +238,7 @@ class OptimizerRuntime:
             {
                 "round": round_index,
                 "score": score.score,
+                "execution_error": score.execution_error,
                 "growth": growth,
                 "stale_count": self.stale_count,
                 "stop": self._should_stop(),
@@ -236,11 +263,16 @@ class OptimizerRuntime:
 
     def _call_recognizer_subagent(self, subagent_id: str, xml: str) -> RecognizerResult:
         agent = self.subagents[subagent_id]
-        prompt = "Analyze this XML and return JSON only:\n\n" + xml
+        recognizer_xml = prepare_recognizer_xml(xml)
+        prompt = "Analyze this XML and return JSON only:\n\n" + recognizer_xml
         last_output = ""
         last_error = ""
         for attempt in range(2):
-            content = prompt if attempt == 0 else "Return valid JSON only for this XML:\n\n" + xml
+            content = (
+                prompt
+                if attempt == 0
+                else "Return valid JSON only for this XML:\n\n" + recognizer_xml
+            )
             try:
                 state = agent.invoke({"messages": [{"role": "user", "content": content}]})
                 last_output = _latest_text(state)
@@ -250,7 +282,7 @@ class OptimizerRuntime:
                 last_error = str(parsed.error or "invalid recognizer output")
             except Exception as exc:  # noqa: BLE001 - fallback keeps the main workflow usable.
                 last_error = f"{type(exc).__name__}: {exc}"
-        fallback = recognize_functions_locally(xml)
+        fallback = recognize_functions_locally(recognizer_xml)
         if fallback.ok:
             return RecognizerResult(
                 functions=fallback.functions,
@@ -265,8 +297,57 @@ class OptimizerRuntime:
             fidelity=score.fidelity,
             compression=score.compression,
             missing_count=score.missing_count,
+            execution_error=score.execution_error,
             stop=self._should_stop(),
         )
+
+    def _record_optimizer_error(self, stage: str, exc: BaseException) -> str:
+        self._next_xml_id += 1
+        xml_ref = f"XML{self._next_xml_id}"
+        self.xml_store[xml_ref] = ""
+        error_type = type(exc).__name__
+        message = str(exc).strip() or repr(exc)
+        error_text = f"{error_type}: {message}"
+        self.optimizer_error_store[xml_ref] = {
+            "stage": stage,
+            "error_type": error_type,
+            "message": message,
+        }
+        baseline = self.recognition_store.get("L0")
+        missing_count = len(baseline.functions) if baseline is not None else 0
+        score = ScoreResult(
+            score=-1000.0,
+            fidelity=0.0,
+            compression=0.0,
+            missing_count=missing_count,
+            missing_penalty=1.0,
+            matches=[],
+            execution_error=error_text,
+        )
+        score_ref = self._store_score(score)
+        self.optimizer_error_score_refs[xml_ref] = score_ref
+        return _json(
+            {
+                "ok": False,
+                "xml_ref": xml_ref,
+                "score_ref": score_ref,
+                "score": score.score,
+                "stage": stage,
+                "error_type": error_type,
+                "error": message,
+                "next_action": (
+                    "Inspect the optimizer source, propose a corrected complete script, "
+                    "and call apply_optimizer with this score_ref. "
+                    "Do not call the recognizer for this failed XML."
+                ),
+            }
+        )
+
+    def _store_score(self, score: ScoreResult) -> str:
+        self._next_score_id += 1
+        ref = f"S{self._next_score_id}"
+        self.score_store[ref] = score
+        return ref
 
     def _should_stop(self) -> bool:
         return len(self.trace.rounds) >= self.max_rounds or self.stale_count >= self.stale_rounds
