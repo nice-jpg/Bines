@@ -6,11 +6,11 @@
 - Do not query `meituan/首页` or `美团/首页`; the home manual path is the app path itself.
 
 ## Structure
-- The home page contains entry points for secondary pages such as `美食` and `外卖`.
-- Page content may be represented imperfectly in UIAutomator XML, so use screenshots when XML and visible layout are hard to match.
+- The page contains a hidden drawer, which appears latter to main frame. Do not pay attention to it.
+- The page contains configured secondary entries such as `美食` and `外卖`.
+- XML may not match the visible layout; use screenshot when target position is unclear.
 
 ## Operation Logic
-- Use the configured secondary page names from `<config_context>` as the target entry labels.
-- Directly find and tap the configured secondary page entry; do not detour into unrelated entries.
-- Before tapping, confirm the entry is visible and not covered. If needed, swipe to bring it fully into view.
-- After tapping, verify that the destination page matches the selected secondary page. If it clearly does not, use `swipe_back` and retry from the home page.
+- Open each configured secondary page directly.
+- Tap the entry only when it is visible and unobstructed; otherwise scroll it into view.
+- After navigation, query the destination manual before continuing. If the page is wrong, return and retry.

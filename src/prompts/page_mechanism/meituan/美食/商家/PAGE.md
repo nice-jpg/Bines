@@ -9,15 +9,13 @@
 - The upper area usually contains basic merchant information and may hide after scrolling.
 - The middle area usually contains tab titles.
 - The lower area is usually split into a left category list and a right product list for the selected category.
-- The left category list may scroll independently; the right product list is the target area for product collection.
+- The left category list may scroll independently. The right product list is the product collection area.
 
 ## Operation Logic
-- After entering a merchant, verify that the page is the expected merchant detail page. If it is an activity, coupon, product, ad, or unrelated page, use `swipe_back` to return to the list and continue.
-- Collect merchant name, rating, sales information, and distance information.
-- Collect review information, including total review count and positive review count. Scroll or expand the review area or review page until these counts can be obtained.
-- Run a scrolling scan over the right-side product list. In each round, read XML, track already-seen products, and collect product name, price, and sales.
-- Record product sales as 0 when missing.
-- Use `swipe_up` inside the right-side product list area to load more products. Do not mistake scrolling the left-side category list for paging through products.
-- End product collection **only** after 2 consecutive `swipe_up` attempts and view is not changed, or a product-list terminal marker appears.
-- PRETTY data is not enough. What we want is ALL data. Make sure you have swpied enough distance.
-- After all products for the merchant have been recorded, use `swipe_back` to return to the previous page.
+- Verify this is the expected merchant detail page. If it is an activity, coupon, product, ad, or unrelated page, return to the list.
+- Collect merchant fields: name, rating, sales, distance, total review count, and positive review count. Scroll or open the review area when counts are not visible.
+- Collect every reachable product: product name, price, and sales. Use 0 for missing product sales.
+- Scan the right product list, tracking seen products. Swipe inside the product list, not the left category list.
+- Finish product collection only after 2 consecutive product-list swipes add no new products, or a clear product-list terminal marker appears.
+- Do not leave this merchant until all merchant fields are resolved and all reachable products are recorded.
+- Append this merchant's rows to Excel before using `swipe_back` to return to the list.

@@ -33,6 +33,16 @@ class PageMechanismDocTests(unittest.TestCase):
         self.assertIn("Do not use a concrete merchant name", food)
         self.assertIn("Do not use a concrete merchant name", takeout)
 
+    def test_merchant_docs_require_complete_collection_before_returning(self) -> None:
+        for relative_path in ["美食/商家/PAGE.md", "外卖/商家/PAGE.md"]:
+            with self.subTest(relative_path=relative_path):
+                content = (PAGE_ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn("Collect merchant fields: name, rating, sales, distance", content)
+                self.assertIn("total review count, and positive review count", content)
+                self.assertIn("Collect every reachable product: product name, price, and sales", content)
+                self.assertIn("Do not leave this merchant until all merchant fields are resolved", content)
+                self.assertIn("Append this merchant's rows to Excel before using `swipe_back`", content)
+
 
 if __name__ == "__main__":
     unittest.main()

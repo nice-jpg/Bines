@@ -9,6 +9,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
+from src.codex import create_chat_model
+
 WORKSPACE_ENV_PATH = Path(__file__).resolve().parents[1] / "workspace" / ".env"
 
 
@@ -45,3 +47,7 @@ def _required_env(*names: str) -> str:
             return value
     joined_names = ", ".join(names)
     raise RuntimeError(f"Missing required model setting in workspace/.env: {joined_names}")
+
+
+def build_codex_model():
+    return create_chat_model(model='gpt-5.4')
