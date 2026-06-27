@@ -38,6 +38,11 @@ class ScoreResult:
     missing_penalty: float
     matches: list[MatchResult] = field(default_factory=list)
     execution_error: str | None = None
+    hidden_pruning: float = 0.0
+    hidden_pruning_reward: float = 0.0
+    hidden_subtree_count: int = 0
+    hidden_candidate_count: int = 0
+    hidden_removed_count: int = 0
 
 
 @dataclass(frozen=True)

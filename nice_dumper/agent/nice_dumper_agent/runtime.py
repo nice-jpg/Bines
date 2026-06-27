@@ -13,6 +13,8 @@ from .models import OptimizationRound, RecognizerResult, ScoreResult
 from .optimizer_script import load_optimizer, read_optimizer_source, write_optimizer_source
 from .provenance import commit_round
 from .recognizer_agent import (
+    HiddenSubtreeCandidate,
+    analyze_hidden_subtrees,
     build_recognizer_agent,
     parse_recognizer_output,
     prepare_recognizer_xml,
@@ -43,6 +45,11 @@ class StoredScore:
     compression: float
     missing_count: int
     execution_error: str | None
+    hidden_pruning: float
+    hidden_pruning_reward: float
+    hidden_subtree_count: int
+    hidden_candidate_count: int
+    hidden_removed_count: int
     stop: bool
 
 
@@ -65,6 +72,7 @@ class OptimizerRuntime:
         self.score_store: dict[str, ScoreResult] = {}
         self.optimizer_error_store: dict[str, dict[str, str]] = {}
         self.optimizer_error_score_refs: dict[str, str] = {}
+        self.hidden_analysis_store: dict[str, list[HiddenSubtreeCandidate]] = {}
         self.subagents: dict[str, Any] = {}
         self._subagent_roles: dict[str, str] = {}
         self._next_subagent_id = 1
@@ -80,6 +88,10 @@ class OptimizerRuntime:
 
         return [
             StructuredTool.from_function(self.dump_full_xml_tool, name="dump_full_xml"),
+            StructuredTool.from_function(
+                self.analyze_hidden_subtrees_tool,
+                name="analyze_hidden_subtrees",
+            ),
             StructuredTool.from_function(self.spawn_subagent_tool, name="spawn"),
             StructuredTool.from_function(self.call_subagent_tool, name="call"),
             StructuredTool.from_function(self.kill_subagent_tool, name="kill"),
@@ -109,6 +121,32 @@ class OptimizerRuntime:
         self.subagents[subagent_id] = build_recognizer_agent(self.model)
         self._subagent_roles[subagent_id] = normalized
         return _json({"subagent_id": subagent_id, "role": normalized})
+
+    def analyze_hidden_subtrees_tool(self, xml_ref: str = "XML0") -> str:
+        """Find invisible or inactive preloaded subtrees worth pruning first."""
+
+        xml = self.xml_store.get(xml_ref)
+        if xml is None:
+            return _json({"error": f"unknown xml_ref: {xml_ref}"})
+        candidates = analyze_hidden_subtrees(xml)
+        self.hidden_analysis_store[xml_ref] = candidates
+        return _json(
+            {
+                "xml_ref": xml_ref,
+                "candidate_count": len(candidates),
+                "estimated_removable_characters": sum(
+                    item.estimated_characters for item in candidates
+                ),
+                "candidates": [asdict(item) for item in candidates],
+                "optimizer_guidance": (
+                    "Prune each maximal candidate subtree before generic attribute "
+                    "compression. Prefer explicit visible-to-user=false. For legacy "
+                    "pull-loading candidates, require every reported signal together. "
+                    "Do not infer occlusion from sibling order or bounds alone, and do "
+                    "not remove the active overlapping sibling."
+                ),
+            }
+        )
 
     def call_subagent_tool(self, subagent_id: str, xml_ref: str) -> str:
         """Call a spawned subagent with a stored XML reference."""
@@ -190,7 +228,17 @@ class OptimizerRuntime:
             return _json(asdict(self._score_summary(error_score_ref, score)))
         if xml0 is None or xml1 is None or l0 is None or l1 is None:
             return _json({"error": "unknown score input reference"})
-        score = score_regions(xml0, xml1, l0, l1)
+        hidden_candidates = self.hidden_analysis_store.get(xml0_ref)
+        if hidden_candidates is None:
+            hidden_candidates = analyze_hidden_subtrees(xml0)
+            self.hidden_analysis_store[xml0_ref] = hidden_candidates
+        score = score_regions(
+            xml0,
+            xml1,
+            l0,
+            l1,
+            hidden_candidates=hidden_candidates,
+        )
         ref = self._store_score(score)
         return _json(asdict(self._score_summary(ref, score)))
 
@@ -298,6 +346,11 @@ class OptimizerRuntime:
             compression=score.compression,
             missing_count=score.missing_count,
             execution_error=score.execution_error,
+            hidden_pruning=score.hidden_pruning,
+            hidden_pruning_reward=score.hidden_pruning_reward,
+            hidden_subtree_count=score.hidden_subtree_count,
+            hidden_candidate_count=score.hidden_candidate_count,
+            hidden_removed_count=score.hidden_removed_count,
             stop=self._should_stop(),
         )
 

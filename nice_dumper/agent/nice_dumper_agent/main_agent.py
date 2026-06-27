@@ -126,9 +126,10 @@ def _build_main_run_prompt(config: OptimizerConfig) -> str:
 
 Required workflow:
 1. Call dump_full_xml once to create XML0.
-2. Call spawn with role="recognizer".
-3. Call the recognizer subagent with XML0 to create L0.
-4. Repeat optimization rounds until should_stop returns stop=true:
+2. Call analyze_hidden_subtrees with XML0 and retain the candidate evidence.
+3. Call spawn with role="recognizer".
+4. Call the recognizer subagent with XML0 to create L0.
+5. Repeat optimization rounds until should_stop returns stop=true:
    - call optimize_xml with XML0 to create the next XML result;
    - inspect the optimize_xml response. If ok=false, keep its fixed -1000
      score_ref, include the reported optimizer error in your reasoning, skip
@@ -137,9 +138,10 @@ Required workflow:
    - otherwise, call the recognizer subagent with that XML result to create the
      next L result, then call score_round with XML0, that XML result, L0, and
      the latest L result;
-   - inspect get_optimizer_source and propose a more aggressive optimizer script;
+   - inspect get_optimizer_source. If hidden subtree candidates were reported,
+     prioritize implementing their exact pruning rule before generic compression;
    - call apply_optimizer with score_ref, a concrete reason, and the complete script.
-5. Call kill for the recognizer subagent before finishing.
+6. Call kill for the recognizer subagent before finishing.
 
 Limits:
 - max_rounds={config.max_rounds}

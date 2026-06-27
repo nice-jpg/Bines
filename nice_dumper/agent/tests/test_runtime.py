@@ -73,6 +73,72 @@ def test_runtime_filters_hidden_pull_layer_before_subagent_call(monkeypatch, tmp
     assert "最近使用" not in prompt
 
 
+def test_runtime_reports_hidden_subtree_opportunities(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, min_growth=1.0, stale_rounds=3)
+    runtime.xml_store["XML0"] = """<hierarchy bounds="[0,0][100,100]">
+      <node resource-id="container" bounds="[0,0][100,100]">
+        <node resource-id="t5f" bounds="[0,0][100,100]">
+          <node text="外卖" bounds="[0,0][50,50]" clickable="true" />
+          <node text="搜索" bounds="[50,0][100,50]" clickable="true" />
+        </node>
+        <node resource-id="pull_loading_bg_container" bounds="[0,0][100,100]">
+          <node text="最近使用" bounds="[0,0][50,50]" clickable="false" />
+        </node>
+      </node>
+    </hierarchy>"""
+
+    result = json.loads(runtime.analyze_hidden_subtrees_tool("XML0"))
+
+    assert result["candidate_count"] == 1
+    assert result["estimated_removable_characters"] > 100
+    assert result["candidates"][0]["resource_id"] == "pull_loading_bg_container"
+    assert "Do not infer occlusion from sibling order" in result["optimizer_guidance"]
+
+
+def test_runtime_score_automatically_rewards_hidden_subtree_pruning(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, min_growth=1.0, stale_rounds=3)
+    runtime.xml_store["XML0"] = """<hierarchy bounds="[0,0][100,100]">
+      <node resource-id="container" bounds="[0,0][100,100]">
+        <node resource-id="t5f" bounds="[0,0][100,100]">
+          <node text="外卖" bounds="[0,0][50,50]" clickable="true" />
+          <node text="搜索" bounds="[50,0][100,50]" clickable="true" />
+        </node>
+        <node resource-id="pull_loading_bg_container" bounds="[0,0][100,100]">
+          <node text="最近使用" bounds="[0,0][50,50]" clickable="false" />
+        </node>
+      </node>
+    </hierarchy>"""
+    runtime.xml_store["XML1"] = """<hierarchy bounds="[0,0][100,100]">
+      <node resource-id="container" bounds="[0,0][100,100]">
+        <node resource-id="t5f" bounds="[0,0][100,100]">
+          <node text="外卖" bounds="[0,0][50,50]" clickable="true" />
+          <node text="搜索" bounds="[50,0][100,50]" clickable="true" />
+        </node>
+      </node>
+    </hierarchy>"""
+    from nice_dumper_agent.models import FunctionRegion, RecognizerResult
+
+    functions = RecognizerResult(
+        [
+            FunctionRegion("[0,0][50,50]", "外卖"),
+            FunctionRegion("[50,0][100,50]", "搜索"),
+        ]
+    )
+    runtime.recognition_store["L0"] = functions
+    runtime.recognition_store["L1"] = functions
+
+    result = json.loads(runtime.score_round_tool("XML0", "XML1", "L0", "L1"))
+
+    assert result["hidden_subtree_count"] == 1
+    assert result["hidden_candidate_count"] == 2
+    assert result["hidden_removed_count"] == 2
+    assert result["hidden_pruning"] == 1.0
+    assert result["hidden_pruning_reward"] == 30.0
+    assert runtime.hidden_analysis_store["XML0"][0].resource_id == (
+        "pull_loading_bg_container"
+    )
+
+
 def test_runtime_score_round_returns_score_ref(tmp_path: Path) -> None:
     optimizer = tmp_path / "workspace" / "optimize_xml.py"
     optimizer.parent.mkdir()

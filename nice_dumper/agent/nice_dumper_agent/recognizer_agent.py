@@ -5,11 +5,25 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 from .models import FunctionRegion, RecognizerResult
 from .prompts import RECOGNIZER_SYSTEM_PROMPT
 from .scorer import parse_bounds
+
+
+@dataclass(frozen=True)
+class HiddenSubtreeCandidate:
+    path: str
+    resource_id: str
+    bounds: str
+    reason: str
+    descendant_count: int
+    actionable_descendant_count: int
+    overlapping_sibling_actionable_count: int
+    estimated_characters: int
+    sample_labels: list[str]
 
 
 def build_recognizer_agent(model: Any):
@@ -101,6 +115,30 @@ def prepare_recognizer_xml(xml_text: str) -> str:
     return ET.tostring(root, encoding="unicode")
 
 
+def analyze_hidden_subtrees(xml_text: str) -> list[HiddenSubtreeCandidate]:
+    """Describe maximal hidden subtrees using the recognizer's visibility rules."""
+
+    try:
+        root = ET.fromstring(str(xml_text or ""))
+    except ET.ParseError:
+        return []
+
+    candidates: list[HiddenSubtreeCandidate] = []
+
+    def visit(parent: ET.Element, parent_path: str) -> None:
+        children = list(parent)
+        for index, child in enumerate(children):
+            path = f"{parent_path}/{index}" if parent_path else str(index)
+            reason = _hidden_subtree_reason(child, parent, children)
+            if reason is not None:
+                candidates.append(_hidden_candidate(child, siblings=children, path=path, reason=reason))
+                continue
+            visit(child, path)
+
+    visit(root, "")
+    return candidates
+
+
 def _remove_hidden_children(parent: ET.Element) -> None:
     children = list(parent)
     for child in children:
@@ -115,12 +153,22 @@ def _is_hidden_subtree(
     parent: ET.Element,
     siblings: list[ET.Element],
 ) -> bool:
+    return _hidden_subtree_reason(node, parent, siblings) is not None
+
+
+def _hidden_subtree_reason(
+    node: ET.Element,
+    parent: ET.Element,
+    siblings: list[ET.Element],
+) -> str | None:
     visibility = _explicit_visibility(node.attrib)
     if visibility is False:
-        return True
+        return "visible-to-user=false"
     if visibility is True:
-        return False
-    return _looks_like_inactive_preloaded_layer(node, parent, siblings)
+        return None
+    if _looks_like_inactive_preloaded_layer(node, parent, siblings):
+        return "inactive-preloaded-pull-layer"
+    return None
 
 
 def _explicit_visibility(attrib: Mapping[str, str]) -> bool | None:
@@ -176,6 +224,46 @@ def _actionable_descendant_count(node: ET.Element) -> int:
         if _truthy(descendant.attrib.get("clickable"))
         or _truthy(descendant.attrib.get("long-clickable"))
         or _truthy(descendant.attrib.get("scrollable"))
+    )
+
+
+def _hidden_candidate(
+    node: ET.Element,
+    *,
+    siblings: list[ET.Element],
+    path: str,
+    reason: str,
+) -> HiddenSubtreeCandidate:
+    node_bounds = parse_bounds(str(node.attrib.get("bounds") or ""))
+    overlapping_actionable = 0
+    if node_bounds is not None:
+        for sibling in siblings:
+            if sibling is node:
+                continue
+            sibling_bounds = parse_bounds(str(sibling.attrib.get("bounds") or ""))
+            if sibling_bounds is None or _coverage(sibling_bounds, node_bounds) < 0.95:
+                continue
+            overlapping_actionable = max(
+                overlapping_actionable,
+                _actionable_descendant_count(sibling),
+            )
+    labels: list[str] = []
+    for descendant in node.iter():
+        label = _node_label(descendant.attrib)
+        if label and label not in labels:
+            labels.append(label)
+        if len(labels) >= 8:
+            break
+    return HiddenSubtreeCandidate(
+        path=path,
+        resource_id=str(node.attrib.get("resource-id") or ""),
+        bounds=str(node.attrib.get("bounds") or ""),
+        reason=reason,
+        descendant_count=sum(1 for _ in node.iter()),
+        actionable_descendant_count=_actionable_descendant_count(node),
+        overlapping_sibling_actionable_count=overlapping_actionable,
+        estimated_characters=len(ET.tostring(node, encoding="unicode")),
+        sample_labels=labels,
     )
 
 

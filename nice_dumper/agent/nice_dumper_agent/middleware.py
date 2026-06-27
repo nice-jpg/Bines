@@ -44,6 +44,11 @@ class OptimizerTrace:
                 "fidelity": round(item.score.fidelity, 4),
                 "compression": round(item.score.compression, 4),
                 "missing_count": item.score.missing_count,
+                "hidden_pruning": round(item.score.hidden_pruning, 4),
+                "hidden_pruning_reward": round(item.score.hidden_pruning_reward, 4),
+                "hidden_subtree_count": item.score.hidden_subtree_count,
+                "hidden_removed_count": item.score.hidden_removed_count,
+                "hidden_candidate_count": item.score.hidden_candidate_count,
                 "reason": item.reason,
             }
             for item in self.rounds
@@ -149,12 +154,33 @@ class SubagentLifecycleMiddleware(_base_middleware()):
             }
             for key, value in sorted(self.runtime.recognition_store.items())
         ][-6:]
+        hidden_analyses = {
+            xml_ref: [
+                {
+                    "path": item.path,
+                    "resource_id": item.resource_id,
+                    "bounds": item.bounds,
+                    "reason": item.reason,
+                    "descendant_count": item.descendant_count,
+                    "estimated_characters": item.estimated_characters,
+                }
+                for item in candidates
+            ]
+            for xml_ref, candidates in sorted(self.runtime.hidden_analysis_store.items())
+        }
         messages.insert(
             0,
             {
                 "role": "system",
                 "content": "Subagent lifecycle summary: "
-                + json.dumps({"active": active, "recognitions": calls}, ensure_ascii=False),
+                + json.dumps(
+                    {
+                        "active": active,
+                        "recognitions": calls,
+                        "hidden_subtree_analysis": hidden_analyses,
+                    },
+                    ensure_ascii=False,
+                ),
             },
         )
         return {"messages": messages}
@@ -170,6 +196,14 @@ def _round_lesson(round_result: OptimizationRound) -> str:
         return (
             f"round {round_result.index}: {score.missing_count} baseline functions were missing; "
             "future scripts must preserve labels and bounds for those regions before compressing harder."
+        )
+    if score.hidden_candidate_count and score.hidden_pruning < 0.95:
+        return (
+            f"round {round_result.index}: removed {score.hidden_removed_count}/"
+            f"{score.hidden_candidate_count} hidden nodes; node-level pruning is "
+            f"{score.hidden_pruning:.3f}, leaving up to "
+            f"{30.0 - score.hidden_pruning_reward:.2f} structural reward points; "
+            "prune the reported hidden candidates before generic compression."
         )
     if score.compression < 0.2:
         return (

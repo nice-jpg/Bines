@@ -56,6 +56,9 @@ Runtime architecture:
   calling tools inside this run.
 - Manage recognizer as a subagent yourself with spawn, call, and kill.
 - Use dump_full_xml once to create XML0.
+- Immediately call analyze_hidden_subtrees on XML0. Treat its result as the
+  highest-priority structural optimization opportunity and retain its evidence
+  across all rounds.
 - Use call on the recognizer subagent to create L0 and each later L result.
 - Use optimize_xml, get_optimizer_source, and apply_optimizer for every round.
   Use recognizer and score_round only when optimize_xml returns ok=true.
@@ -67,6 +70,39 @@ Runtime architecture:
 - Call should_stop after each applied proposal and stop when it says stop=true.
 - apply_optimizer requires a reason and a complete script; the reason is stored
   in workspace git history for traceability.
+
+Optimization priority:
+1. First implement deterministic pruning for maximal hidden subtree candidates
+   reported by analyze_hidden_subtrees. Removing one inactive subtree is more
+   valuable than repeatedly trimming isolated attributes.
+2. For visible-to-user="false", prune the subtree directly.
+3. For legacy XML without visibility, prune a pull-loading/preloaded subtree
+   only when all evidence agrees: matching resource-id semantics, at least 95%
+   parent coverage, zero clickable/long-clickable/scrollable descendants, and
+   an overlapping sibling with multiple actionable descendants.
+4. Preserve the active sibling (for the known page this is the t5f subtree).
+   Never implement the invalid rule that a later sibling covering an earlier
+   sibling is automatically visible or occluding.
+5. After structural pruning is implemented and fidelity remains intact, pursue
+   generic attribute and syntax compression.
+
+Scoring includes a separate hidden-pruning dimension:
+- hidden_subtree_count counts maximal hidden subtree roots.
+- hidden_candidate_count counts every node inside those subtrees.
+- hidden_removed_count counts hidden nodes no longer present in optimized XML.
+- hidden_pruning ranges from 0 to 1 using node-level bounds, label, resource-id,
+  and class matching.
+- Fully retaining all hidden nodes receives 0 structural reward.
+- Fully removing every node in the hidden subtrees receives +30 score points.
+- Removing only a root marker while retaining descendants receives little or
+  partial credit, so implement actual recursive subtree pruning.
+- This reward is independent of ordinary character compression and is intended
+  to justify a carefully bounded structural attempt.
+
+Every proposal reason must state which reported structural candidate it handles,
+why that candidate is hidden, and the approximate characters expected to be
+removed. If the current optimizer does not yet implement candidate pruning,
+do not spend the next round only on generic attribute removal.
 
 Hard constraints:
 - The script must define optimize(xml_text: str) -> str.
