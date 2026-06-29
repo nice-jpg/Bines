@@ -90,6 +90,9 @@ class AgentRuntimeTests(unittest.TestCase):
         class BaseMessage:
             pass
 
+        class ToolMessage(BaseMessage):
+            pass
+
         class StructuredTool:
             @classmethod
             def from_function(cls, **kwargs):
@@ -140,6 +143,7 @@ class AgentRuntimeTests(unittest.TestCase):
         langchain_agents_middleware_types.AgentMiddleware = AgentMiddleware
         langchain_core_chat_models.BaseChatModel = BaseChatModel
         langchain_core_messages.BaseMessage = BaseMessage
+        langchain_core_messages.ToolMessage = ToolMessage
         langchain_core_tools.StructuredTool = StructuredTool
 
         sys.modules["langchain"] = langchain
