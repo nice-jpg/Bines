@@ -32,7 +32,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 sys.modules[name] = module
 
     def test_main_initializes_runtime_once_and_runs_each_feishu_message(self) -> None:
-        calls = {"runtime_init": 0, "run_turn": [], "sent": [], "notices": []}
+        calls = {"runtime_init": 0, "run_turn": [], "sent": [], "notices": [], "model_close": 0}
 
         class FakeTarget:
             def __init__(self, chat_id):
@@ -77,6 +77,10 @@ class RunAgentEntrypointTests(unittest.TestCase):
             def __init__(self, notifier):
                 self.notifier = notifier
 
+        class FakeModel:
+            def close(self):
+                calls["model_close"] += 1
+
         fake_agent = types.ModuleType("src.agent")
         fake_agent.AgentRuntime = FakeRuntime
         fake_channel = types.ModuleType("src.channel.feishu")
@@ -84,6 +88,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_channel.load_feishu_config = lambda: "config"
         fake_model = types.ModuleType("src.model")
         fake_model.build_model = lambda: "model"
+        fake_model.build_codex_model = FakeModel
         fake_tools_common = types.ModuleType("src.tools.common")
         fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
         fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool
@@ -115,9 +120,10 @@ class RunAgentEntrypointTests(unittest.TestCase):
         self.assertNotIn("chat_id", str(calls["run_turn"][0][0]))
         self.assertEqual(calls["sent"], [("chat_1", "output_1"), ("chat_2", "output_2")])
         self.assertEqual(calls["notices"], [("chat_1", "notice"), ("chat_2", "notice")])
+        self.assertEqual(calls["model_close"], 1)
 
     def test_done_message_resumes_pending_workflow_without_runner_captcha_coupling(self) -> None:
-        calls = {"run_turn": [], "resume_turn": [], "sent": []}
+        calls = {"run_turn": [], "resume_turn": [], "sent": [], "model_close": 0}
 
         class FakeTarget:
             def __init__(self, chat_id):
@@ -171,6 +177,10 @@ class RunAgentEntrypointTests(unittest.TestCase):
             def __init__(self, notifier):
                 self.notifier = notifier
 
+        class FakeModel:
+            def close(self):
+                calls["model_close"] += 1
+
         fake_agent = types.ModuleType("src.agent")
         fake_agent.AgentRuntime = FakeRuntime
         fake_channel = types.ModuleType("src.channel.feishu")
@@ -178,6 +188,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_channel.load_feishu_config = lambda: "config"
         fake_model = types.ModuleType("src.model")
         fake_model.build_model = lambda: "model"
+        fake_model.build_codex_model = FakeModel
         fake_tools_common = types.ModuleType("src.tools.common")
         fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
         fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool
@@ -212,6 +223,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 ("chat_2", "normal output"),
             ],
         )
+        self.assertEqual(calls["model_close"], 1)
 
 
 if __name__ == "__main__":

@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex.codex_oauth import OpenAICodexModel
+from codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
@@ -73,6 +75,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         self.assertEqual(request["tools"][0]["name"], "sample_lookup")
         self.assertEqual(request["tool_choice"], {"type": "function", "name": "sample_lookup"})
         self.assertFalse(request["parallel_tool_calls"])
+        self.assertNotIn("stream", request)
 
     def test_build_request_serializes_tool_call_history(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -301,6 +304,118 @@ class CodexOAuthModelTests(unittest.TestCase):
 
         self.assertEqual(message.content, "hello delta")
 
+    def test_sync_requests_reuse_one_persistent_connection(self) -> None:
+        ws = PersistentFakeWebSocket([completed_events("first"), completed_events("second")])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+                first = model.invoke([HumanMessage(content="first")])
+                second = model.invoke([HumanMessage(content="second")])
+
+            self.assertEqual(first.content, "first")
+            self.assertEqual(second.content, "second")
+            self.assertEqual(mocked_connect.call_count, 1)
+            self.assertEqual(len(ws.sent), 2)
+            self.assertEqual(provider.calls, 1)
+        finally:
+            model.close()
+
+    def test_async_requests_share_transport_and_are_serialized(self) -> None:
+        ws = PersistentFakeWebSocket(
+            [completed_events("first"), completed_events("second")],
+            block_first_response=True,
+        )
+        model = OpenAICodexModel(model="test-model", token_provider=FakeTokenProvider())
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        async def scenario() -> tuple[AIMessage, AIMessage]:
+            first = asyncio.create_task(model.ainvoke([HumanMessage(content="first")]))
+            self.assertTrue(await asyncio.to_thread(ws.first_recv_started.wait, 2.0))
+            second = asyncio.create_task(model.ainvoke([HumanMessage(content="second")]))
+            await asyncio.sleep(0.05)
+            self.assertEqual(len(ws.sent), 1)
+            ws.release_first_response.set()
+            results = await asyncio.gather(first, second)
+            await model.aclose()
+            return results[0], results[1]
+
+        with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            first, second = asyncio.run(scenario())
+
+        self.assertEqual(first.content, "first")
+        self.assertEqual(second.content, "second")
+        self.assertEqual(mocked_connect.call_count, 1)
+        self.assertEqual(len(ws.sent), 2)
+
+    def test_send_failure_reconnects_and_retries_once(self) -> None:
+        failed_ws = PersistentFakeWebSocket([], send_error=ConnectionError("closed"))
+        working_ws = PersistentFakeWebSocket([completed_events("recovered")])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return failed_ws if provider.calls == 1 else working_ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+                message = model.invoke([HumanMessage(content="retry")])
+
+            self.assertEqual(message.content, "recovered")
+            self.assertEqual(mocked_connect.call_count, 2)
+            self.assertEqual(provider.calls, 2)
+            self.assertTrue(failed_ws.closed)
+            self.assertEqual(len(working_ws.sent), 1)
+        finally:
+            model.close()
+
+    def test_receive_failure_invalidates_connection_without_replaying(self) -> None:
+        failed_ws = PersistentFakeWebSocket([ConnectionError("read failed")])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return failed_ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+                with self.assertRaisesRegex(ConnectionError, "read failed"):
+                    model.invoke([HumanMessage(content="do not replay")])
+
+            self.assertEqual(mocked_connect.call_count, 1)
+            self.assertEqual(len(failed_ws.sent), 1)
+            self.assertTrue(failed_ws.closed)
+        finally:
+            model.close()
+
+    def test_expired_connection_is_replaced_and_close_is_idempotent(self) -> None:
+        first_ws = PersistentFakeWebSocket([completed_events("first")])
+        second_ws = PersistentFakeWebSocket([completed_events("second")])
+        sockets = iter([first_ws, second_ws])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return next(sockets)
+
+        with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            model.invoke([HumanMessage(content="first")])
+            model._connected_at = float("-inf")
+            model.invoke([HumanMessage(content="second")])
+
+        model.close()
+        model.close()
+        self.assertEqual(mocked_connect.call_count, 2)
+        self.assertEqual(provider.calls, 2)
+        self.assertTrue(first_ws.closed)
+        self.assertTrue(second_ws.closed)
+
 
 class FakeWebSocket:
     def __init__(self, events: list[dict]) -> None:
@@ -310,6 +425,87 @@ class FakeWebSocket:
         if not self._messages:
             raise AssertionError("No fake websocket messages remain.")
         return self._messages.pop(0)
+
+
+class FakeTokenProvider(CodexOAuthTokenProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_credentials(self) -> tuple[str, str]:
+        self.calls += 1
+        return f"token-{self.calls}", "account"
+
+
+class FakeConnectionState:
+    def __init__(self, name: str = "OPEN") -> None:
+        self.name = name
+
+
+class PersistentFakeWebSocket:
+    def __init__(
+        self,
+        response_batches: list[list[dict] | BaseException],
+        *,
+        send_error: BaseException | None = None,
+        block_first_response: bool = False,
+    ) -> None:
+        self._response_batches = list(response_batches)
+        self._current_messages: list[str] = []
+        self._send_error = send_error
+        self._block_first_response = block_first_response
+        self._response_number = 0
+        self.sent: list[str] = []
+        self.state = FakeConnectionState()
+        self.closed = False
+        self.first_recv_started = threading.Event()
+        self.release_first_response = threading.Event()
+
+    async def send(self, payload: str) -> None:
+        if self._send_error is not None:
+            error = self._send_error
+            self._send_error = None
+            raise error
+        self.sent.append(payload)
+        batch = self._response_batches.pop(0)
+        if isinstance(batch, BaseException):
+            self._current_messages = [batch]  # type: ignore[list-item]
+        else:
+            self._current_messages = [json.dumps(event, ensure_ascii=False) for event in batch]
+        self._response_number += 1
+
+    async def recv(self) -> str:
+        if self._response_number == 1 and self._block_first_response:
+            self.first_recv_started.set()
+            while not self.release_first_response.is_set():
+                await asyncio.sleep(0.01)
+        if not self._current_messages:
+            raise AssertionError("No fake websocket messages remain.")
+        message = self._current_messages.pop(0)
+        if isinstance(message, BaseException):
+            raise message
+        return message
+
+    async def close(self) -> None:
+        self.closed = True
+        self.state.name = "CLOSED"
+
+
+def completed_events(text: str) -> list[dict]:
+    return [
+        {
+            "type": "response.completed",
+            "response": {
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                ],
+                "usage": {},
+            },
+        }
+    ]
 
 
 if __name__ == "__main__":

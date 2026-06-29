@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
@@ -81,10 +83,18 @@ class OpenAICodexModel(BaseChatModel):
     ws_url: str = "wss://chatgpt.com/backend-api/codex/responses"
     wait_seconds: float = 600.0
     connect_timeout_seconds: float = 20.0
+    max_connection_age_seconds: float = 55.0 * 60.0
     instructions: str = "You are a helpful assistant."
     token_provider: CodexOAuthTokenProvider = Field(default_factory=CodexOAuthTokenProvider)
     _usage_records: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     _usage_totals: dict[str, int] = PrivateAttr(default_factory=dict)
+    _ws: Any | None = PrivateAttr(default=None)
+    _request_lock: asyncio.Lock | None = PrivateAttr(default=None)
+    _connected_at: float | None = PrivateAttr(default=None)
+    _transport_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
+    _transport_thread: threading.Thread | None = PrivateAttr(default=None)
+    _transport_guard: threading.Lock = PrivateAttr(default_factory=threading.Lock)
+    _transport_closing: bool = PrivateAttr(default=False)
 
     @property
     def _llm_type(self) -> str:
@@ -97,12 +107,7 @@ class OpenAICodexModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            message = asyncio.run(self._request(messages, **kwargs))
-        else:
-            raise RuntimeError("Use `ainvoke` when CodexWebSocketChatModel is called inside an event loop.")
+        message = self._submit_request(messages, **kwargs).result()
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     async def _agenerate(
@@ -112,7 +117,7 @@ class OpenAICodexModel(BaseChatModel):
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        message = await self._request(messages, **kwargs)
+        message = await asyncio.wrap_future(self._submit_request(messages, **kwargs))
         return ChatResult(generations=[ChatGeneration(message=message)])
     
     def bind_tools(
@@ -140,7 +145,100 @@ class OpenAICodexModel(BaseChatModel):
             bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
         return self.bind(**bind_kwargs)
 
+    def _submit_request(
+        self,
+        messages: list[BaseMessage],
+        **kwargs: Any,
+    ) -> concurrent.futures.Future[AIMessage]:
+        loop = self._ensure_transport_started()
+        return asyncio.run_coroutine_threadsafe(self._request(messages, **kwargs), loop)
+
+    def _ensure_transport_started(self) -> asyncio.AbstractEventLoop:
+        with self._transport_guard:
+            if self._transport_closing:
+                raise RuntimeError("Codex WebSocket transport is closing.")
+            if (
+                self._transport_loop is not None
+                and not self._transport_loop.is_closed()
+                and self._transport_thread is not None
+                and self._transport_thread.is_alive()
+            ):
+                return self._transport_loop
+
+            loop = asyncio.new_event_loop()
+            ready = threading.Event()
+
+            def run_transport_loop() -> None:
+                asyncio.set_event_loop(loop)
+                self._request_lock = asyncio.Lock()
+                ready.set()
+                try:
+                    loop.run_forever()
+                finally:
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                    loop.close()
+
+            thread = threading.Thread(
+                target=run_transport_loop,
+                name=f"codex-websocket-{id(self)}",
+                daemon=True,
+            )
+            self._transport_loop = loop
+            self._transport_thread = thread
+            thread.start()
+            ready.wait()
+            return loop
+
     async def _request(self, messages: list[BaseMessage], **kwargs: Any) -> AIMessage:
+        if self._request_lock is None:
+            raise RuntimeError("Codex WebSocket transport is not initialized.")
+        request = self._build_request(messages, **kwargs)
+        payload = json.dumps(request, ensure_ascii=False)
+
+        async with self._request_lock:
+            ws = await self._ensure_connection()
+            try:
+                await ws.send(payload)
+            except asyncio.CancelledError:
+                await self._invalidate_connection()
+                raise
+            except Exception:
+                await self._invalidate_connection()
+                ws = await self._ensure_connection()
+                try:
+                    await ws.send(payload)
+                except asyncio.CancelledError:
+                    await self._invalidate_connection()
+                    raise
+                except Exception:
+                    await self._invalidate_connection()
+                    raise
+
+            try:
+                message = await self._read_response(ws)
+            except RuntimeError:
+                raise
+            except BaseException:
+                await self._invalidate_connection()
+                raise
+
+            self._record_usage(message)
+            return message
+
+    async def _ensure_connection(self) -> Any:
+        loop = asyncio.get_running_loop()
+        if (
+            _connection_is_open(self._ws)
+            and self._connected_at is not None
+            and loop.time() - self._connected_at < self.max_connection_age_seconds
+        ):
+            return self._ws
+
+        await self._invalidate_connection()
         token, account_id = self.token_provider.get_credentials()
         sid = str(uuid4())
         headers = {
@@ -153,18 +251,101 @@ class OpenAICodexModel(BaseChatModel):
         if account_id:
             headers["ChatGPT-Account-ID"] = account_id
 
-        request = self._build_request(messages, **kwargs)
-        async with websockets.connect(
+        self._ws = await websockets.connect(
             self.ws_url,
             additional_headers=headers,
             open_timeout=self.connect_timeout_seconds,
             close_timeout=5,
             max_size=16 * 1024 * 1024,
-        ) as ws:
-            await ws.send(json.dumps(request, ensure_ascii=False))
-            message = await self._read_response(ws)
-            self._record_usage(message)
-            return message
+        )
+        self._connected_at = loop.time()
+        return self._ws
+
+    async def _invalidate_connection(self) -> None:
+        ws = self._ws
+        self._ws = None
+        self._connected_at = None
+        if ws is None:
+            return
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
+    def close(self) -> None:
+        """Close the persistent WebSocket transport, if it is running."""
+
+        state = self._begin_transport_shutdown()
+        if state is None:
+            return
+        loop, thread = state
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._close_connection_when_idle(), loop)
+            future.result(timeout=max(self.wait_seconds, 5.0))
+        finally:
+            self._finish_transport_shutdown(loop, thread)
+
+    async def aclose(self) -> None:
+        """Asynchronously close the persistent WebSocket transport."""
+
+        state = self._begin_transport_shutdown()
+        if state is None:
+            return
+        loop, thread = state
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._close_connection_when_idle(), loop)
+            await asyncio.wrap_future(future)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            await asyncio.to_thread(thread.join)
+            self._clear_transport_state(loop, thread)
+
+    def _begin_transport_shutdown(
+        self,
+    ) -> tuple[asyncio.AbstractEventLoop, threading.Thread] | None:
+        with self._transport_guard:
+            if self._transport_closing:
+                return None
+            loop = self._transport_loop
+            thread = self._transport_thread
+            if loop is None or loop.is_closed() or thread is None or not thread.is_alive():
+                self._transport_loop = None
+                self._transport_thread = None
+                self._request_lock = None
+                return None
+            if threading.current_thread() is thread:
+                raise RuntimeError("Cannot synchronously close Codex transport from its event-loop thread.")
+            self._transport_closing = True
+            return loop, thread
+
+    async def _close_connection_when_idle(self) -> None:
+        if self._request_lock is None:
+            await self._invalidate_connection()
+            return
+        async with self._request_lock:
+            await self._invalidate_connection()
+
+    def _finish_transport_shutdown(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        thread: threading.Thread,
+    ) -> None:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join()
+        self._clear_transport_state(loop, thread)
+
+    def _clear_transport_state(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        thread: threading.Thread,
+    ) -> None:
+        with self._transport_guard:
+            if self._transport_loop is loop:
+                self._transport_loop = None
+            if self._transport_thread is thread:
+                self._transport_thread = None
+            self._request_lock = None
+            self._transport_closing = False
 
     def get_usage_summary(self) -> dict[str, Any]:
         """Return cumulative token usage observed by this model instance."""
@@ -237,7 +418,6 @@ class OpenAICodexModel(BaseChatModel):
             "parallel_tool_calls": parallel_tool_calls,
             "reasoning": None,
             "store": False,
-            "stream": True,
             "include": [],
         }
 
@@ -284,6 +464,8 @@ class OpenAICodexModel(BaseChatModel):
                 return _message_from_response_items(items, fallback_text=fallback, usage=usage)
             elif event_type in {"response.failed", "response.incomplete"}:
                 raise RuntimeError(f"Codex WebSocket response failed: {data}")
+            elif event_type == "error":
+                raise RuntimeError(f"Codex WebSocket error: {data}")
 
     def _completed_message(self, data: dict[str, Any], fallback_text: str = "") -> AIMessage:
         response = data.get("response")
@@ -340,6 +522,18 @@ def _response_item_key(item: Mapping[str, Any], fallback_index: int) -> str:
         or item.get("item_id")
         or f"item_{fallback_index}"
     )
+
+
+def _connection_is_open(ws: Any | None) -> bool:
+    if ws is None:
+        return False
+    state = getattr(ws, "state", None)
+    if state is not None:
+        return getattr(state, "name", str(state)).upper() == "OPEN"
+    closed = getattr(ws, "closed", None)
+    if closed is not None:
+        return not bool(closed)
+    return True
 
 
 def _message_from_response_items(

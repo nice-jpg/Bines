@@ -44,8 +44,9 @@ def main() -> None:
     notifier = MutableNotifier()
     operation_notice = OperationNoticeTool(notifier=notifier)
     captcha_authentication = CaptchaAuthenticationTool(notifier=notifier)
+    model = build_codex_model()
     runtime = AgentRuntime(
-        model=build_codex_model(),
+        model=model,
         tools=create_common_tools(
             operation_notice_tool=operation_notice,
             captcha_authentication_tool=captcha_authentication,
@@ -71,7 +72,12 @@ def main() -> None:
         if result.output:
             channel.send_text(message.target, result.output)
 
-    channel.start(on_message)
+    try:
+        channel.start(on_message)
+    finally:
+        close_model = getattr(model, "close", None)
+        if callable(close_model):
+            close_model()
 
 
 if __name__ == "__main__":
