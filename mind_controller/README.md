@@ -76,3 +76,8 @@ runs and evaluates the slave again, and stops on the target score, maximum
 rounds, or repeated lack of improvement. Prompt snapshots are kept in memory
 for the invocation. On every exit path, including model failure, the files are
 restored to the best evaluated revision.
+
+Before each non-baseline slave run, all prompt files modified for that round are
+committed with a path-limited Git commit. Other staged or unstaged files are not
+included. Restoring the best evaluated prompt revision is also committed when it
+changes tracked prompt files. Declared prompt files must already be Git-tracked.

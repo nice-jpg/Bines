@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,11 @@ class FakeSlave:
 def make_controller(tmp_path: Path) -> tuple[CognitiveController, Path, FakeSlave]:
     prompt = tmp_path / "system.md"
     prompt.write_text("base", encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.name", "mind-controller-test")
+    _git(tmp_path, "config", "user.email", "mind-controller-test@example.invalid")
+    _git(tmp_path, "add", "system.md")
+    _git(tmp_path, "commit", "-qm", "initial prompt")
     slave = FakeSlave(prompt)
     controller = CognitiveController(
         slave=slave,
@@ -60,6 +66,8 @@ def test_run_eval_preserves_exact_result_and_tracks_best(tmp_path: Path) -> None
     assert score["total"] == 4
     assert score2["total"] == 8
     assert controller.best_round == 2
+    assert len(run2["prompt_commits"]) == 1
+    assert _git(tmp_path, "show", "HEAD:system.md").stdout == "improved"
 
 
 def test_restore_best_discards_regressing_prompt(tmp_path: Path) -> None:
@@ -75,6 +83,12 @@ def test_restore_best_discards_regressing_prompt(tmp_path: Path) -> None:
 
     assert controller.restore_best_prompts()
     assert prompt.read_text(encoding="utf-8") == "much better"
+    assert "restore best prompt revision" in _git(
+        tmp_path,
+        "log",
+        "-1",
+        "--format=%s",
+    ).stdout
 
 
 def test_cannot_edit_undeclared_file(tmp_path: Path) -> None:
@@ -120,3 +134,35 @@ def test_stop_condition_prevents_extra_slave_run(tmp_path: Path) -> None:
         "best_score": 4,
     }
     assert extra_run == {"error": "controller has stopped: target_score"}
+
+
+def test_prompt_commit_does_not_include_or_unstage_other_files(tmp_path: Path) -> None:
+    controller, prompt, _ = make_controller(tmp_path)
+    other = tmp_path / "other.txt"
+    other.write_text("before", encoding="utf-8")
+    _git(tmp_path, "add", "other.txt")
+    _git(tmp_path, "commit", "-qm", "add other")
+
+    run = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(run["run_ref"])
+    other.write_text("staged user change", encoding="utf-8")
+    _git(tmp_path, "add", "other.txt")
+    controller.write_prompt_tool(str(prompt), "prompt revision", "focused prompt change")
+
+    next_run = json.loads(controller.run_slave_tool())
+
+    assert len(next_run["prompt_commits"]) == 1
+    assert _git(tmp_path, "show", "--format=", "--name-only", "HEAD").stdout.strip() == "system.md"
+    assert _git(tmp_path, "show", "HEAD:other.txt").stdout == "before"
+    assert _git(tmp_path, "show", ":other.txt").stdout == "staged user change"
+    assert _git(tmp_path, "status", "--short", "--", "other.txt").stdout == "M  other.txt\n"
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        text=True,
+        capture_output=True,
+    )

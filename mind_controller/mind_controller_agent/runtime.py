@@ -12,6 +12,7 @@ from typing import Any, Mapping
 
 from .contracts import CognitiveSlave, SlaveDebugInfo
 from .models import CognitiveRound, Evaluation, PromptChange
+from .provenance import PromptCommit, commit_prompt_files
 
 
 class CognitiveController:
@@ -46,6 +47,9 @@ class CognitiveController:
         self.best_score: int | None = None
         self.best_round = 0
         self.best_revision = 0
+        self.prompt_commits: list[PromptCommit] = []
+        self._pending_prompt_paths: set[Path] = set()
+        self._pending_reasons: list[str] = []
 
     def build_tools(self) -> list[Any]:
         from langchain_core.tools import StructuredTool
@@ -84,10 +88,17 @@ class CognitiveController:
             return _json({"error": f"controller has stopped: {stop_reason}"})
         if any(ref not in self._evaluated_runs for ref in self._results):
             return _json({"error": "evaluate the previous slave result before running again"})
+        commits = self._commit_pending_prompt_changes(round_index=len(self.rounds) + 1)
         result = self.slave.run()
         run_ref = f"run-{len(self._results) + 1}"
         self._results[run_ref] = result
-        return _json({"run_ref": run_ref, "result": _json_safe(result)})
+        return _json(
+            {
+                "run_ref": run_ref,
+                "result": _json_safe(result),
+                "prompt_commits": [asdict(item) for item in commits],
+            }
+        )
 
     def eval_slave_tool(self, run_ref: str) -> str:
         """Evaluate the exact stored result from a prior run_slave call."""
@@ -156,6 +167,9 @@ class CognitiveController:
             after_hash=_digest(after),
         )
         self.changes.append(change)
+        self._pending_prompt_paths.add(resolved)
+        if change.reason:
+            self._pending_reasons.append(change.reason)
         return _json(asdict(change))
 
     def restore_best_prompts_tool(self) -> str:
@@ -164,6 +178,7 @@ class CognitiveController:
         snapshot = self._snapshots[self.best_revision]
         changed = self._restore_snapshot(snapshot)
         self._revision = self.best_revision
+        commits = self._commit_restored_prompts(changed)
         return _json(
             {
                 "restored": True,
@@ -171,6 +186,7 @@ class CognitiveController:
                 "best_score": self.best_score,
                 "best_revision": self.best_revision,
                 "changed_paths": changed,
+                "prompt_commits": [asdict(item) for item in commits],
             }
         )
 
@@ -192,9 +208,10 @@ class CognitiveController:
         """Idempotently restore best evaluated prompts after the agent exits."""
 
         snapshot = self._snapshots[self.best_revision]
-        changed = bool(self._restore_snapshot(snapshot))
+        changed_paths = self._restore_snapshot(snapshot)
         self._revision = self.best_revision
-        return changed
+        self._commit_restored_prompts(changed_paths)
+        return bool(changed_paths)
 
     def _allowed_path(self, raw_path: str) -> Path:
         candidate = Path(raw_path).expanduser()
@@ -208,6 +225,38 @@ class CognitiveController:
 
     def _capture_prompts(self) -> dict[Path, bytes]:
         return {path: path.read_bytes() for path in self.prompt_paths}
+
+    def _commit_pending_prompt_changes(self, *, round_index: int) -> list[PromptCommit]:
+        if not self._pending_prompt_paths:
+            return []
+        reasons = "; ".join(dict.fromkeys(self._pending_reasons))
+        if len(reasons) > 500:
+            reasons = reasons[:497] + "..."
+        message = (
+            f"mind-controller: prompt round {round_index}, revision {self._revision}"
+            + (f"\n\nReason: {reasons}" if reasons else "")
+        )
+        commits = commit_prompt_files(self._pending_prompt_paths, message)
+        self.prompt_commits.extend(commits)
+        self._clear_pending_prompt_changes()
+        return commits
+
+    def _commit_restored_prompts(self, changed_paths: list[str]) -> list[PromptCommit]:
+        self._pending_prompt_paths.update(Path(path) for path in changed_paths)
+        if not self._pending_prompt_paths:
+            return []
+        message = (
+            f"mind-controller: restore best prompt revision {self.best_revision}"
+            f"\n\nBest evaluated round: {self.best_round}"
+        )
+        commits = commit_prompt_files(self._pending_prompt_paths, message)
+        self.prompt_commits.extend(commits)
+        self._clear_pending_prompt_changes()
+        return commits
+
+    def _clear_pending_prompt_changes(self) -> None:
+        self._pending_prompt_paths.clear()
+        self._pending_reasons.clear()
 
     def _stop_reason(self) -> str | None:
         if len(self.rounds) >= self.max_rounds:
