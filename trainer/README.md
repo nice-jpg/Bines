@@ -39,6 +39,7 @@ PYTHONPATH=. python mind_controller/run_master.py \
   --max-rounds 10
 ```
 
-The default evaluator in `src/raw_run.py` currently returns the constant score
-`50`. Prompt optimization cannot observe improvement until that evaluator is
-replaced with a result-sensitive score.
+The default evaluator in `src/raw_run.py` returns a mind_controller-compatible
+structured score with `result_count_grade`, `context_grade`, and
+`correctness_grade` dimensions. Merchant/product/error counts are included as
+evaluation details.
