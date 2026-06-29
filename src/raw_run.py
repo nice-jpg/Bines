@@ -37,11 +37,5 @@ def run() -> None:
 
     print(r)
 
-def learn(run_loop: AgentRunLoop, eval: Evaluator) -> None:
-    """Run the agent loop and evaluate the result."""
-    result = run_loop()
-    score = eval(result)
-    print(f"Run result score: {score}")
-
-
-run()
+def eval(result: AgentRunResult) -> int:
+    return 50
