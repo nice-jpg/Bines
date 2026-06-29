@@ -20,14 +20,13 @@ SRC_DIR = REPO_ROOT / "src"
 SYSTEM_PROMPT_PATH = SRC_DIR / "prompts" / "system_prompt.py"
 PAGE_MECHANISM_DIR = SRC_DIR / "prompts" / "page_mechanism"
 APP_PROBE_MESSAGE = "执行应用探测任务"
+CAPTCHA_RESUME_TEXT = "done"
 
 # raw_run.py intentionally uses top-level imports so it can be launched as a
 # script. Make that same import mode available to this package adapter.
 src_entry = str(SRC_DIR)
 if src_entry not in sys.path:
     sys.path.insert(0, src_entry)
-
-raw_run = importlib.import_module("raw_run")
 
 RunResult = Any
 Evaluator = Callable[[RunResult], int | dict[str, Any]]
@@ -36,6 +35,7 @@ ModelFactory = Callable[[], Any]
 ToolFactory = Callable[[Callable[[str], None]], Sequence[Any]]
 NotifierFactory = Callable[[], Callable[[str], None]]
 PromptReloader = Callable[[], RuntimeFactory]
+HumanInputProvider = Callable[[RunResult], str]
 
 
 class RawRunSlave:
@@ -50,6 +50,7 @@ class RawRunSlave:
         tool_factory: ToolFactory | None = None,
         notifier_factory: NotifierFactory | None = None,
         prompt_reloader: PromptReloader | None = None,
+        human_input_provider: HumanInputProvider | None = None,
         task_message: str = APP_PROBE_MESSAGE,
         session_id: str = "main",
         max_iterations: int = 1000,
@@ -57,12 +58,13 @@ class RawRunSlave:
     ) -> None:
         if max_iterations < 1:
             raise ValueError("max_iterations must be >= 1")
-        self._evaluator = evaluator or raw_run.eval
+        self._evaluator = evaluator or _evaluate_raw_run
         self._runtime_factory = runtime_factory
-        self._model_factory = model_factory or raw_run.build_codex_model
+        self._model_factory = model_factory or _build_raw_model
         self._tool_factory = tool_factory or _build_common_tools
-        self._notifier_factory = notifier_factory or raw_run.PlainNotifier
+        self._notifier_factory = notifier_factory or _build_plain_notifier
         self._prompt_reloader = prompt_reloader or _reload_agent_runtime
+        self._human_input_provider = human_input_provider or _read_human_input
         self.task_message = task_message
         self.session_id = session_id
         self.max_iterations = max_iterations
@@ -83,6 +85,7 @@ class RawRunSlave:
             session_id=self.session_id,
             max_iterations=self.max_iterations,
         )
+        result = self._resume_interrupts(runtime, result)
         if self.print_result:
             print(result)
         return result
@@ -128,18 +131,56 @@ class RawRunSlave:
                     "The adapter reloads the global system prompt before constructing every "
                     "runtime. PAGE.md files are read from disk by query_manual."
                 ),
+                "hitl_resume": (
+                    "If the run is interrupted for captcha authentication, the adapter keeps "
+                    "the same runtime and session alive, waits for exact input 'done', and "
+                    "calls resume_turn until the task completes."
+                ),
             },
             working_directory=REPO_ROOT,
         )
 
+    def _resume_interrupts(self, runtime: Any, result: RunResult) -> RunResult:
+        while bool(getattr(result, "interrupted", False)):
+            if not runtime.has_pending_interrupt(self.session_id):
+                raise RuntimeError(
+                    "slave returned interrupted=True without a pending runtime checkpoint"
+                )
+            user_input = str(self._human_input_provider(result)).strip()
+            if user_input != CAPTCHA_RESUME_TEXT:
+                continue
+            result = runtime.resume_turn(
+                session_id=self.session_id,
+                user_input=user_input,
+                max_iterations=self.max_iterations,
+            )
+        return result
+
 
 def _build_common_tools(notifier: Callable[[str], None]) -> Sequence[Any]:
+    raw_run = _raw_run_module()
     operation_notice = raw_run.OperationNoticeTool(notifier=notifier)
     captcha_authentication = raw_run.CaptchaAuthenticationTool(notifier=notifier)
     return raw_run.create_common_tools(
         operation_notice_tool=operation_notice,
         captcha_authentication_tool=captcha_authentication,
     )
+
+
+def _evaluate_raw_run(result: RunResult) -> int | dict[str, Any]:
+    return _raw_run_module().eval(result)
+
+
+def _build_raw_model() -> Any:
+    return _raw_run_module().build_codex_model()
+
+
+def _build_plain_notifier() -> Callable[[str], None]:
+    return _raw_run_module().PlainNotifier()
+
+
+def _raw_run_module() -> Any:
+    return importlib.import_module("raw_run")
 
 
 def _reload_agent_runtime() -> RuntimeFactory:
@@ -155,6 +196,19 @@ def _reload_agent_runtime() -> RuntimeFactory:
     importlib.reload(prompts_module)
     importlib.reload(agent_module)
     return agent_module.AgentRuntime
+
+
+def _read_human_input(_result: RunResult) -> str:
+    try:
+        return input(
+            "Agent execution is waiting for human captcha authentication. "
+            f"Complete it, then enter {CAPTCHA_RESUME_TEXT!r}: "
+        )
+    except EOFError as exc:
+        raise RuntimeError(
+            "HITL input is unavailable; provide RawRunSlave(human_input_provider=...) "
+            "for non-interactive execution"
+        ) from exc
 
 
 # Importable instance for:

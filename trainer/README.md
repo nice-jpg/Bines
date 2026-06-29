@@ -17,6 +17,18 @@ Unlike the current `raw_run.run()`, the adapter returns the real
 global system prompt binding, so edits made by mind_controller take effect.
 `PAGE.md` manuals are already read dynamically by `query_manual`.
 
+If captcha HITL interrupts a task, `run()` keeps the same runtime and session
+alive, waits for the exact input `done`, and calls `resume_turn()` with the
+standard `respond` resume path owned by `AgentRuntime`. It repeats this process
+for consecutive interruptions and returns only after the task is complete.
+Non-interactive callers must inject a blocking input source:
+
+```python
+slave = RawRunSlave(
+    human_input_provider=lambda interrupted_result: wait_for_external_done()
+)
+```
+
 ## Run with mind_controller
 
 ```bash
@@ -30,4 +42,3 @@ PYTHONPATH=. python mind_controller/run_master.py \
 The default evaluator in `src/raw_run.py` currently returns the constant score
 `50`. Prompt optimization cannot observe improvement until that evaluator is
 replaced with a result-sensitive score.
-
