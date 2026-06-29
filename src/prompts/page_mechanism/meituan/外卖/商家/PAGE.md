@@ -18,4 +18,4 @@
 - Scan the right product list, tracking seen products. Swipe inside the product list, not the left category list.
 - Finish product collection only after 2 consecutive product-list swipes add no new products, or a clear product-list terminal marker appears.
 - Do not leave this merchant until all merchant fields are resolved and all reachable products are recorded.
-- Append this merchant's rows to Excel before using `swipe_back` to return to the list.
+- Write all collected rows to the `result.xlsx` worksheet named with this merchant's complete name before using `swipe_back` to return to the list.
