@@ -33,6 +33,7 @@ try:
     from src.middleware import (
         DeviceContextCompressionMiddleware,
         RuntimeContextCaptureMiddleware,
+        ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
     from src.subagents_manager import SubagentManager
@@ -43,6 +44,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
         DeviceContextCompressionMiddleware,
         RuntimeContextCaptureMiddleware,
+        ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
     from subagents_manager import SubagentManager
@@ -197,6 +199,7 @@ def build_agent(
     )
     middlewares: list[AgentMiddleware] = []
     # middlewares.append(TodoListMiddleware())
+    middlewares.append(ToolErrorMiddleware())
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(RuntimeContextCaptureMiddleware(set_runtime_messages))
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))

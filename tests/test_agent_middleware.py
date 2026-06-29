@@ -15,6 +15,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
             name: sys.modules.get(name)
             for name in (
                 "agent",
+                "src",
                 "langchain",
                 "langchain.agents",
                 "langchain.agents.middleware",
@@ -61,6 +62,9 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         class AIMessage(BaseMessage):
             pass
 
+        class ToolMessage(BaseMessage):
+            pass
+
         class StructuredTool:
             @classmethod
             def from_function(cls, **kwargs):
@@ -99,6 +103,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         langchain_core_chat_models.BaseChatModel = BaseChatModel
         langchain_core_messages.AIMessage = AIMessage
         langchain_core_messages.BaseMessage = BaseMessage
+        langchain_core_messages.ToolMessage = ToolMessage
         langchain_core_tools.StructuredTool = StructuredTool
 
         sys.modules["langchain"] = langchain
@@ -111,6 +116,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         sys.modules["langchain_core.language_models.chat_models"] = langchain_core_chat_models
         sys.modules["langchain_core.messages"] = langchain_core_messages
         sys.modules["langchain_core.tools"] = langchain_core_tools
+        sys.modules["src"] = types.ModuleType("src")
         sys.modules.pop("agent", None)
 
         agent = importlib.import_module("agent")
@@ -128,13 +134,14 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertEqual(
             middleware_names,
             [
+                "ToolErrorMiddleware",
                 "DeviceContextCompressionMiddleware",
                 "RuntimeContextCaptureMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
                 "SummarizationMiddleware",
             ],
         )
-        hitl = captured["middleware"][2]
+        hitl = captured["middleware"][3]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
