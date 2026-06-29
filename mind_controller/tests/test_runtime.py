@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from mind_controller_agent.contracts import SlaveDebugInfo
+from mind_controller_agent.provenance import commit_prompt_files
 from mind_controller_agent.runtime import CognitiveController, normalize_evaluation
 
 
@@ -156,6 +157,24 @@ def test_prompt_commit_does_not_include_or_unstage_other_files(tmp_path: Path) -
     assert _git(tmp_path, "show", "HEAD:other.txt").stdout == "before"
     assert _git(tmp_path, "show", ":other.txt").stdout == "staged user change"
     assert _git(tmp_path, "status", "--short", "--", "other.txt").stdout == "M  other.txt\n"
+
+
+def test_prompt_commit_preserves_unicode_paths(tmp_path: Path) -> None:
+    prompt = tmp_path / "src" / "prompts" / "美食" / "商家" / "PAGE.md"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text("before", encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.name", "mind-controller-test")
+    _git(tmp_path, "config", "user.email", "mind-controller-test@example.invalid")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "initial prompt")
+    prompt.write_text("after", encoding="utf-8")
+
+    commits = commit_prompt_files([prompt], "unicode prompt revision")
+
+    assert len(commits) == 1
+    assert commits[0].paths == ("src/prompts/美食/商家/PAGE.md",)
+    assert _git(tmp_path, "show", "HEAD:src/prompts/美食/商家/PAGE.md").stdout == "after"
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:

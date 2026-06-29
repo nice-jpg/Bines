@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from collections import defaultdict
 from dataclasses import dataclass
@@ -59,17 +60,14 @@ def commit_prompt_files(paths: Iterable[Path], message: str) -> list[PromptCommi
             *relative_paths,
         )
         commit_hash = _git(root, "rev-parse", "HEAD").stdout.strip()
-        committed_paths = tuple(
-            line
-            for line in _git(
-                root,
-                "diff-tree",
-                "--no-commit-id",
-                "--name-only",
-                "-r",
-                "HEAD",
-            ).stdout.splitlines()
-            if line
+        committed_paths = _git_paths(
+            root,
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "-z",
+            "-r",
+            "HEAD",
         )
         unexpected = sorted(set(committed_paths) - set(relative_paths))
         if unexpected:
@@ -110,3 +108,17 @@ def _git(
         raise PromptCommitError(output or f"git {' '.join(args)} failed")
     return result
 
+
+def _git_paths(cwd: Path, *args: str) -> tuple[str, ...]:
+    """Return Git path output without quotePath escaping or line delimiters."""
+
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        output = os.fsdecode(result.stderr or result.stdout).strip()
+        raise PromptCommitError(output or f"git {' '.join(args)} failed")
+    return tuple(os.fsdecode(path) for path in result.stdout.split(b"\0") if path)
