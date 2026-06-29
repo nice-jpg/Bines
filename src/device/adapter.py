@@ -95,6 +95,14 @@ class AndroidDevice:
             return make_error_result("validation_error", "package_name must not be empty")
         return self.shell(["monkey", "-p", package, "-c", "android.intent.category.LAUNCHER", "1"])
 
+    def close_package(self, package_name: str) -> str | ErrorResult:
+        """Force-stop an installed Android package."""
+
+        package = package_name.strip()
+        if not package:
+            return make_error_result("validation_error", "package_name must not be empty")
+        return self.shell(["am", "force-stop", package])
+
     def execute_file(
         self,
         device_file_path: str,

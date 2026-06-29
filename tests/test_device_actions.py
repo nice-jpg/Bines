@@ -163,7 +163,7 @@ class DeviceActionTests(unittest.TestCase):
                 ["adb", "shell", "settings", "put", "global", "window_animation_scale", "0"],
                 ["adb", "shell", "settings", "put", "global", "transition_animation_scale", "0"],
                 ["adb", "shell", "settings", "put", "global", "animator_duration_scale", "0"],
-                ["adb", "shell", "uiautomator", "dump", "/sdcard/window_dump.xml"],
+                ["adb", "shell", "/data/local/tmp/project", "-d", "/sdcard/window_dump.xml"],
             ],
         )
 
@@ -191,6 +191,26 @@ class DeviceActionTests(unittest.TestCase):
         device = AndroidDevice(runner=RecordingRunner())
 
         result = device.run_package("  ")
+
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["error_type"], "validation_error")
+        self.assertIn("package_name must not be empty", result["message"])
+
+    def test_android_device_close_package_uses_force_stop_command(self) -> None:
+        runner = RecordingRunner()
+        device = AndroidDevice(runner=runner)
+
+        device.close_package("com.sankuai.meituan")
+
+        self.assertIn(
+            ["adb", "shell", "am", "force-stop", "com.sankuai.meituan"],
+            runner.calls,
+        )
+
+    def test_android_device_close_package_returns_error_for_empty_package_name(self) -> None:
+        device = AndroidDevice(runner=RecordingRunner())
+
+        result = device.close_package("  ")
 
         self.assertEqual(result["ok"], False)
         self.assertEqual(result["error_type"], "validation_error")

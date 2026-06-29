@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from pathlib import Path
 import json
+from pathlib import Path
 import posixpath
 import re
-import string
-import xml.etree.ElementTree as ET
-import zipfile
 
 from langchain_core.tools import StructuredTool
+from openpyxl import Workbook, load_workbook
+from openpyxl.workbook.workbook import Workbook as OpenpyxlWorkbook
+from openpyxl.worksheet.worksheet import Worksheet
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2] / "workspace"
 SHEET_NAME = "Sheet1"
-MAIN_SHEET_PATH = "xl/worksheets/sheet1.xml"
+INVALID_SHEET_NAME_RE = re.compile(r"[\[\]:*?/\\]")
 
 
 class ContentProvider:
@@ -30,34 +29,108 @@ class ContentProvider:
         relative_path: str,
         headers_json: str = "[]",
         rows_json: str = "[]",
+        sheet_name: str = SHEET_NAME,
     ) -> str:
         path = self._resolve_excel_path(relative_path)
-        headers = _parse_json_rows(headers_json, allow_flat=True)
-        rows = _parse_json_rows(rows_json, allow_flat=False)
-        table: list[list[object]] = []
-        if headers:
-            table.append(headers[0])
-        table.extend(rows)
-        _write_xlsx(path, table)
+        validated_name = _validate_sheet_name(sheet_name)
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = validated_name
+        _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
+        _save_workbook(workbook, path)
         return str(path)
 
-    def append_excel_rows(self, relative_path: str, rows_json: str) -> str:
+    def create_excel_sheet(
+        self,
+        relative_path: str,
+        sheet_name: str,
+        headers_json: str = "[]",
+        rows_json: str = "[]",
+    ) -> str:
         path = self._resolve_excel_path(relative_path)
-        table = _read_xlsx(path) if path.exists() else []
-        table.extend(_parse_json_rows(rows_json, allow_flat=False))
-        _write_xlsx(path, table)
+        workbook = _load_existing_workbook(path)
+        try:
+            validated_name = _validate_sheet_name(sheet_name)
+            _ensure_unique_sheet_name(workbook, validated_name)
+            worksheet = workbook.create_sheet(validated_name)
+            _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
+            _save_workbook(workbook, path)
+        except Exception:
+            workbook.close()
+            raise
         return str(path)
 
-    def update_excel_cell(self, relative_path: str, cell: str, value: str) -> str:
+    def rename_excel_sheet(self, relative_path: str, sheet_name: str, new_sheet_name: str) -> str:
         path = self._resolve_excel_path(relative_path)
-        table = _read_xlsx(path) if path.exists() else []
-        row_index, col_index = _cell_to_indexes(cell)
-        while len(table) <= row_index:
-            table.append([])
-        while len(table[row_index]) <= col_index:
-            table[row_index].append("")
-        table[row_index][col_index] = value
-        _write_xlsx(path, table)
+        workbook = _load_existing_workbook(path)
+        try:
+            worksheet = _get_sheet(workbook, sheet_name)
+            validated_name = _validate_sheet_name(new_sheet_name)
+            if validated_name.casefold() != worksheet.title.casefold():
+                _ensure_unique_sheet_name(workbook, validated_name)
+            worksheet.title = validated_name
+            _save_workbook(workbook, path)
+        except Exception:
+            workbook.close()
+            raise
+        return str(path)
+
+    def write_excel_sheet(
+        self,
+        relative_path: str,
+        sheet_name: str,
+        headers_json: str = "[]",
+        rows_json: str = "[]",
+    ) -> str:
+        path = self._resolve_excel_path(relative_path)
+        workbook = _load_existing_workbook(path)
+        try:
+            worksheet = _get_sheet(workbook, sheet_name)
+            _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
+            _save_workbook(workbook, path)
+        except Exception:
+            workbook.close()
+            raise
+        return str(path)
+
+    def append_excel_rows(
+        self,
+        relative_path: str,
+        rows_json: str,
+        sheet_name: str = SHEET_NAME,
+    ) -> str:
+        path = self._resolve_excel_path(relative_path)
+        if not path.exists():
+            self.create_excel_file(relative_path, sheet_name=sheet_name)
+        workbook = _load_existing_workbook(path)
+        try:
+            worksheet = _get_sheet(workbook, sheet_name)
+            for row in _parse_json_rows(rows_json, allow_flat=False):
+                worksheet.append(row)
+            _save_workbook(workbook, path)
+        except Exception:
+            workbook.close()
+            raise
+        return str(path)
+
+    def update_excel_cell(
+        self,
+        relative_path: str,
+        cell: str,
+        value: str,
+        sheet_name: str = SHEET_NAME,
+    ) -> str:
+        path = self._resolve_excel_path(relative_path)
+        if not path.exists():
+            self.create_excel_file(relative_path, sheet_name=sheet_name)
+        workbook = _load_existing_workbook(path)
+        try:
+            worksheet = _get_sheet(workbook, sheet_name)
+            worksheet[cell] = value
+            _save_workbook(workbook, path)
+        except Exception:
+            workbook.close()
+            raise
         return str(path)
 
     def _resolve_excel_path(self, relative_path: str) -> Path:
@@ -80,22 +153,48 @@ def create_content_provider_tools(provider: ContentProvider | None = None) -> li
             func=content_provider.create_excel_file,
             name="create_excel_file",
             description=(
-                "Create an .xlsx file under workspace. Inputs: relative_path, "
-                "headers_json as a JSON array, rows_json as a JSON array of rows."
+                "Create an .xlsx file under workspace. Inputs: relative_path, optional "
+                "headers_json, optional rows_json, and optional sheet_name."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=content_provider.create_excel_sheet,
+            name="create_excel_sheet",
+            description=(
+                "Create a worksheet in an existing .xlsx file. Inputs: relative_path, "
+                "sheet_name, optional headers_json, and optional rows_json."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=content_provider.rename_excel_sheet,
+            name="rename_excel_sheet",
+            description=(
+                "Rename a worksheet. Inputs: relative_path, sheet_name, and new_sheet_name."
+            ),
+        ),
+        StructuredTool.from_function(
+            func=content_provider.write_excel_sheet,
+            name="write_excel_sheet",
+            description=(
+                "Replace all rows in a specific worksheet. Inputs: relative_path, sheet_name, "
+                "optional headers_json, and optional rows_json."
             ),
         ),
         StructuredTool.from_function(
             func=content_provider.append_excel_rows,
             name="append_excel_rows",
             description=(
-                "Append rows to an .xlsx file under workspace. rows_json must be "
-                "a JSON array of row arrays or objects."
+                "Append rows to a specific worksheet. Inputs: relative_path, rows_json, "
+                "and optional sheet_name."
             ),
         ),
         StructuredTool.from_function(
             func=content_provider.update_excel_cell,
             name="update_excel_cell",
-            description="Update one cell in an .xlsx file under workspace, e.g. cell='B2'.",
+            description=(
+                "Update one cell in a specific worksheet. Inputs: relative_path, cell such "
+                "as 'B2', value, and optional sheet_name."
+            ),
         ),
     ]
 
@@ -133,132 +232,78 @@ def _is_row_like(value: object) -> bool:
     return isinstance(value, (list, dict))
 
 
-def _write_xlsx(path: Path, rows: list[list[object]]) -> None:
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", _content_types_xml())
-        archive.writestr("_rels/.rels", _root_rels_xml())
-        archive.writestr("xl/workbook.xml", _workbook_xml())
-        archive.writestr("xl/_rels/workbook.xml.rels", _workbook_rels_xml())
-        archive.writestr(MAIN_SHEET_PATH, _worksheet_xml(rows))
+def _table_from_json(headers_json: str, rows_json: str) -> list[list[object]]:
+    headers = _parse_json_rows(headers_json, allow_flat=True)
+    rows = _parse_json_rows(rows_json, allow_flat=False)
+    table: list[list[object]] = []
+    if headers:
+        table.append(headers[0])
+    table.extend(rows)
+    return table
 
 
-def _read_xlsx(path: Path) -> list[list[object]]:
-    with zipfile.ZipFile(path, "r") as archive:
-        sheet_xml = archive.read(MAIN_SHEET_PATH)
-    root = ET.fromstring(sheet_xml)
-    rows: list[list[object]] = []
-    for row in root.findall(".//{*}sheetData/{*}row"):
-        values: list[object] = []
-        for cell in row.findall("{*}c"):
-            col_index = _column_name_to_index(re.sub(r"\d+", "", cell.attrib.get("r", "")))
-            while len(values) < col_index - 1:
-                values.append("")
-            values.append(_cell_value(cell))
-        rows.append(values)
-    return rows
+def _replace_sheet_rows(worksheet: Worksheet, rows: list[list[object]]) -> None:
+    if worksheet.max_row:
+        worksheet.delete_rows(1, worksheet.max_row)
+    for row in rows:
+        worksheet.append(row)
 
 
-def _cell_value(cell: ET.Element) -> str:
-    inline_text = cell.find("{*}is/{*}t")
-    if inline_text is not None:
-        return inline_text.text or ""
-    value = cell.find("{*}v")
-    return "" if value is None else (value.text or "")
+def _load_existing_workbook(path: Path) -> OpenpyxlWorkbook:
+    if not path.exists():
+        raise ValueError(f"Excel file does not exist: {path.name}")
+    return load_workbook(path)
 
 
-def _worksheet_xml(rows: list[list[object]]) -> str:
-    row_xml = []
-    for row_index, row in enumerate(rows, start=1):
-        cells = []
-        for col_index, value in enumerate(row, start=1):
-            ref = f"{_column_index_to_name(col_index)}{row_index}"
-            cells.append(_cell_xml(ref, value))
-        row_xml.append(f'<row r="{row_index}">{"".join(cells)}</row>')
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-        f'<sheetData>{"".join(row_xml)}</sheetData>'
-        "</worksheet>"
-    )
+def _save_workbook(workbook: OpenpyxlWorkbook, path: Path) -> None:
+    workbook.save(path)
+    workbook.close()
 
 
-def _cell_xml(ref: str, value: object) -> str:
-    if isinstance(value, bool):
-        return f'<c r="{ref}" t="b"><v>{1 if value else 0}</v></c>'
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return f'<c r="{ref}"><v>{value}</v></c>'
-    return f'<c r="{ref}" t="inlineStr"><is><t>{_escape_xml(value)}</t></is></c>'
+def _get_sheet(workbook: OpenpyxlWorkbook, sheet_name: str) -> Worksheet:
+    validated_name = _validate_sheet_name(sheet_name)
+    if validated_name not in workbook.sheetnames:
+        available = ", ".join(workbook.sheetnames) or "none"
+        raise ValueError(f'Worksheet "{validated_name}" does not exist. Available sheets: {available}')
+    return workbook[validated_name]
 
 
-def _escape_xml(value: object) -> str:
-    return (
-        str(value if value is not None else "")
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-
-def _cell_to_indexes(cell: str) -> tuple[int, int]:
-    match = re.fullmatch(r"([A-Za-z]+)([1-9][0-9]*)", str(cell or "").strip())
-    if not match:
-        raise ValueError("cell must look like A1, B2, etc.")
-    return int(match.group(2)) - 1, _column_name_to_index(match.group(1)) - 1
-
-
-def _column_name_to_index(name: str) -> int:
-    index = 0
-    for char in name.upper():
-        if char not in string.ascii_uppercase:
-            raise ValueError(f"Invalid column name: {name}")
-        index = index * 26 + (ord(char) - ord("A") + 1)
-    return index
-
-
-def _column_index_to_name(index: int) -> str:
-    name = ""
-    while index:
-        index, remainder = divmod(index - 1, 26)
-        name = chr(ord("A") + remainder) + name
+def _validate_sheet_name(sheet_name: str) -> str:
+    name = str(sheet_name or "")
+    if not name.strip():
+        raise ValueError("sheet_name must not be empty")
+    if len(name) > 31:
+        raise ValueError("sheet_name must not exceed 31 characters")
+    if INVALID_SHEET_NAME_RE.search(name):
+        raise ValueError(r"sheet_name must not contain any of: []:*?/\\")
     return name
 
 
-def _content_types_xml() -> str:
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-        '<Default Extension="xml" ContentType="application/xml"/>'
-        '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
-        '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'
-        "</Types>"
-    )
+def _ensure_unique_sheet_name(workbook: OpenpyxlWorkbook, sheet_name: str) -> None:
+    if any(existing.casefold() == sheet_name.casefold() for existing in workbook.sheetnames):
+        raise ValueError(f'Worksheet "{sheet_name}" already exists')
 
 
-def _root_rels_xml() -> str:
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
-        "</Relationships>"
-    )
+def _read_xlsx(path: Path, sheet_name: str = SHEET_NAME) -> list[list[object]]:
+    workbook = load_workbook(path, data_only=True)
+    try:
+        worksheet = _get_sheet(workbook, sheet_name)
+        rows: list[list[object]] = []
+        for row in worksheet.iter_rows(values_only=True):
+            values = [_read_cell_value(value) for value in row]
+            while values and values[-1] == "":
+                values.pop()
+            rows.append(values)
+        while rows and not rows[-1]:
+            rows.pop()
+        return rows
+    finally:
+        workbook.close()
 
 
-def _workbook_xml() -> str:
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
-        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
-        f'<sheets><sheet name="{SHEET_NAME}" sheetId="1" r:id="rId1"/></sheets>'
-        "</workbook>"
-    )
-
-
-def _workbook_rels_xml() -> str:
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
-        "</Relationships>"
-    )
+def _read_cell_value(value: object) -> object:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value)

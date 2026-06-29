@@ -41,7 +41,10 @@ class PageMechanismDocTests(unittest.TestCase):
                 self.assertIn("total review count, and positive review count", content)
                 self.assertIn("Collect every reachable product: product name, price, and sales", content)
                 self.assertIn("Do not leave this merchant until all merchant fields are resolved", content)
-                self.assertIn("Append this merchant's rows to Excel before using `swipe_back`", content)
+                self.assertIn(
+                    "Write all collected rows to the `result.xlsx` worksheet named with this merchant's complete name",
+                    content,
+                )
 
 
 if __name__ == "__main__":

@@ -3,3 +3,4 @@ langchain-core>=0.3
 langchain-openai>=0.2
 lark-oapi>=1.4.8
 python-dotenv>=1.0
+openpyxl>=3.1

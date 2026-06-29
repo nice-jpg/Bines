@@ -58,6 +58,10 @@ class FakeDevice:
         self.calls.append(("dump_ui",))
         return self.ui_result
 
+    def close_package(self, package_name: str):
+        self.calls.append(("close_package", package_name))
+        return ""
+
 
 class EventHubTests(unittest.TestCase):
     def test_touch_action_returns_uiautomate_result_after_success(self) -> None:
@@ -100,6 +104,15 @@ class EventHubTests(unittest.TestCase):
         self.assertEqual(result, "<h></h>")
         self.assertEqual(sleeper.calls, [])
         self.assertEqual(hub.device.calls, [("dump_ui",)])
+
+    def test_close_package_calls_device_without_ui_capture(self) -> None:
+        hub = EventHub()
+        hub.device = FakeDevice()
+
+        result = hub.close_package("com.sankuai.meituan")
+
+        self.assertEqual(result, "")
+        self.assertEqual(hub.device.calls, [("close_package", "com.sankuai.meituan")])
 
 
 if __name__ == "__main__":

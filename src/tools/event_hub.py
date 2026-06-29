@@ -39,6 +39,7 @@ class ToolSpec:
 
 TOOL_SPECS = (
     ToolSpec("run_package", "Open an Android application by package name.", "run_package", ("package_name",)),
+    ToolSpec("close_package", "Force-stop an Android application by package name.", "close_package", ("package_name",)),
     ToolSpec("tap", "tap (x, y). Provide x/y coordinates. Returns no operation data.", "tap", ("x", "y")),
     ToolSpec(
         "swipe_up",
@@ -116,6 +117,11 @@ class EventHub:
         """Open the specified Android application package."""
 
         return self._run_device_operation("run_package", lambda: self.device.run_package(package_name))
+
+    def close_package(self, package_name: str) -> str | ErrorResult:
+        """Force-stop the specified Android application package."""
+
+        return self._run_device_operation("close_package", lambda: self.device.close_package(package_name))
 
     def _replay_recorded_action(self, action_name: str, x: int, y: int) -> str | ErrorResult:
         """Replay a recorded action with coordinate jitter input.
@@ -226,8 +232,10 @@ def _xy_operation(operation: Callable[[int, int], str | ErrorResult]) -> Callabl
     return tool_func
 
 
-def _package_operation(operation: Callable[[str], str]) -> Callable[[str], str]:
-    def tool_func(package_name: str) -> str:
+def _package_operation(
+    operation: Callable[[str], str | ErrorResult],
+) -> Callable[[str], str | ErrorResult]:
+    def tool_func(package_name: str) -> str | ErrorResult:
         return operation(package_name)
 
     return tool_func
