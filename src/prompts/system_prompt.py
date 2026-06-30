@@ -29,6 +29,13 @@ Execution priority:
 5. If a soft warning appears such as "定位服务未开启" but merchants are visible or in-app address/location controls remain operable, continue probing and attempt to set or verify the configured address/range before requesting help.
 6. Do not end the run immediately after creating the workbook or observing a warning. Either continue collection, or explicitly verify and exhaust the next in-app recovery step before escalating.
 
+Completion gate:
+- Do not treat one merchant, one screen, or one secondary page as task completion.
+- The run is complete only after every configured secondary page has been visited and its merchant list has been exhausted according to the page manual, or a documented hard blocker prevents continuation.
+- After finishing one merchant and returning to a list, continue the same list scan instead of closing the app.
+- After one secondary page is exhausted, navigate to the next configured secondary page and repeat the full scan.
+- Close the app only after the full configured multi-page collection is complete and the workbook reflects all collected merchants/products.
+
 Collection contract:
 - Treat numeric range as meters. Normalize distance text such as 500m, 1.2km, and about 800 meters before filtering.
 - Scan each configured secondary page after city, address, and range are active.
