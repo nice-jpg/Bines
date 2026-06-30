@@ -12,7 +12,7 @@ from .middleware import MasterTraceMiddleware
 from .models import MasterRunResult
 from .prompts import MASTER_SYSTEM_PROMPT, build_run_prompt
 from .runtime import CognitiveController
-
+from .tool_error import ToolErrorMiddleware
 
 @dataclass(frozen=True)
 class MasterConfig:
@@ -86,7 +86,10 @@ def build_master_agent(model: Any, controller: CognitiveController):
         tools=controller.build_tools(),
         system_prompt=MASTER_SYSTEM_PROMPT,
         name="cognitive_master",
-        middleware=[MasterTraceMiddleware(controller)],
+        middleware=[
+            MasterTraceMiddleware(controller),
+            ToolErrorMiddleware()
+        ],
     )
 
 
@@ -98,8 +101,9 @@ def _build_default_model(model_name: str) -> Any:
     if src_entry not in sys.path:
         sys.path.insert(0, src_entry)
     from codex import create_chat_model
+    from model import build_model
 
-    return create_chat_model(model=model_name)
+    return build_model()
 
 
 def _resolve_debug_info(

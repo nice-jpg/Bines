@@ -44,7 +44,7 @@ def main() -> None:
     notifier = MutableNotifier()
     operation_notice = OperationNoticeTool(notifier=notifier)
     captcha_authentication = CaptchaAuthenticationTool(notifier=notifier)
-    model = build_codex_model()
+    model = build_model()
     runtime = AgentRuntime(
         model=model,
         tools=create_common_tools(

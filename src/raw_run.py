@@ -7,7 +7,7 @@ from zipfile import BadZipFile
 
 from agent import AgentRunResult, AgentRuntime
 from langchain_core.messages import AIMessage, BaseMessage
-from model import build_codex_model
+from model import build_codex_model, build_model
 from openpyxl import load_workbook
 from openpyxl.formula import Tokenizer
 from openpyxl.utils.exceptions import InvalidFileException

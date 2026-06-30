@@ -172,7 +172,7 @@ def _evaluate_raw_run(result: RunResult) -> int | dict[str, Any]:
 
 
 def _build_raw_model() -> Any:
-    return _raw_run_module().build_codex_model()
+    return _raw_run_module().build_model()
 
 
 def _build_plain_notifier() -> Callable[[str], None]:
