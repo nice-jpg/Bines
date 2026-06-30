@@ -21,6 +21,12 @@ Global protocol:
 - Device operations must be serial. If using a delegated subagent for one merchant, wait for call_subagent to return before any further device action.
 - Use subagents for bounded work. Independent subagents solve standalone analysis tasks. Delegated subagents are appropriate for continuation tasks such as collecting one merchant detail page. Subagents are efficient, feel free to use them liberally.
 
+Execution order:
+1. Open the configured app and stabilize on a known page.
+2. Create `result.xlsx` with `Sheet1` once.
+3. For each configured secondary page, enter the page, query its manual, scan the merchant list to that page's stop condition, and handle every in-range merchant before moving to the next configured page.
+4. Only after all configured secondary pages are completed may you run the final completion check and close the app.
+
 Collection contract:
 - Treat numeric range as meters. Normalize distance text such as 500m, 1.2km, and about 800 meters before filtering.
 - Scan each configured secondary page after city, address, and range are active.
@@ -29,13 +35,23 @@ Collection contract:
 - Never stop after collecting only a sample, first merchant, first screen, or partial progress. If progress is partial, continue operating instead of summarizing early.
 - For each merchant, collect: merchant name, distance, rating, total product count, total review count, and every available product with product name, price, original price, discount price, and sales.
 - Do not leave a merchant page until all required merchant fields and all reachable products have been collected, or the page proves a field cannot be obtained. Write that merchant to its Excel worksheet before returning to the list.
+- If a tap or scroll enters an abnormal, blank, or unparseable state, do not close the app and do not finish the task. First try to recover to the last stable list or merchant page with `swipe_back`, then continue the configured page scan.
+- Never call `close_package` while still inside a merchant page or before returning to a stable list/home context after the final page scan.
 - The only output workbook is `result.xlsx` under the workspace directory. Do not create alternate result filenames.
 - Use `Sheet1` as the merchant index. Its columns, in this exact order, are: merchant name, distance, rating, total product count, total review count. Store one discovered merchant per row.
 - Create one additional worksheet for each merchant listed in `Sheet1`. Use the merchant name as the worksheet name so the index row and product worksheet correspond directly. Do not add hyperlinks.
 - Each merchant worksheet contains only product rows. Its columns, in this exact order, are: product name, price, original price, discount price, monthly sales.
 - Normalize every product sales value to monthly sales before writing it. Keep an explicitly monthly value unchanged; divide a half-year value by 6, a quarterly value by 3, an annual value by 12, and convert any other stated period proportionally to one month. Use 0 only when sales is missing.
 - Keep the `Sheet1` merchant row and its corresponding merchant worksheet consistent. After collecting all products for a merchant, write the complete product worksheet, update its total product count and total review count in `Sheet1`, verify the worksheet name matches the merchant name, and only then return to the merchant list.
-- Before closing the app or giving a final response, perform a completion check in this order: (1) every configured secondary page was entered, (2) each page reached its list stop condition, (3) every in-range merchant discovered on those pages has a Sheet1 row and a matching product worksheet, (4) each merchant worksheet row count matches Sheet1 total product count. If any check fails, continue collecting instead of finishing.
+
+Final completion gate:
+- Immediately before any decision to summarize or call `close_package`, run this explicit check with `think`:
+  1. Have I entered every configured secondary page, including both `美食` and `外卖` when both are configured?
+  2. For the current page, have I already returned from any merchant detail page to the list?
+  3. Has each configured page reached its list stop condition?
+  4. Does every discovered in-range merchant have one Sheet1 row and one matching merchant worksheet?
+  5. Does each merchant worksheet row count equal the Sheet1 total product count?
+- If any answer is no, continue collecting and do not close the app.
 - After all configured collection work is complete and `result.xlsx` has been written, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
 
 Excel data quality rules:
