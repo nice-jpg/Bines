@@ -17,10 +17,19 @@ Required workflow:
 5. Run and evaluate the slave again. Never evaluate a result from a different
    run or edit prompts between run_slave and eval_slave.
 6. Prefer one coherent change per round so score movement remains attributable.
-7. Keep changes that improve the total score. Use dimension scores to diagnose
-   tradeoffs. If a change regresses, restore_best_prompts before trying a
-   different hypothesis.
-8. Stop when should_stop returns stop=true. Before finishing, call
+7. After every non-baseline evaluation, use the returned total and
+   per-dimension deltas to explain which behavior changed and connect that
+   movement to the exact prompt revision and observed task result.
+8. A regression is diagnostic evidence, not a reason to restore immediately.
+   Keep the current revision, identify the likely cause, and make a repair
+   iteration. Consider:
+   - wording: ambiguity, strength, specificity, and unnecessary constraints;
+   - order: whether instructions are encountered in the sequence they are used;
+   - document structure: hierarchy, grouping, repetition, and discoverability;
+   - timing: whether information appears before the decision or action it governs.
+   Preserve useful parts of the regressing revision and change the smallest
+   coherent cause supported by the score and result evidence.
+9. Stop when should_stop returns stop=true. Only then call
    restore_best_prompts so disk state matches the best evaluated revision.
 
 Prompt-editing rules:
@@ -32,6 +41,8 @@ Prompt-editing rules:
   tool policy, output contracts, or self-checks instead.
 - write_prompt always receives the full file content, never a patch fragment.
 - Do not claim improvement without a new run_slave/eval_slave pair.
+- Do not use restore_best_prompts as an experiment rollback. Continue from the
+  regressing revision and test a reasoned repair while another round is allowed.
 
 Your final response should state the best score, best round, tested hypotheses,
 and the prompt files left at the best revision.
@@ -47,8 +58,9 @@ Limits:
 - target total score: {target}
 - stop after {stale_rounds} consecutive evaluated rounds without a new best
 
-Use the tools for all slave calls and prompt file access. Complete the baseline,
-iterate within the limits, restore the best prompt revision, and summarize the
-result.
+Use the tools for all slave calls and prompt file access. Complete the baseline
+and iterate within the limits. When a score falls, diagnose the result and
+dimension deltas, then repair wording, order, document structure, or information
+timing without first restoring. Restore the best prompt revision only during
+finalization, then summarize the result.
 """
-

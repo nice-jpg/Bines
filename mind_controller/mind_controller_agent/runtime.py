@@ -111,6 +111,8 @@ class CognitiveController:
         self._evaluated_runs.add(run_ref)
         index = len(self.rounds) + 1
         score_ref = f"score-{index}"
+        previous_evaluation = self.rounds[-1].score if self.rounds else None
+        best_score_before_round = self.best_score
         current = self._capture_prompts()
         round_result = CognitiveRound(
             index=index,
@@ -125,6 +127,11 @@ class CognitiveController:
             self.best_score = evaluation.total
             self.best_round = index
             self.best_revision = self._revision
+        comparison = _evaluation_comparison(
+            evaluation,
+            previous=previous_evaluation,
+            best_score_before_round=best_score_before_round,
+        )
         return _json(
             {
                 "score_ref": score_ref,
@@ -132,6 +139,7 @@ class CognitiveController:
                 "total": evaluation.total,
                 "dimensions": evaluation.dimensions,
                 "details": evaluation.details,
+                "comparison": comparison,
                 "is_new_best": self.best_round == index,
                 "best_score": self.best_score,
             }
@@ -173,8 +181,26 @@ class CognitiveController:
         return _json(asdict(change))
 
     def restore_best_prompts_tool(self) -> str:
-        """Restore every declared prompt file to the best evaluated revision."""
+        """Restore the best revision only after an explicit stop condition."""
 
+        stop_reason = self._stop_reason()
+        if stop_reason is None:
+            latest = self.rounds[-1].score if self.rounds else None
+            return _json(
+                {
+                    "restored": False,
+                    "error": (
+                        "restore_best_prompts is finalization-only; analyze the "
+                        "score change and test a repair while rounds remain"
+                    ),
+                    "latest_total": latest.total if latest else None,
+                    "best_score": self.best_score,
+                    "required_action": (
+                        "compare result and dimension deltas, then revise wording, "
+                        "order, document structure, or information timing"
+                    ),
+                }
+            )
         snapshot = self._snapshots[self.best_revision]
         changed = self._restore_snapshot(snapshot)
         self._revision = self.best_revision
@@ -185,6 +211,7 @@ class CognitiveController:
                 "best_round": self.best_round,
                 "best_score": self.best_score,
                 "best_revision": self.best_revision,
+                "stop_reason": stop_reason,
                 "changed_paths": changed,
                 "prompt_commits": [asdict(item) for item in commits],
             }
@@ -308,6 +335,47 @@ def normalize_evaluation(raw: Any) -> Evaluation:
         if key not in {"total", "score", "dimensions"}
     }
     return Evaluation(total=int(total_raw), dimensions=dimensions, details=details)
+
+
+def _evaluation_comparison(
+    current: Evaluation,
+    *,
+    previous: Evaluation | None,
+    best_score_before_round: int | None,
+) -> dict[str, Any]:
+    if previous is None:
+        return {
+            "outcome": "baseline",
+            "previous_total": None,
+            "total_delta": None,
+            "best_total_before_round": best_score_before_round,
+            "delta_from_best_before_round": None,
+            "dimension_deltas": {},
+        }
+
+    total_delta = current.total - previous.total
+    if total_delta > 0:
+        outcome = "improved"
+    elif total_delta < 0:
+        outcome = "regressed"
+    else:
+        outcome = "unchanged"
+    dimension_names = current.dimensions.keys() | previous.dimensions.keys()
+    return {
+        "outcome": outcome,
+        "previous_total": previous.total,
+        "total_delta": total_delta,
+        "best_total_before_round": best_score_before_round,
+        "delta_from_best_before_round": (
+            current.total - best_score_before_round
+            if best_score_before_round is not None
+            else None
+        ),
+        "dimension_deltas": {
+            name: current.dimensions.get(name, 0.0) - previous.dimensions.get(name, 0.0)
+            for name in sorted(dimension_names)
+        },
+    }
 
 
 def _resolve_prompt_paths(info: SlaveDebugInfo) -> tuple[Path, ...]:

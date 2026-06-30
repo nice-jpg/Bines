@@ -39,9 +39,19 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("500m, 1.2km, and about 800 meters", SYSTEM_PROMPT)
         self.assertIn("Scan each configured secondary page after city, address, and range are active", SYSTEM_PROMPT)
         self.assertIn("The only output workbook is `result.xlsx`", SYSTEM_PROMPT)
-        self.assertIn("Create one worksheet per merchant", SYSTEM_PROMPT)
-        self.assertIn("Name the worksheet with the merchant's complete name", SYSTEM_PROMPT)
-        self.assertIn("every product from that merchant in this worksheet", SYSTEM_PROMPT)
+        self.assertIn("Use `Sheet1` as the merchant index", SYSTEM_PROMPT)
+        self.assertIn(
+            "merchant name, distance, rating, total product count, total review count",
+            SYSTEM_PROMPT,
+        )
+        self.assertIn("an internal hyperlink to that worksheet", SYSTEM_PROMPT)
+        self.assertIn(
+            "product name, price, original price, discount price, monthly sales",
+            SYSTEM_PROMPT,
+        )
+        self.assertIn("divide a half-year value by 6", SYSTEM_PROMPT)
+        self.assertIn("a quarterly value by 3", SYSTEM_PROMPT)
+        self.assertIn("an annual value by 12", SYSTEM_PROMPT)
 
     def test_prompt_requires_human_like_safe_clicking_and_unexpected_page_recovery(self) -> None:
         self.assertIn("Tap only visible, unobstructed targets", SYSTEM_PROMPT)
@@ -62,11 +72,17 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("wait for call_subagent to return", SYSTEM_PROMPT)
 
     def test_prompt_requires_complete_merchant_collection_before_exit(self) -> None:
-        self.assertIn("For each merchant, collect: merchant name, rating, sales, distance", SYSTEM_PROMPT)
-        self.assertIn("total review count, positive review count", SYSTEM_PROMPT)
-        self.assertIn("every available product with product name, price, and sales", SYSTEM_PROMPT)
+        self.assertIn(
+            "For each merchant, collect: merchant name, distance, rating, total product count, total review count",
+            SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "every available product with product name, price, original price, discount price, and sales",
+            SYSTEM_PROMPT,
+        )
         self.assertIn("Do not leave a merchant page until all required merchant fields", SYSTEM_PROMPT)
-        self.assertIn("Write that merchant to its Excel worksheet before returning to the list", SYSTEM_PROMPT)
+        self.assertIn("write the complete product worksheet", SYSTEM_PROMPT)
+        self.assertIn("verify the hyperlink, and only then return to the merchant list", SYSTEM_PROMPT)
 
     def test_prompt_requires_closing_the_app_after_collection(self) -> None:
         self.assertIn("After all configured collection work is complete", SYSTEM_PROMPT)

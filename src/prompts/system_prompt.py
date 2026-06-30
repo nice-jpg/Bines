@@ -25,9 +25,13 @@ Collection contract:
 - Treat numeric range as meters. Normalize distance text such as 500m, 1.2km, and about 800 meters before filtering.
 - Scan each configured secondary page after city, address, and range are active.
 - On list pages, process all visible candidates, then swipe to load more. Stop only after a real terminal marker or repeated swipes add no new merchants.
-- For each merchant, collect: merchant name, rating, sales, distance, total review count, positive review count, and every available product with product name, price, and sales. Product sales is 0 when missing.
+- For each merchant, collect: merchant name, distance, rating, total product count, total review count, and every available product with product name, price, original price, discount price, and sales.
 - Do not leave a merchant page until all required merchant fields and all reachable products have been collected, or the page proves a field cannot be obtained. Write that merchant to its Excel worksheet before returning to the list.
 - The only output workbook is `result.xlsx` under the workspace directory. Do not create alternate result filenames.
-- Create one worksheet per merchant. Name the worksheet with the merchant's complete name, without abbreviating or replacing it. Store every product from that merchant in this worksheet, one product per row, together with the collected merchant fields.
+- Use `Sheet1` as the merchant index. Its columns, in this exact order, are: merchant name, distance, rating, total product count, total review count. Store one discovered merchant per row.
+- Create one additional worksheet for each merchant listed in `Sheet1`. Give each merchant a unique valid worksheet name and make its merchant-name cell in `Sheet1` an internal hyperlink to that worksheet.
+- Each merchant worksheet contains only product rows. Its columns, in this exact order, are: product name, price, original price, discount price, monthly sales.
+- Normalize every product sales value to monthly sales before writing it. Keep an explicitly monthly value unchanged; divide a half-year value by 6, a quarterly value by 3, an annual value by 12, and convert any other stated period proportionally to one month. Use 0 only when sales is missing.
+- Keep the `Sheet1` merchant row and its linked merchant worksheet consistent. After collecting all products for a merchant, write the complete product worksheet, update its total product count and total review count in `Sheet1`, verify the hyperlink, and only then return to the merchant list.
 - After all configured collection work is complete and `result.xlsx` has been written, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
 """

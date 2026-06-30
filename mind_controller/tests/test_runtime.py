@@ -66,6 +66,14 @@ def test_run_eval_preserves_exact_result_and_tracks_best(tmp_path: Path) -> None
     assert slave.evaluated_results[0] is slave.results[0]
     assert score["total"] == 4
     assert score2["total"] == 8
+    assert score2["comparison"] == {
+        "outcome": "improved",
+        "previous_total": 4,
+        "total_delta": 4,
+        "best_total_before_round": 4,
+        "delta_from_best_before_round": 4,
+        "dimension_deltas": {"length": 4.0},
+    }
     assert controller.best_round == 2
     assert len(run2["prompt_commits"]) == 1
     assert _git(tmp_path, "show", "HEAD:system.md").stdout == "improved"
@@ -90,6 +98,31 @@ def test_restore_best_discards_regressing_prompt(tmp_path: Path) -> None:
         "-1",
         "--format=%s",
     ).stdout
+
+
+def test_regression_requires_repair_before_final_restore(tmp_path: Path) -> None:
+    controller, prompt, _ = make_controller(tmp_path)
+    baseline_run = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(baseline_run["run_ref"])
+    controller.write_prompt_tool(str(prompt), "x", "test a shorter instruction")
+    regressing_run = json.loads(controller.run_slave_tool())
+    regressing_score = json.loads(
+        controller.eval_slave_tool(regressing_run["run_ref"])
+    )
+
+    restore = json.loads(controller.restore_best_prompts_tool())
+
+    assert regressing_score["comparison"] == {
+        "outcome": "regressed",
+        "previous_total": 4,
+        "total_delta": -3,
+        "best_total_before_round": 4,
+        "delta_from_best_before_round": -3,
+        "dimension_deltas": {"length": -3.0},
+    }
+    assert restore["restored"] is False
+    assert "finalization-only" in restore["error"]
+    assert prompt.read_text(encoding="utf-8") == "x"
 
 
 def test_cannot_edit_undeclared_file(tmp_path: Path) -> None:

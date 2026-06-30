@@ -17,13 +17,41 @@ def _raw_run():
     return importlib.import_module("raw_run")
 
 
-def _write_workbook(path: Path, sheets: list[tuple[str, list[list[object]]]]) -> None:
+INDEX_HEADERS = [
+    "merchant name",
+    "distance",
+    "rating",
+    "total product count",
+    "total review count",
+]
+PRODUCT_HEADERS = [
+    "product name",
+    "price",
+    "original price",
+    "discount price",
+    "monthly sales",
+]
+
+
+def _write_workbook(
+    path: Path,
+    merchants: list[tuple[str, str, list[str]]],
+) -> None:
     workbook = Workbook()
-    workbook.remove(workbook.active)
-    for title, rows in sheets:
-        worksheet = workbook.create_sheet(title)
-        for row in rows:
-            worksheet.append(row)
+    index = workbook.active
+    index.title = "Sheet1"
+    index.append(INDEX_HEADERS)
+    for merchant_name, sheet_name, products in merchants:
+        index.append([merchant_name, "1km", 4.8, len(products), 100])
+        sheet_ref = sheet_name.replace("'", "''")
+        display_name = merchant_name.strip().replace('"', '""')
+        index.cell(index.max_row, 1).value = (
+            f'=HYPERLINK("#\'{sheet_ref}\'!A1","{display_name}")'
+        )
+        worksheet = workbook.create_sheet(sheet_name)
+        worksheet.append(PRODUCT_HEADERS)
+        for product in products:
+            worksheet.append([product, 10, 12, 10, 30])
     workbook.save(path)
     workbook.close()
 
@@ -42,43 +70,25 @@ def test_eval_combines_quantity_context_and_correctness_grades(
     _write_workbook(
         result_path,
         [
-            (
-                "result-a-1",
-                [
-                    ["merchant_name", "product_name"],
-                    [" A店 ", " 商品1 "],
-                    ["A店", "商品1"],
-                    ["A店", "商品2"],
-                    ["A店", ""],
-                ],
-            ),
-            (
-                "result-a-2",
-                [
-                    ["merchant_name", "product_name"],
-                    ["A店", "商品3"],
-                ],
-            ),
-            ("B店", [["product_name"], ["商品4"]]),
-            ("result-only", [["product_name"], ["不参与正确性比较"]]),
-            ("empty", []),
+            (" A店 ", "result-a-1", [" 商品1 ", "商品1", "商品2", ""]),
+            ("A店", "result-a-2", ["商品3"]),
+            ("B店", "result-b", ["商品4"]),
+            ("result-only", "result-only", ["不参与正确性比较"]),
         ],
     )
-    _write_workbook(
-        truth_path,
-        [
-            (
-                "truth-a",
-                [
-                    ["merchant_name", "商品名"],
-                    ["A店", "商品1"],
-                    ["A店", "真值商品"],
-                ],
-            ),
-            ("B店", [["商品名"], ["商品4"]]),
-            ("truth-only", [["商品名"], ["不参与比较"]]),
-        ],
-    )
+    truth_workbook = Workbook()
+    truth_workbook.remove(truth_workbook.active)
+    for merchant_name, products in [
+        ("A店", ["商品1", "真值商品"]),
+        ("B店", ["商品4"]),
+        ("truth-only", ["不参与比较"]),
+    ]:
+        worksheet = truth_workbook.create_sheet(merchant_name)
+        worksheet.append(["商品名", "售价", "销量"])
+        for product in products:
+            worksheet.append([product, 10, 30])
+    truth_workbook.save(truth_path)
+    truth_workbook.close()
     messages = [
         HumanMessage(content="执行应用探测任务"),
         _ai_call(
@@ -148,34 +158,46 @@ def test_context_grade_returns_zero_without_operations() -> None:
     assert raw_run._context_grade(result) == 0
 
 
-def test_workbook_rejects_multiple_merchants_in_one_worksheet(tmp_path: Path) -> None:
+def test_workbook_requires_merchant_hyperlink(tmp_path: Path) -> None:
     raw_run = _raw_run()
     path = tmp_path / "invalid.xlsx"
-    _write_workbook(
-        path,
-        [
-            (
-                "mixed",
-                [
-                    ["merchant_name", "product_name"],
-                    ["A店", "商品1"],
-                    ["B店", "商品2"],
-                ],
-            )
-        ],
-    )
+    _write_workbook(path, [("A店", "a", ["商品1"])])
+    workbook = raw_run.load_workbook(path)
+    workbook["Sheet1"]["A2"] = "A店"
+    workbook.save(path)
+    workbook.close()
 
-    with pytest.raises(ValueError, match="multiple merchant_name values"):
+    with pytest.raises(ValueError, match="must link"):
         raw_run._read_merchant_products(path)
 
 
 def test_workbook_requires_product_name_header(tmp_path: Path) -> None:
     raw_run = _raw_run()
     path = tmp_path / "invalid.xlsx"
-    _write_workbook(path, [("A店", [["merchant_name", "name"], ["A店", "商品1"]])])
+    _write_workbook(path, [("A店", "a", ["商品1"])])
+    workbook = raw_run.load_workbook(path)
+    workbook["a"]["A1"] = "name"
+    workbook.save(path)
+    workbook.close()
 
-    with pytest.raises(ValueError, match="product_name"):
+    with pytest.raises(ValueError, match="product name"):
         raw_run._read_merchant_products(path)
+
+
+def test_workbook_resolves_quoted_internal_hyperlink(tmp_path: Path) -> None:
+    raw_run = _raw_run()
+    path = tmp_path / "quoted.xlsx"
+    _write_workbook(path, [("A店", "A 店's products", [" 商品1 ", "商品1"])])
+
+    assert raw_run._read_merchant_products(path) == {"A店": {"商品1"}}
+
+
+def test_truth_reader_accepts_new_indexed_workbook(tmp_path: Path) -> None:
+    raw_run = _raw_run()
+    path = tmp_path / "truth.xlsx"
+    _write_workbook(path, [("A店", "truth-a", ["商品1"])])
+
+    assert raw_run._read_truth_merchant_products(path) == {"A店": {"商品1"}}
 
 
 def test_workbook_wraps_malformed_xlsx_error(tmp_path: Path) -> None:
@@ -193,7 +215,7 @@ def test_eval_raises_when_truth_workbook_is_missing(
 ) -> None:
     raw_run = _raw_run()
     result_path = tmp_path / "result.xlsx"
-    _write_workbook(result_path, [("A店", [["product_name"], ["商品1"]])])
+    _write_workbook(result_path, [("A店", "a", ["商品1"])])
     monkeypatch.setattr(raw_run, "RESULT_WORKBOOK_PATH", result_path)
     monkeypatch.setattr(raw_run, "TRUTH_WORKBOOK_PATH", tmp_path / "missing.xlsx")
 
