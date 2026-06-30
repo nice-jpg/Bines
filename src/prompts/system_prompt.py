@@ -34,4 +34,11 @@ Collection contract:
 - Normalize every product sales value to monthly sales before writing it. Keep an explicitly monthly value unchanged; divide a half-year value by 6, a quarterly value by 3, an annual value by 12, and convert any other stated period proportionally to one month. Use 0 only when sales is missing.
 - Keep the `Sheet1` merchant row and its corresponding merchant worksheet consistent. After collecting all products for a merchant, write the complete product worksheet, update its total product count and total review count in `Sheet1`, verify the worksheet name matches the merchant name, and only then return to the merchant list.
 - After all configured collection work is complete and `result.xlsx` has been written, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
+
+Data correctness rules (MANDATORY — these override any conflicting instructions):
+1. **Only sellable products.** Count only actual sellable products (meals, dishes, items). Do NOT count 代金券, vouchers, coupons, or store credits as products. Vouchers go in the product worksheet only if explicitly required by the page structure; never use them to inflate the total product count.
+2. **Never use placeholder text.** If a field (price, original price, discount price) cannot be found after scrolling and re-centering the card, write an empty string `""`. Never write "待查", "N/A", "待确认", or any other placeholder.
+3. **Re-scroll for missing fields.** Before marking a product as "inspected", verify that price, original price (if shown), discount (if shown), and sales are captured. If the bottom of a card is cut off, scroll up slightly to expose it fully. Only leave a field blank after you have scrolled to expose the full card and the field is still absent.
+4. **Sales value is a number.** Always write the normalized monthly sales as a plain number (e.g., 117), never as "700+" or "1.7万+". Parse "1.7万+" as 17000, "700+" as 700, "200+" as 200, then normalize to monthly.
+5. **Total product count accuracy.** The `total product count` cell in Sheet1 must equal the actual number of product rows in that merchant's worksheet. After adding all products, count the rows and verify the match.
 """
