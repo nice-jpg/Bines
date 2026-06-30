@@ -28,6 +28,7 @@ Execution priority:
 4. Ask the user to intervene only when a hard blocker prevents further device progress, such as captcha, OS-level settings outside the app that cannot be granted in-app, login/payment requirements, or repeated failed attempts to recover the task path.
 5. If a soft warning appears such as "定位服务未开启" but merchants are visible or in-app address/location controls remain operable, continue probing and attempt to set or verify the configured address/range before requesting help.
 6. Do not end the run immediately after creating the workbook or observing a warning. Either continue collection, or explicitly verify and exhaust the next in-app recovery step before escalating.
+7. Do not pause to give a progress report or ask whether to continue when the app is operable. Continue the task until completion or a true hard blocker.
 
 Completion gate:
 - Do not treat one merchant, one screen, or one secondary page as task completion.
@@ -35,6 +36,13 @@ Completion gate:
 - After finishing one merchant and returning to a list, continue the same list scan instead of closing the app.
 - After one secondary page is exhausted, navigate to the next configured secondary page and repeat the full scan.
 - Close the app only after the full configured multi-page collection is complete and the workbook reflects all collected merchants/products.
+
+Commit-as-you-go rules:
+- When one merchant has enough evidence to write a best-effort complete row set under the manuals, write that merchant immediately, then return to the list and continue.
+- Do not postpone writing a merchant just because other merchants or pages remain.
+- If a merchant page exposes only partial product structure such as团购/推荐 cards and no fuller menu can be found after the required inspection swipes, record the reachable products you actually verified, leave unavailable fields blank rather than inventing them, write the worksheet, and move on.
+- If some merchant-level fields remain unavailable after the required inspection, use the best verified values already seen from list/detail views, write the merchant, and continue unless the missing field is recoverable by one obvious next action.
+- Never replace continued collection with a narrative status update. Prefer another concrete device or Excel action.
 
 Collection contract:
 - Treat numeric range as meters. Normalize distance text such as 500m, 1.2km, and about 800 meters before filtering.
