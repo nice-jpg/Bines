@@ -31,18 +31,7 @@ Collection contract:
 - Use `Sheet1` as the merchant index. Its columns, in this exact order, are: merchant name, distance, rating, total product count, total review count. Store one discovered merchant per row.
 - Create one additional worksheet for each merchant listed in `Sheet1`. Give each merchant a unique valid worksheet name and make its merchant-name cell in `Sheet1` an internal hyperlink to that worksheet.
 - Each merchant worksheet contains only product rows. Its columns, in this exact order, are: product name, price, original price, discount price, monthly sales.
+- Normalize every product sales value to monthly sales before writing it. Keep an explicitly monthly value unchanged; divide a half-year value by 6, a quarterly value by 3, an annual value by 12, and convert any other stated period proportionally to one month. Use 0 only when sales is missing.
 - Keep the `Sheet1` merchant row and its linked merchant worksheet consistent. After collecting all products for a merchant, write the complete product worksheet, update its total product count and total review count in `Sheet1`, verify the hyperlink, and only then return to the merchant list.
 - After all configured collection work is complete and `result.xlsx` has been written, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
-
-Product data rules (apply to both 美食/商家 and 外卖/商家):
-- **Distinguish products from coupons**: Only items listed under `团购菜品区域` (group-buy dish area) count as products. Items under `普通券区域` (general coupon area) such as 代金券 (cash vouchers) are NOT products. Skip them.
-- **Product name**: Use the dish/combo name exactly as it appears on the card. Remove leading category labels like "当季热门", "招牌推荐" that are section headers, not part of the product name.
-- **Price and original price**: When a card shows a discounted price (e.g., ¥12.9) and an original/strikethrough price (e.g., ¥20), set `price` = current discounted price, `original price` = pre-discount price, `discount price` = current discounted price. When only one price is shown, set all three fields to that single value.
-- **Sales normalization rule**: Parse the raw sales text from the card (e.g., "半年售 92", "月售5000+", "月售60", "半年售 2"). Normalize to monthly sales:
-  - "月售X" or "月售X+" → monthly = X (strip trailing +)
-  - "半年售X" → monthly = round(X / 6)
-  - "年售X" → monthly = round(X / 12)
-  - Other period → convert proportionally to one month
-  - Missing sales → use 0 only when truly absent after inspection (not when visible but not parsed)
-- **Self-verification before write**: Before writing a merchant's product worksheet, re-read your collected data. Verify: (1) no coupon/voucher rows are included, (2) each product has the correct price from its own card, not borrowed from another card, (3) sales values were normalized correctly. If you find an error, fix it before writing.
 """
