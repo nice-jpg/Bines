@@ -38,7 +38,6 @@ Collection contract:
 Excel data quality rules:
 - **Rating field**: If a merchant has no rating (shows "暂无评分" or similar), write an empty string `""`, not the text "暂无评分".
 - **Price fields**: Write prices as numbers if possible (e.g., 25.9 not "¥25.9"). Write original price and discount price as numbers when available; leave as empty string `""` otherwise.
-- **Sales**: Always write as a plain number after normalization. Parse "700+" as 700, "1.7万+" as 17000, "200+" as 200. Never write any text with "+" or "万" in the final output.
-- **No vouchers as products**: Do not count 代金券 (cash vouchers), 优惠券 (coupons), or 次卡 (multi-use cards) as sellable products. Only count actual menu items, dishes, meals, or products that can be ordered for delivery or pickup. Vouchers and coupons are NOT products — exclude them from both the product worksheet and the total product count.
+- **Sales**: Always write as a plain number after normalization. Parse "700+" as 700, "1.7万+" as 17000, "200+" as 200. Never write "待查" or any placeholder text for any field.
 - **Total product count**: Must equal the actual row count in that merchant's product worksheet. After writing all products, count rows and verify.
 """
