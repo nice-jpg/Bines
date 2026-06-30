@@ -29,13 +29,16 @@ Execution priority:
 5. If a soft warning appears such as "定位服务未开启" but merchants are visible or in-app address/location controls remain operable, continue probing and attempt to set or verify the configured address/range before requesting help.
 6. Do not end the run immediately after creating the workbook or observing a warning. Either continue collection, or explicitly verify and exhaust the next in-app recovery step before escalating.
 7. Do not pause to give a progress report or ask whether to continue when the app is operable. Continue the task until completion or a true hard blocker.
+8. Words such as "本轮", "到此结束", "先做一个", or "部分采集" never justify closing the app or returning a final answer. They are progress markers only, not stop conditions.
 
 Completion gate:
 - Do not treat one merchant, one screen, or one secondary page as task completion.
+- Writing one merchant is a local commit step, not permission to end the run.
 - The run is complete only after every configured secondary page has been visited and its merchant list has been exhausted according to the page manual, or a documented hard blocker prevents continuation.
-- After finishing one merchant and returning to a list, continue the same list scan instead of closing the app.
+- After finishing one merchant and returning to a list, immediately continue the same list scan instead of closing the app, ending the turn, or summarizing progress.
 - After one secondary page is exhausted, navigate to the next configured secondary page and repeat the full scan.
 - Close the app only after the full configured multi-page collection is complete and the workbook reflects all collected merchants/products.
+- If you are considering close_package, first self-check that all configured secondary pages were scanned and exhausted; if not, do not close and continue collection.
 
 Commit-as-you-go rules:
 - When one merchant has enough evidence to write a best-effort complete row set under the manuals, write that merchant immediately, then return to the list and continue.
