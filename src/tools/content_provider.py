@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
+import os
 from pathlib import Path
 import posixpath
 import re
+import tempfile
+import threading
+from typing import Iterator
+from zipfile import BadZipFile, ZipFile
 
 from langchain_core.tools import StructuredTool
 from openpyxl import Workbook, load_workbook
@@ -15,6 +21,8 @@ from openpyxl.worksheet.worksheet import Worksheet
 WORKSPACE_ROOT = Path(__file__).resolve().parents[2] / "workspace"
 SHEET_NAME = "Sheet1"
 INVALID_SHEET_NAME_RE = re.compile(r"[\[\]:*?/\\]")
+_PATH_LOCKS: dict[Path, threading.RLock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
 
 
 class ContentProvider:
@@ -32,12 +40,13 @@ class ContentProvider:
         sheet_name: str = SHEET_NAME,
     ) -> str:
         path = self._resolve_excel_path(relative_path)
-        validated_name = _validate_sheet_name(sheet_name)
-        workbook = Workbook()
-        worksheet = workbook.active
-        worksheet.title = validated_name
-        _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
-        _save_workbook(workbook, path)
+        with _lock_workbook_path(path):
+            validated_name = _validate_sheet_name(sheet_name)
+            workbook = Workbook()
+            worksheet = workbook.active
+            worksheet.title = validated_name
+            _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
+            _save_workbook(workbook, path)
         return str(path)
 
     def create_excel_sheet(
@@ -48,31 +57,33 @@ class ContentProvider:
         rows_json: str = "[]",
     ) -> str:
         path = self._resolve_excel_path(relative_path)
-        workbook = _load_existing_workbook(path)
-        try:
-            validated_name = _validate_sheet_name(sheet_name)
-            _ensure_unique_sheet_name(workbook, validated_name)
-            worksheet = workbook.create_sheet(validated_name)
-            _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
-            _save_workbook(workbook, path)
-        except Exception:
-            workbook.close()
-            raise
+        with _lock_workbook_path(path):
+            workbook = _load_existing_workbook(path)
+            try:
+                validated_name = _validate_sheet_name(sheet_name)
+                _ensure_unique_sheet_name(workbook, validated_name)
+                worksheet = workbook.create_sheet(validated_name)
+                _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
+                _save_workbook(workbook, path)
+            except Exception:
+                workbook.close()
+                raise
         return str(path)
 
     def rename_excel_sheet(self, relative_path: str, sheet_name: str, new_sheet_name: str) -> str:
         path = self._resolve_excel_path(relative_path)
-        workbook = _load_existing_workbook(path)
-        try:
-            worksheet = _get_sheet(workbook, sheet_name)
-            validated_name = _validate_sheet_name(new_sheet_name)
-            if validated_name.casefold() != worksheet.title.casefold():
-                _ensure_unique_sheet_name(workbook, validated_name)
-            worksheet.title = validated_name
-            _save_workbook(workbook, path)
-        except Exception:
-            workbook.close()
-            raise
+        with _lock_workbook_path(path):
+            workbook = _load_existing_workbook(path)
+            try:
+                worksheet = _get_sheet(workbook, sheet_name)
+                validated_name = _validate_sheet_name(new_sheet_name)
+                if validated_name.casefold() != worksheet.title.casefold():
+                    _ensure_unique_sheet_name(workbook, validated_name)
+                worksheet.title = validated_name
+                _save_workbook(workbook, path)
+            except Exception:
+                workbook.close()
+                raise
         return str(path)
 
     def write_excel_sheet(
@@ -83,14 +94,15 @@ class ContentProvider:
         rows_json: str = "[]",
     ) -> str:
         path = self._resolve_excel_path(relative_path)
-        workbook = _load_existing_workbook(path)
-        try:
-            worksheet = _get_sheet(workbook, sheet_name)
-            _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
-            _save_workbook(workbook, path)
-        except Exception:
-            workbook.close()
-            raise
+        with _lock_workbook_path(path):
+            workbook = _load_existing_workbook(path)
+            try:
+                worksheet = _get_sheet(workbook, sheet_name)
+                _replace_sheet_rows(worksheet, _table_from_json(headers_json, rows_json))
+                _save_workbook(workbook, path)
+            except Exception:
+                workbook.close()
+                raise
         return str(path)
 
     def append_excel_rows(
@@ -100,17 +112,18 @@ class ContentProvider:
         sheet_name: str = SHEET_NAME,
     ) -> str:
         path = self._resolve_excel_path(relative_path)
-        if not path.exists():
-            self.create_excel_file(relative_path, sheet_name=sheet_name)
-        workbook = _load_existing_workbook(path)
-        try:
-            worksheet = _get_sheet(workbook, sheet_name)
-            for row in _parse_json_rows(rows_json, allow_flat=False):
-                worksheet.append(row)
-            _save_workbook(workbook, path)
-        except Exception:
-            workbook.close()
-            raise
+        with _lock_workbook_path(path):
+            if not path.exists():
+                self.create_excel_file(relative_path, sheet_name=sheet_name)
+            workbook = _load_existing_workbook(path)
+            try:
+                worksheet = _get_sheet(workbook, sheet_name)
+                for row in _parse_json_rows(rows_json, allow_flat=False):
+                    worksheet.append(row)
+                _save_workbook(workbook, path)
+            except Exception:
+                workbook.close()
+                raise
         return str(path)
 
     def update_excel_cell(
@@ -121,16 +134,17 @@ class ContentProvider:
         sheet_name: str = SHEET_NAME,
     ) -> str:
         path = self._resolve_excel_path(relative_path)
-        if not path.exists():
-            self.create_excel_file(relative_path, sheet_name=sheet_name)
-        workbook = _load_existing_workbook(path)
-        try:
-            worksheet = _get_sheet(workbook, sheet_name)
-            worksheet[cell] = value
-            _save_workbook(workbook, path)
-        except Exception:
-            workbook.close()
-            raise
+        with _lock_workbook_path(path):
+            if not path.exists():
+                self.create_excel_file(relative_path, sheet_name=sheet_name)
+            workbook = _load_existing_workbook(path)
+            try:
+                worksheet = _get_sheet(workbook, sheet_name)
+                worksheet[cell] = value
+                _save_workbook(workbook, path)
+            except Exception:
+                workbook.close()
+                raise
         return str(path)
 
     def _resolve_excel_path(self, relative_path: str) -> Path:
@@ -252,12 +266,46 @@ def _replace_sheet_rows(worksheet: Worksheet, rows: list[list[object]]) -> None:
 def _load_existing_workbook(path: Path) -> OpenpyxlWorkbook:
     if not path.exists():
         raise ValueError(f"Excel file does not exist: {path.name}")
-    return load_workbook(path)
+    try:
+        return load_workbook(path)
+    except BadZipFile as exc:
+        raise ValueError(
+            f'Excel file "{path.name}" is corrupted and cannot be updated. '
+            "Preserve it for inspection if needed, then recreate it with create_excel_file."
+        ) from exc
 
 
 def _save_workbook(workbook: OpenpyxlWorkbook, path: Path) -> None:
-    workbook.save(path)
-    workbook.close()
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent,
+            prefix=f".{path.stem}.",
+            suffix=".tmp.xlsx",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+
+        workbook.save(temporary_path)
+        with ZipFile(temporary_path) as archive:
+            corrupt_member = archive.testzip()
+            if corrupt_member is not None:
+                raise BadZipFile(f"Bad CRC-32 for file {corrupt_member!r}")
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        workbook.close()
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
+@contextmanager
+def _lock_workbook_path(path: Path) -> Iterator[None]:
+    canonical_path = path.resolve()
+    with _PATH_LOCKS_GUARD:
+        path_lock = _PATH_LOCKS.setdefault(canonical_path, threading.RLock())
+    with path_lock:
+        yield
 
 
 def _get_sheet(workbook: OpenpyxlWorkbook, sheet_name: str) -> Worksheet:
@@ -285,20 +333,21 @@ def _ensure_unique_sheet_name(workbook: OpenpyxlWorkbook, sheet_name: str) -> No
 
 
 def _read_xlsx(path: Path, sheet_name: str = SHEET_NAME) -> list[list[object]]:
-    workbook = load_workbook(path, data_only=True)
-    try:
-        worksheet = _get_sheet(workbook, sheet_name)
-        rows: list[list[object]] = []
-        for row in worksheet.iter_rows(values_only=True):
-            values = [_read_cell_value(value) for value in row]
-            while values and values[-1] == "":
-                values.pop()
-            rows.append(values)
-        while rows and not rows[-1]:
-            rows.pop()
-        return rows
-    finally:
-        workbook.close()
+    with _lock_workbook_path(path):
+        workbook = load_workbook(path, data_only=True)
+        try:
+            worksheet = _get_sheet(workbook, sheet_name)
+            rows: list[list[object]] = []
+            for row in worksheet.iter_rows(values_only=True):
+                values = [_read_cell_value(value) for value in row]
+                while values and values[-1] == "":
+                    values.pop()
+                rows.append(values)
+            while rows and not rows[-1]:
+                rows.pop()
+            return rows
+        finally:
+            workbook.close()
 
 
 def _read_cell_value(value: object) -> object:
