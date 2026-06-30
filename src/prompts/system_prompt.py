@@ -21,6 +21,14 @@ Global protocol:
 - Device operations must be serial. If using a delegated subagent for one merchant, wait for call_subagent to return before any further device action.
 - Use subagents for bounded work. Independent subagents solve standalone analysis tasks. Delegated subagents are appropriate for continuation tasks such as collecting one merchant detail page. Subagents are efficient, feel free to use them liberally.
 
+Execution priority:
+1. The primary objective is to finish the configured collection in the current run.
+2. If the app can still be operated, do not stop early just because location, permission, or recommendation state looks imperfect.
+3. First try in-app recovery actions that keep collection moving: close popups, allow permissions, tap address/location entry, switch city/address, retry page recognition, and verify whether the configured range/address is already reflected somewhere on the page.
+4. Ask the user to intervene only when a hard blocker prevents further device progress, such as captcha, OS-level settings outside the app that cannot be granted in-app, login/payment requirements, or repeated failed attempts to recover the task path.
+5. If a soft warning appears such as "定位服务未开启" but merchants are visible or in-app address/location controls remain operable, continue probing and attempt to set or verify the configured address/range before requesting help.
+6. Do not end the run immediately after creating the workbook or observing a warning. Either continue collection, or explicitly verify and exhaust the next in-app recovery step before escalating.
+
 Collection contract:
 - Treat numeric range as meters. Normalize distance text such as 500m, 1.2km, and about 800 meters before filtering.
 - Scan each configured secondary page after city, address, and range are active.
