@@ -43,11 +43,6 @@ def _write_workbook(
     index.append(INDEX_HEADERS)
     for merchant_name, sheet_name, products in merchants:
         index.append([merchant_name, "1km", 4.8, len(products), 100])
-        sheet_ref = sheet_name.replace("'", "''")
-        display_name = merchant_name.strip().replace('"', '""')
-        index.cell(index.max_row, 1).value = (
-            f'=HYPERLINK("#\'{sheet_ref}\'!A1","{display_name}")'
-        )
         worksheet = workbook.create_sheet(sheet_name)
         worksheet.append(PRODUCT_HEADERS)
         for product in products:
@@ -70,9 +65,8 @@ def test_eval_combines_quantity_context_and_correctness_grades(
     _write_workbook(
         result_path,
         [
-            (" A店 ", "result-a-1", [" 商品1 ", "商品1", "商品2", ""]),
-            ("A店", "result-a-2", ["商品3"]),
-            ("B店", "result-b", ["商品4"]),
+            (" A店 ", "A店", [" 商品1 ", "商品1", "商品2", "商品3", ""]),
+            ("B店", "B店", ["商品4"]),
             ("result-only", "result-only", ["不参与正确性比较"]),
         ],
     )
@@ -158,25 +152,33 @@ def test_context_grade_returns_zero_without_operations() -> None:
     assert raw_run._context_grade(result) == 0
 
 
-def test_workbook_requires_merchant_hyperlink(tmp_path: Path) -> None:
+def test_workbook_reads_plain_merchant_name_without_hyperlink(tmp_path: Path) -> None:
+    raw_run = _raw_run()
+    path = tmp_path / "valid.xlsx"
+    _write_workbook(path, [("A店", "A店", ["商品1"])])
+
+    assert raw_run._read_merchant_products(path) == {"A店": {"商品1"}}
+
+
+def test_workbook_requires_matching_merchant_worksheet_name(tmp_path: Path) -> None:
     raw_run = _raw_run()
     path = tmp_path / "invalid.xlsx"
-    _write_workbook(path, [("A店", "a", ["商品1"])])
+    _write_workbook(path, [("A店", "A店", ["商品1"])])
     workbook = raw_run.load_workbook(path)
-    workbook["Sheet1"]["A2"] = "A店"
+    workbook["A店"].title = "其他名称"
     workbook.save(path)
     workbook.close()
 
-    with pytest.raises(ValueError, match="must link"):
+    with pytest.raises(ValueError, match="same name"):
         raw_run._read_merchant_products(path)
 
 
 def test_workbook_requires_product_name_header(tmp_path: Path) -> None:
     raw_run = _raw_run()
     path = tmp_path / "invalid.xlsx"
-    _write_workbook(path, [("A店", "a", ["商品1"])])
+    _write_workbook(path, [("A店", "A店", ["商品1"])])
     workbook = raw_run.load_workbook(path)
-    workbook["a"]["A1"] = "name"
+    workbook["A店"]["A1"] = "name"
     workbook.save(path)
     workbook.close()
 
@@ -184,18 +186,19 @@ def test_workbook_requires_product_name_header(tmp_path: Path) -> None:
         raw_run._read_merchant_products(path)
 
 
-def test_workbook_resolves_quoted_internal_hyperlink(tmp_path: Path) -> None:
+def test_workbook_matches_plain_merchant_name_with_apostrophe(tmp_path: Path) -> None:
     raw_run = _raw_run()
-    path = tmp_path / "quoted.xlsx"
-    _write_workbook(path, [("A店", "A 店's products", [" 商品1 ", "商品1"])])
+    path = tmp_path / "apostrophe.xlsx"
+    merchant_name = "A 店's products"
+    _write_workbook(path, [(merchant_name, merchant_name, [" 商品1 ", "商品1"])])
 
-    assert raw_run._read_merchant_products(path) == {"A店": {"商品1"}}
+    assert raw_run._read_merchant_products(path) == {merchant_name: {"商品1"}}
 
 
 def test_truth_reader_accepts_new_indexed_workbook(tmp_path: Path) -> None:
     raw_run = _raw_run()
     path = tmp_path / "truth.xlsx"
-    _write_workbook(path, [("A店", "truth-a", ["商品1"])])
+    _write_workbook(path, [("A店", "A店", ["商品1"])])
 
     assert raw_run._read_truth_merchant_products(path) == {"A店": {"商品1"}}
 
@@ -215,7 +218,7 @@ def test_eval_raises_when_truth_workbook_is_missing(
 ) -> None:
     raw_run = _raw_run()
     result_path = tmp_path / "result.xlsx"
-    _write_workbook(result_path, [("A店", "a", ["商品1"])])
+    _write_workbook(result_path, [("A店", "A店", ["商品1"])])
     monkeypatch.setattr(raw_run, "RESULT_WORKBOOK_PATH", result_path)
     monkeypatch.setattr(raw_run, "TRUTH_WORKBOOK_PATH", tmp_path / "missing.xlsx")
 

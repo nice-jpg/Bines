@@ -9,7 +9,6 @@ from agent import AgentRunResult, AgentRuntime
 from langchain_core.messages import AIMessage, BaseMessage
 from model import build_codex_model, build_model
 from openpyxl import load_workbook
-from openpyxl.formula import Tokenizer
 from openpyxl.utils.exceptions import InvalidFileException
 from tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
 
@@ -121,12 +120,11 @@ def _read_merchant_products(path: Path) -> dict[str, set[str]]:
         )
         merchant_index = headers.index(MERCHANT_NAME_HEADER)
         for row in index_worksheet.iter_rows(min_row=header_row_number + 1):
-            merchant_name, destination = _merchant_link(row, merchant_index, path)
+            merchant_name = _merchant_name(row, merchant_index, path)
             if not merchant_name:
                 continue
-            detail_worksheet = _linked_worksheet(
+            detail_worksheet = _merchant_worksheet(
                 workbook,
-                destination,
                 merchant_name,
                 path,
             )
@@ -167,87 +165,43 @@ def _read_headers(
     return header_row[0].row, headers
 
 
-def _linked_worksheet(
+def _merchant_worksheet(
     workbook: Any,
-    destination: str,
     merchant_name: str,
     workbook_path: Path,
 ) -> Any:
-    if not destination:
+    matching_names = [
+        worksheet_name
+        for worksheet_name in workbook.sheetnames
+        if worksheet_name != MERCHANT_INDEX_SHEET
+        and _normalized_name(worksheet_name) == merchant_name
+    ]
+    if not matching_names:
         raise ValueError(
             f"Merchant {merchant_name!r} in worksheet {MERCHANT_INDEX_SHEET!r} "
-            f"of {workbook_path} must link to its product worksheet"
+            f"of {workbook_path} must have a product worksheet with the same name"
         )
-
-    worksheet_name = _hyperlink_worksheet_name(destination)
-    if not worksheet_name or worksheet_name not in workbook.sheetnames:
+    if len(matching_names) > 1:
         raise ValueError(
-            f"Merchant {merchant_name!r} in {workbook_path} links to unknown "
-            f"worksheet destination {destination!r}"
+            f"Merchant {merchant_name!r} in {workbook_path} matches multiple product worksheets"
         )
-    if worksheet_name == MERCHANT_INDEX_SHEET:
-        raise ValueError(
-            f"Merchant {merchant_name!r} in {workbook_path} links to the index worksheet"
-        )
-    return workbook[worksheet_name]
+    return workbook[matching_names[0]]
 
 
-def _merchant_link(
+def _merchant_name(
     row: Sequence[Any],
     merchant_index: int,
     workbook_path: Path,
-) -> tuple[str, str]:
+) -> str:
     if merchant_index >= len(row):
-        return "", ""
-    merchant_cell = row[merchant_index]
-    value = _normalized_name(merchant_cell.value)
-    if merchant_cell.data_type == "f":
-        parsed = _parse_hyperlink_formula(value)
-        if parsed is None:
-            raise ValueError(
-                f"Merchant cell {merchant_cell.coordinate} in {workbook_path} "
-                "must use a HYPERLINK formula"
-            )
-        return parsed
-
-    merchant_name = value
-    if not merchant_name:
-        return "", ""
-    hyperlink = merchant_cell.hyperlink
-    if hyperlink is None:
-        hyperlinks = [cell.hyperlink for cell in row if cell.hyperlink is not None]
-        if len(hyperlinks) == 1:
-            hyperlink = hyperlinks[0]
-    destination = hyperlink.location or hyperlink.target or "" if hyperlink else ""
-    return merchant_name, destination
-
-
-def _parse_hyperlink_formula(formula: str) -> tuple[str, str] | None:
-    tokens = Tokenizer(formula).items
-    if not tokens or tokens[0].type != "FUNC":
-        return None
-    function_name = tokens[0].value.removesuffix("(").casefold()
-    if function_name != "hyperlink":
-        return None
-    arguments = [
-        token.value[1:-1].replace('""', '"')
-        for token in tokens
-        if token.type == "OPERAND" and token.subtype == "TEXT"
-    ]
-    if len(arguments) != 2:
-        return None
-    destination, merchant_name = arguments
-    return _normalized_name(merchant_name), _normalized_name(destination)
-
-
-def _hyperlink_worksheet_name(destination: str) -> str:
-    location = _normalized_name(destination).lstrip("#")
-    if "!" not in location:
         return ""
-    worksheet_name = location.rsplit("!", 1)[0]
-    if worksheet_name.startswith("'") and worksheet_name.endswith("'"):
-        worksheet_name = worksheet_name[1:-1].replace("''", "'")
-    return worksheet_name
+    merchant_cell = row[merchant_index]
+    if merchant_cell.data_type == "f":
+        raise ValueError(
+            f"Merchant cell {merchant_cell.coordinate} in {workbook_path} "
+            "must contain plain text, not a formula"
+        )
+    return _normalized_name(merchant_cell.value)
 
 
 def _read_product_worksheet(worksheet: Any, workbook_path: Path) -> set[str]:

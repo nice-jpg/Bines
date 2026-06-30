@@ -44,7 +44,8 @@ class SystemPromptTests(unittest.TestCase):
             "merchant name, distance, rating, total product count, total review count",
             SYSTEM_PROMPT,
         )
-        self.assertIn("an internal hyperlink to that worksheet", SYSTEM_PROMPT)
+        self.assertIn("Use the merchant name as the worksheet name", SYSTEM_PROMPT)
+        self.assertIn("Do not add hyperlinks", SYSTEM_PROMPT)
         self.assertIn(
             "product name, price, original price, discount price, monthly sales",
             SYSTEM_PROMPT,
@@ -82,7 +83,7 @@ class SystemPromptTests(unittest.TestCase):
         )
         self.assertIn("Do not leave a merchant page until all required merchant fields", SYSTEM_PROMPT)
         self.assertIn("write the complete product worksheet", SYSTEM_PROMPT)
-        self.assertIn("verify the hyperlink, and only then return to the merchant list", SYSTEM_PROMPT)
+        self.assertIn("verify the worksheet name matches the merchant name", SYSTEM_PROMPT)
 
     def test_prompt_requires_closing_the_app_after_collection(self) -> None:
         self.assertIn("After all configured collection work is complete", SYSTEM_PROMPT)
