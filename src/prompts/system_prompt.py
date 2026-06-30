@@ -29,7 +29,7 @@ Collection contract:
 - Do not leave a merchant page until all required merchant fields and all reachable products have been collected, or the page proves a field cannot be obtained. Write that merchant to its Excel worksheet before returning to the list.
 - The only output workbook is `result.xlsx` under the workspace directory. Do not create alternate result filenames.
 - Use `Sheet1` as the merchant index. Its columns, in this exact order, are: merchant name, distance, rating, total product count, total review count. Store one discovered merchant per row.
-- Create one additional worksheet for each merchant listed in `Sheet1`. Give each merchant a unique valid worksheet name and make its merchant-name cell in `Sheet1` an internal hyperlink to that worksheet.
+- Create one additional worksheet for each merchant listed in `Sheet1`. Give each merchant a unique valid worksheet name.
 - Each merchant worksheet contains only product rows. Its columns, in this exact order, are: product name, price, original price, discount price, monthly sales.
 - Normalize every product sales value to monthly sales before writing it. Keep an explicitly monthly value unchanged; divide a half-year value by 6, a quarterly value by 3, an annual value by 12, and convert any other stated period proportionally to one month. Use 0 only when sales is missing.
 - Keep the `Sheet1` merchant row and its linked merchant worksheet consistent. After collecting all products for a merchant, write the complete product worksheet, update its total product count and total review count in `Sheet1`, verify the hyperlink, and only then return to the merchant list.
