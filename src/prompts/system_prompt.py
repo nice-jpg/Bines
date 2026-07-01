@@ -43,8 +43,22 @@ Collection contract:
 - Use `Sheet1` as the merchant index. Its columns, in this exact order, are: merchant name, distance, rating, total product count, total review count. Store one discovered merchant per row.
 - Create one additional worksheet for each merchant listed in `Sheet1`. Use the merchant name as the worksheet name so the index row and product worksheet correspond directly. Do not add hyperlinks.
 - Each merchant worksheet contains only product rows. Its columns, in this exact order, are: product name, price, original price, discount price, monthly sales.
-- Normalize every product sales value to monthly sales before writing it. Keep an explicitly monthly value unchanged; divide a half-year value by 6, a quarterly value by 3, an annual value by 12, and convert any other stated period proportionally to one month. Use 0 only when sales is missing.
 - Keep the `Sheet1` merchant row and its corresponding merchant worksheet consistent. After collecting all products for a merchant, write the complete product worksheet, update its total product count and total review count in `Sheet1`, verify the worksheet name matches the merchant name, and only then return to the merchant list.
+
+Sales normalization rules:
+- Normalize every product sales value to monthly sales before writing it. Keep an explicitly monthly value unchanged; divide a half-year value by 6, a quarterly value by 3, an annual value by 12, and convert any other stated period proportionally to one month. Use 0 only when sales is missing.
+- **Critical: `已售` (total historical sales) is NOT a period-labeled value. Do not divide or normalize it.** "已售92万" means 920,000 total ever sold — write it as 920000, do NOT divide by 12 or any other number. Only values with explicit period indicators (月售, 年售, 半年售, 季度售, 月销, 年销) require period-to-month normalization.
+- When in doubt about whether a sales value is period-labeled or total-historical, prefer treating it as already monthly. Group-buy/团购 products almost always show "已售" (total) — write those as-is without dividing.
+- Parse sales text carefully: "700+" → 700, "1.7万+" → 17000, "200+" → 200, "92万" → 920000. Never write "待查" or any placeholder text.
+- Normalize distance text such as 500m, 1.2km, and about 800 meters before filtering.
+
+Subagent data verification:
+- After every `call_subagent` that returns and before taking the next device action, you **must** verify what the subagent wrote:
+  1. Check that the merchant row exists in Sheet1 by reading it back (e.g., use a tool that can verify or reason from what was written).
+  2. Spot-check that total product count in Sheet1 matches the number of rows the subagent claimed.
+  3. Verify that the product worksheet name matches the merchant name exactly.
+- If anything is inconsistent, do NOT continue — diagnose and fix the data before proceeding.
+- Do not delegate Excel writes to a subagent and then skip verification. The subagent's Excel output is your responsibility.
 
 Final completion gate:
 - Immediately before any decision to summarize or call `close_package`, run this explicit check with `think`:
@@ -59,6 +73,6 @@ Final completion gate:
 Excel data quality rules:
 - **Rating field**: If a merchant has no rating (shows "暂无评分" or similar), write an empty string `""`, not the text "暂无评分".
 - **Price fields**: Write prices as numbers if possible (e.g., 25.9 not "¥25.9"). Write original price and discount price as numbers when available; leave as empty string `""` otherwise.
-- **Sales**: Always write as a plain number after normalization. Parse "700+" as 700, "1.7万+" as 17000, "200+" as 200. Never write "待查" or any placeholder text for any field.
+- **Sales**: Always write as a plain number after normalization. Never write "待查" or any placeholder text for any field.
 - **Total product count**: Must equal the actual row count in that merchant's product worksheet. After writing all products, count rows and verify.
 """
