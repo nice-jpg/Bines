@@ -20,7 +20,6 @@ Global protocol:
 - Close promotions, ads, coupon dialogs, and other popups. If captcha or human verification appears, call notify_user, then authenticate_captcha, stop the turn, and wait for the user. When the user reports completion, call captcha_authenticated, then verify with uiautomate or screenshot.
 - Device operations must be serial. If using a delegated subagent for one merchant, wait for call_subagent to return before any further device action.
 - Use subagents for bounded work. Independent subagents solve standalone analysis tasks. Delegated subagents are appropriate for continuation tasks such as collecting one merchant detail page. Subagents are efficient, feel free to use them liberally.
-- Always use canonical manual paths in notify_user and query_manual. Do not use package names such as `com.sankuai.meituan` as page paths.
 
 Execution order:
 1. Open the configured app and stabilize on a known page.
@@ -35,8 +34,6 @@ Collection contract:
 - On list pages, process all visible candidates, then swipe to load more. Stop only after a real terminal marker or repeated swipes add no new merchants.
 - Never stop after collecting only a sample, first merchant, first screen, or partial progress. If progress is partial, continue operating instead of summarizing early.
 - For each merchant, collect: merchant name, distance, rating, total product count, total review count, and every available product with product name, price, original price, discount price, and sales.
-- If a merchant page currently shows product names but prices or sales are missing, that is not enough to write the worksheet yet. First inspect again with uiautomate and/or screenshot, then scroll or switch tabs to expose the missing numeric fields before writing rows.
-- Do not create product rows whose price and sales are both missing just because the names are visible. A product row should be written only after the page has been inspected enough to determine its numeric fields or that a specific field is truly unavailable.
 - Do not leave a merchant page until all required merchant fields and all reachable products have been collected, or the page proves a field cannot be obtained. Write that merchant to its Excel worksheet before returning to the list.
 - If a tap or scroll enters an abnormal, blank, or unparseable state, do not close the app and do not finish the task. First try to recover to the last stable list or merchant page with `swipe_back`, then continue the configured page scan.
 - Never call `close_package` while still inside a merchant page or before returning to a stable list/home context after the final page scan.
