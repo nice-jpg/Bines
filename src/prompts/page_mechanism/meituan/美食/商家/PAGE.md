@@ -19,6 +19,16 @@
 2. Then switch into the most product-complete area, preferring `菜品` over `团购` or `推荐` when available.
 3. Only write Excel after product collection has reached a stop condition and a final row-quality check has passed.
 
+## Zero-product investigation procedure
+Before writing 0 as total product count for any merchant, you **must** complete ALL of the following steps in order:
+1. Use `screenshot` to capture the full visible page after the merchant detail page stabilises. Examine the screenshot for tab buttons (团购, 菜品, 优惠, 推荐, 评价, etc.).
+2. For every tab visible in the tab bar that could contain purchasable items (菜品, 团购, 优惠, 推荐, 套餐), tap it and wait for content to load.
+3. After each tab tap, scroll down at least one full screen (`swipe_up`) to verify no product cards are hidden below the fold.
+4. Use `uiautomate` after each scroll to confirm there are no product cards with prices, names, or sales labels in the XML tree.
+5. Only after every product-relevant tab has been tapped and scrolled, and no product cards have been found, may you conclude the merchant has 0 products.
+
+**Exception**: If `uiautomate` or `screenshot` clearly shows that the merchant page has no tab bar or product area at all (e.g., it is a non-merchant page like an activity landing page, coupon page, or ad), swipe_back immediately and skip this merchant — do not write it to Excel at all.
+
 ## Operation Logic
 - Verify this is the expected merchant detail page. If it is an activity, coupon, product, ad, or unrelated page, return to the list.
 - Collect only the merchant fields needed by the workbook contract: name, distance, rating, and total review count. Do not spend extra swipes chasing merchant metrics that are not written to Excel, such as merchant sales or positive-review counts.
