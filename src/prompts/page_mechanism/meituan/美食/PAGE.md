@@ -14,6 +14,7 @@
 - In each round, read XML, identify visible merchants, distance text, title/icon tap targets, and whether each merchant was already handled.
 - Use screenshot only when XML cannot show the visible merchant card layout.
 - Enter merchants within range. Enter merchants with missing distance if distance may be recovered on the detail page.
+- After tapping a merchant from the `美食` list, treat the transition as unfinished until you have either queried `meituan/美食/商家` or inspected the destination page and continued the merchant workflow. Do not reply to the user from the list-to-merchant transition.
 - After returning from one merchant, immediately resume the `美食` list workflow: refresh the list state, identify the remaining visible unhandled in-range merchants, and continue with the next merchant or the next required list swipe.
 - The first decision after returning from a merchant must be a list-continuation decision, not a stop/summarize decision. From the `美食` list, your next step should be one of: inspect the list, enter the next eligible merchant, or swipe the list to reveal more merchants.
 - Swipe within the merchant list after all visible candidates are handled. Do not stop because one screen has no in-range or new merchants.
