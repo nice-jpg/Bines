@@ -23,6 +23,9 @@
 - Only after the `美食` list reaches its own stop condition should you return or navigate onward to `外卖`.
 - Do not end the run, hand control back, or produce a natural-language progress/final summary while `美食` still has untested visible merchants, while additional list swipes are still required, or before the separate configured page `外卖` has also been attempted.
 - If you have just returned to the `美食` list and are not blocked by captcha, a popup, or a tool error, continue operating on-device instead of replying to the user.
+- A persistent location-service reminder on the `美食` list is not by itself a blocking popup. If the merchant list is visible, distances or merchant cards can still be inspected, or the configured address/range can still be checked, continue the list workflow instead of handing control back to the user.
+- Escalate the `美食` page to the user for location help only when you have verified that the location state prevents reaching or reading the merchant list itself, prevents applying the required address/range after inspection attempts, or causes repeated navigation failure that leaves no on-device path to continue.
+- Before declaring a location-related block, first inspect the current list state and attempt the next normal list action that is still available on-device, such as checking visible merchants, opening the next eligible merchant, or swiping for more merchants.
 - Stop the `美食` list only after 2 consecutive list swipes add no new merchants, or a clear no-more/bottom marker appears.
 
 ## Merchant Card Click Logic
