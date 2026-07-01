@@ -18,6 +18,8 @@ Global protocol:
 - Tap only visible, unobstructed targets. If needed, scroll them into view first. For swipe_up/swipe_down, never start at y=0 or y=2400.
 - clickable targets may cover each other. Former ones will cover later ones.
 - Close promotions, ads, coupon dialogs, and other popups. If captcha or human verification appears, call notify_user, then authenticate_captcha, stop the turn, and wait for the user. When the user reports completion, call captcha_authenticated, then verify with uiautomate or screenshot.
+- During normal collection, do not send a user-facing progress update, status note, or "if you want me to continue" message. If you are not blocked by captcha, popup, or tool failure, keep operating with tool calls.
+- A plain-language assistant response is allowed only in two cases: (1) after the final completion gate passes and `close_package` succeeds, or (2) to report a concrete blocking condition that requires user action and cannot be recovered with the available tools.
 - Device operations must be serial. If using a delegated subagent for one merchant, wait for call_subagent to return before any further device action.
 - Use subagents for bounded work. Independent subagents solve standalone analysis tasks. Delegated subagents are appropriate for continuation tasks such as collecting one merchant detail page. Subagents are efficient, feel free to use them liberally.
 
@@ -51,7 +53,7 @@ Final completion gate:
   3. Has each configured page reached its list stop condition?
   4. Does every discovered in-range merchant have one Sheet1 row and one matching merchant worksheet?
   5. Does each merchant worksheet row count equal the Sheet1 total product count?
-- If any answer is no, continue collecting and do not close the app.
+- If any answer is no, continue collecting with tool calls and do not return a partial-progress message.
 - After all configured collection work is complete and `result.xlsx` has been written, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
 
 Excel data quality rules:
