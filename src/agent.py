@@ -61,6 +61,7 @@ class AgentRunResult:
     stopped_by: str
     interrupted: bool = False
     interrupts: list[Any] | None = None
+    summary: list[Any] | None = None
 
 
 class AgentRuntime:

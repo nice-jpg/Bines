@@ -81,7 +81,7 @@ class CognitiveController:
         )
 
     def run_slave_tool(self) -> str:
-        """Run one complete slave task and store its opaque result."""
+        """Store the complete slave result and return only its summary."""
 
         stop_reason = self._stop_reason()
         if stop_reason is not None:
@@ -90,12 +90,13 @@ class CognitiveController:
             return _json({"error": "evaluate the previous slave result before running again"})
         commits = self._commit_pending_prompt_changes(round_index=len(self.rounds) + 1)
         result = self.slave.run()
+        result_summary = _result_summary(result)
         run_ref = f"run-{len(self._results) + 1}"
         self._results[run_ref] = result
         return _json(
             {
                 "run_ref": run_ref,
-                "result": _json_safe(result),
+                "result_summary": _json_safe(result_summary),
                 "prompt_commits": [asdict(item) for item in commits],
             }
         )
@@ -431,6 +432,17 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return repr(value)
+
+
+def _result_summary(result: Any) -> Any:
+    if isinstance(result, Mapping) and "summary" in result:
+        return result["summary"]
+    try:
+        return result.summary
+    except AttributeError as exc:
+        raise TypeError(
+            "slave.run() result must expose a summary field for LLM context"
+        ) from exc
 
 
 def _json(value: Any) -> str:

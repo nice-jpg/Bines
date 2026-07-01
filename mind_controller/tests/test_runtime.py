@@ -14,17 +14,18 @@ from mind_controller_agent.runtime import CognitiveController, normalize_evaluat
 class FakeSlave:
     def __init__(self, prompt: Path) -> None:
         self.prompt = prompt
-        self.results: list[dict[str, str]] = []
-        self.evaluated_results: list[dict[str, str]] = []
+        self.results: list[dict[str, object]] = []
+        self.evaluated_results: list[dict[str, object]] = []
 
-    def run(self) -> dict[str, str]:
-        result = {"prompt": self.prompt.read_text(encoding="utf-8")}
+    def run(self) -> dict[str, object]:
+        prompt = self.prompt.read_text(encoding="utf-8")
+        result = {"prompt": prompt, "summary": {"output": prompt}}
         self.results.append(result)
         return result
 
-    def eval(self, result: dict[str, str]):
+    def eval(self, result: dict[str, object]):
         self.evaluated_results.append(result)
-        score = len(result["prompt"])
+        score = len(str(result["prompt"]))
         return {"total": score, "dimensions": {"length": score}}
 
 
@@ -77,6 +78,26 @@ def test_run_eval_preserves_exact_result_and_tracks_best(tmp_path: Path) -> None
     assert controller.best_round == 2
     assert len(run2["prompt_commits"]) == 1
     assert _git(tmp_path, "show", "HEAD:system.md").stdout == "improved"
+
+
+def test_run_tool_sends_only_summary_but_eval_receives_full_result(
+    tmp_path: Path,
+) -> None:
+    controller, _, slave = make_controller(tmp_path)
+    full_result = {
+        "prompt": "full prompt content",
+        "state": {"secret": "full execution state"},
+        "summary": [{"type": "tool", "name": "uiautomate", "status": "success"}],
+    }
+    slave.run = lambda: full_result
+
+    payload = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(payload["run_ref"])
+
+    assert payload["result_summary"] == full_result["summary"]
+    assert "result" not in payload
+    assert "full execution state" not in json.dumps(payload)
+    assert slave.evaluated_results == [full_result]
 
 
 def test_restore_best_discards_regressing_prompt(tmp_path: Path) -> None:

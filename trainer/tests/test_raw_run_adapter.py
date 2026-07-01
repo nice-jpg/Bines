@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages.tool import tool_call
 
 from trainer.raw_run_adapter import APP_PROBE_MESSAGE, RawRunSlave
 
@@ -12,6 +14,8 @@ from trainer.raw_run_adapter import APP_PROBE_MESSAGE, RawRunSlave
 class FakeResult:
     output: str
     interrupted: bool = False
+    state: dict[str, Any] = field(default_factory=lambda: {"messages": []})
+    summary: list[Any] | None = None
 
 
 class FakeRuntime:
@@ -71,6 +75,7 @@ def test_adapter_runs_raw_workflow_and_returns_exact_result() -> None:
     score = slave.eval(result)
 
     assert result.output == "done"
+    assert result.summary == []
     assert evaluated[0] is result
     assert score == 73
     assert FakeRuntime.init_kwargs == {
@@ -118,8 +123,9 @@ def test_adapter_resumes_repeated_hitl_interrupts_before_returning() -> None:
     result = slave.run()
     score = slave.eval(result)
 
-    assert result == FakeResult(output="complete")
-    assert evaluated == [FakeResult(output="complete")]
+    assert result.output == "complete"
+    assert result.summary == []
+    assert evaluated == [result]
     assert score == 90
     assert InterruptingRuntime.resume_calls == [
         {"session_id": "main", "user_input": "done", "max_iterations": 1000},
@@ -146,3 +152,58 @@ def test_adapter_rejects_interrupted_result_without_pending_checkpoint() -> None
 
     with pytest.raises(RuntimeError, match="without a pending runtime checkpoint"):
         slave.run()
+
+
+def test_adapter_builds_compact_summary_without_tool_output_content() -> None:
+    class SummaryRuntime(FakeRuntime):
+        def run_turn(self, messages, **kwargs: Any) -> FakeResult:
+            return FakeResult(
+                output="full final output",
+                state={
+                    "messages": [
+                        HumanMessage(content="start"),
+                        AIMessage(
+                            content="inspect",
+                            tool_calls=[
+                                tool_call(
+                                    name="uiautomate",
+                                    args={"action": "dump"},
+                                    id="ui-1",
+                                )
+                            ],
+                        ),
+                        ToolMessage(
+                            content="large XML that must not reach master",
+                            name="uiautomate",
+                            tool_call_id="ui-1",
+                        ),
+                        ToolMessage(
+                            content="notice",
+                            name="notify_user",
+                            tool_call_id="notice-1",
+                        ),
+                    ]
+                },
+            )
+
+    slave = RawRunSlave(
+        runtime_factory=SummaryRuntime,
+        model_factory=lambda: "model",
+        tool_factory=lambda notifier: ["tool"],
+        notifier_factory=lambda: lambda text: None,
+        print_result=False,
+    )
+
+    result = slave.run()
+
+    assert result.output == "full final output"
+    assert result.state["messages"][2].content == "large XML that must not reach master"
+    assert result.summary == [
+        {"type": "human", "content": "start"},
+        {
+            "type": "ai",
+            "content": "inspect",
+            "tool_calls": [{"name": "uiautomate", "args": {"action": "dump"}}],
+        },
+        {"type": "tool", "name": "uiautomate", "status": "success"},
+    ]

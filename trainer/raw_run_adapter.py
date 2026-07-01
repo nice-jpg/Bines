@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import importlib
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +72,7 @@ class RawRunSlave:
         self.print_result = print_result
 
     def run(self) -> RunResult:
-        """Execute one complete raw_run task and return its actual result."""
+        """Return the complete raw result with an LLM-safe summary attached."""
 
         runtime_factory = self._runtime_factory or self._prompt_reloader()
         notifier = self._notifier_factory()
@@ -86,8 +87,7 @@ class RawRunSlave:
             max_iterations=self.max_iterations,
         )
         result = self._resume_interrupts(runtime, result)
-        if self.print_result:
-            print(result)
+        result = self._attach_summary(result, self._summary(result))
         return result
 
     def eval(self, result: RunResult) -> int | dict[str, Any]:
@@ -156,6 +156,65 @@ class RawRunSlave:
             )
         return result
 
+    def _summary(self, result: RunResult) -> list[Any]:
+        state = getattr(result, "state", None)
+        if not isinstance(state, Mapping):
+            raise ValueError("raw run result.state must be a mapping")
+        messages = state.get("messages")
+        if not isinstance(messages, Sequence) or isinstance(messages, (str, bytes)):
+            raise ValueError("raw run result.state['messages'] must be a sequence")
+
+        reports: list[Any] = []
+        for message in messages:
+            message_type = getattr(message, "type", None)
+            if message_type == "human":
+                reports.append(
+                    {
+                        "type": message_type,
+                        "content": message.content,
+                    }
+                )
+            elif message_type == "ai":
+                reports.append(
+                    {
+                        "type": message_type,
+                        "content": message.content,
+                        "tool_calls": [
+                            {
+                                "name": tool_call["name"],
+                                "args": tool_call["args"],
+                            }
+                            for tool_call in message.tool_calls
+                        ],
+                    }
+                )
+            elif message_type == "tool":
+                if message.name == "notify_user":
+                    continue
+                reports.append(
+                    {
+                        "type": message_type,
+                        "name": message.name,
+                        "status": message.status,
+                    }
+                )
+        return reports
+
+    @staticmethod
+    def _attach_summary(result: RunResult, summary: list[Any]) -> RunResult:
+        if is_dataclass(result):
+            try:
+                return replace(result, summary=summary)
+            except TypeError as exc:
+                raise TypeError(
+                    "raw run result dataclass must declare a summary field"
+                ) from exc
+        try:
+            setattr(result, "summary", summary)
+        except (AttributeError, TypeError) as exc:
+            raise TypeError("raw run result must support a summary field") from exc
+        return result
+
 
 def _build_common_tools(notifier: Callable[[str], None]) -> Sequence[Any]:
     raw_run = _raw_run_module()
@@ -172,7 +231,7 @@ def _evaluate_raw_run(result: RunResult) -> int | dict[str, Any]:
 
 
 def _build_raw_model() -> Any:
-    return _raw_run_module().build_model()
+    return _raw_run_module().build_codex_model()
 
 
 def _build_plain_notifier() -> Callable[[str], None]:

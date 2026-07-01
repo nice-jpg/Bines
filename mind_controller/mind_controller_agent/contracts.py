@@ -24,7 +24,7 @@ class CognitiveSlave(Protocol):
     """The two required slave interfaces consumed by the master."""
 
     def run(self) -> Any:
-        """Execute one complete task and return its final result."""
+        """Return the full result with a ``summary`` view for the master LLM."""
 
     def eval(self, result: Any) -> int | Mapping[str, Any]:
         """Evaluate exactly the result returned by ``run``."""
