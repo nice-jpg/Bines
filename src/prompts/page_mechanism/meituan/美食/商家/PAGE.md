@@ -26,6 +26,8 @@
 - Use product sales = `0` only when the product's sales value is truly missing after inspection.
 - Do not use `0` as a fallback for missing price. If price is not yet visible, keep scrolling or re-center the card first; only leave price blank if the page still does not expose it.
 - When a card contains multiple inline offer texts or combo descriptions, do not copy those offer texts as the product price unless they are the only visible price tied to that specific product. Prefer a standalone nearby `¥` price for the product card.
+- If the current area mostly shows `团购`, `代金券`, `推荐菜`, `环境`, or editorial recommendation modules, do not treat that as full completion yet. First look for a more complete `菜品` or商品 list by checking visible tabs and continuing the in-page scroll.
+- Do not conclude that a merchant has only a few products after one or two interactions. Before writing Excel, perform an explicit completeness pass: inspect the tab row, try the most product-like tab if present, then continue scrolling the merchant page/product area until 2 consecutive swipes add no new priced products.
 - Scan the product list carefully, tracking seen product names to avoid duplicates.
 - Continue swiping the product list until 2 consecutive product-list swipes add no new fully inspected products, or a clear terminal marker appears.
 - Before deciding a merchant is complete, self-check: every visible product card on the current and previous swipe windows has been inspected for name, price, and sales, and no row uses an obviously wrong borrowed combo price.
