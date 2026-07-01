@@ -14,12 +14,14 @@
 - In each round, read XML, identify visible merchants, distance text, title/icon tap targets, and whether each merchant was already handled.
 - Use screenshot only when XML cannot show the visible merchant card layout.
 - Enter merchants within range. Enter merchants with missing distance if distance may be recovered on the detail page.
-- After returning from one merchant, immediately resume the `美食` list workflow and continue handling the remaining visible or newly revealed in-range merchants.
+- After returning from one merchant, immediately resume the `美食` list workflow: refresh the list state, identify the remaining visible unhandled in-range merchants, and continue with the next merchant or the next required list swipe.
+- The first decision after returning from a merchant must be a list-continuation decision, not a stop/summarize decision. From the `美食` list, your next step should be one of: inspect the list, enter the next eligible merchant, or swipe the list to reveal more merchants.
 - Swipe within the merchant list after all visible candidates are handled. Do not stop because one screen has no in-range or new merchants.
 - Treat `美食` as incomplete until the list itself reaches a stop condition. Completing one merchant, creating Excel sheets, attempting another page, or writing a progress summary is not a valid stopping point.
 - The ordering rule is strict: finish the `美食` list first, then navigate to the separate configured page `外卖`. Do not leave `美食` early just to begin `外卖` while `美食` still has untested visible merchants or pending list swipes.
 - Only after the `美食` list reaches its own stop condition should you return or navigate onward to `外卖`.
-- Do not end the run, hand control back, or produce a final/progress summary while `美食` still has untested visible merchants, while additional list swipes are still required, or before the separate configured page `外卖` has also been attempted.
+- Do not end the run, hand control back, or produce a natural-language progress/final summary while `美食` still has untested visible merchants, while additional list swipes are still required, or before the separate configured page `外卖` has also been attempted.
+- If you have just returned to the `美食` list and are not blocked by captcha, a popup, or a tool error, continue operating on-device instead of replying to the user.
 - Stop the `美食` list only after 2 consecutive list swipes add no new merchants, or a clear no-more/bottom marker appears.
 
 ## Merchant Card Click Logic
