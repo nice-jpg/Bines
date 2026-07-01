@@ -100,9 +100,9 @@ def _build_default_model(model_name: str) -> Any:
     src_entry = str(src_dir)
     if src_entry not in sys.path:
         sys.path.insert(0, src_entry)
-    from model import build_model, build_codex_model
+    from model import build_codex_model
 
-    return build_codex_model()
+    return build_codex_model(model=model_name, reasoning_effort="high")
 
 
 def _resolve_debug_info(

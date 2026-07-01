@@ -11,7 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 
 
@@ -56,7 +56,11 @@ class CodexOAuthModelTests(unittest.TestCase):
         )
 
     def test_build_request_includes_bound_tools_and_tool_choice(self) -> None:
-        model = OpenAICodexModel(model="test-model")
+        model = OpenAICodexModel(
+            model="test-model",
+            prompt_cache_key="cache-key",
+            reasoning_effort="high",
+        )
         request = model._build_request(
             [HumanMessage(content="Use the tool.")],
             tools=[
@@ -75,7 +79,57 @@ class CodexOAuthModelTests(unittest.TestCase):
         self.assertEqual(request["tools"][0]["name"], "sample_lookup")
         self.assertEqual(request["tool_choice"], {"type": "function", "name": "sample_lookup"})
         self.assertFalse(request["parallel_tool_calls"])
+        self.assertEqual(request["prompt_cache_key"], "cache-key")
+        self.assertEqual(request["reasoning"], {"effort": "high"})
+        self.assertEqual(request["include"], ["reasoning.encrypted_content"])
         self.assertNotIn("stream", request)
+
+    def test_dynamic_system_message_stays_at_end_of_input(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+
+        request = model._build_request(
+            [
+                SystemMessage(content="stable system prompt"),
+                HumanMessage(content="conversation history"),
+                SystemMessage(content="dynamic trace"),
+            ]
+        )
+
+        self.assertEqual(
+            request["instructions"],
+            "You are a helpful assistant.\n\nstable system prompt",
+        )
+        self.assertEqual(
+            request["input"],
+            [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "conversation history"}],
+                },
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "dynamic trace"}],
+                },
+            ],
+        )
+
+    def test_prompt_cache_key_is_stable_per_model_instance(self) -> None:
+        first_model = OpenAICodexModel(model="test-model")
+        second_model = OpenAICodexModel(model="test-model")
+
+        first_request = first_model._build_request([HumanMessage(content="first")])
+        second_request = first_model._build_request([HumanMessage(content="second")])
+
+        self.assertEqual(
+            first_request["prompt_cache_key"],
+            second_request["prompt_cache_key"],
+        )
+        self.assertNotEqual(
+            first_request["prompt_cache_key"],
+            second_model.prompt_cache_key,
+        )
 
     def test_build_request_serializes_tool_call_history(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -136,6 +190,50 @@ class CodexOAuthModelTests(unittest.TestCase):
             message.tool_calls,
             [{"name": "sample_lookup", "args": {"city": "宿州"}, "id": "call_1", "type": "tool_call"}],
         )
+
+    def test_reasoning_state_is_preserved_for_tool_followup(self) -> None:
+        model = OpenAICodexModel(model="test-model", reasoning_effort="high")
+        message = model._completed_message(
+            {
+                "response": {
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "id": "reasoning_1",
+                            "summary": [
+                                {"type": "summary_text", "text": "Inspect first."}
+                            ],
+                            "encrypted_content": "encrypted-state",
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "sample_lookup",
+                            "arguments": '{"city": "宿州"}',
+                        },
+                    ]
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="Call a tool."),
+                message,
+                ToolMessage(content="result", tool_call_id="call_1"),
+            ]
+        )
+
+        self.assertEqual(
+            request["input"][1],
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Inspect first."}],
+                "encrypted_content": "encrypted-state",
+            },
+        )
+        self.assertEqual(request["input"][2]["type"], "function_call")
+        self.assertEqual(request["input"][3]["type"], "function_call_output")
 
     def test_completed_message_extracts_openai_response_usage(self) -> None:
         model = OpenAICodexModel(model="test-model")

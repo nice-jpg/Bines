@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any, Mapping
+from typing import Any
+
+from langchain_core.messages import SystemMessage
 
 
 def _base_middleware():
@@ -20,20 +22,27 @@ def _base_middleware():
 
 
 class MasterTraceMiddleware(_base_middleware()):
-    """Inject compact authoritative runtime state before each model step."""
+    """Append compact runtime state to each model request without persisting it."""
 
     def __init__(self, controller: Any) -> None:
         super().__init__()
         self.controller = controller
 
-    def before_model(
-        self,
-        state: Mapping[str, Any],
-        runtime: Any | None = None,
-    ) -> dict[str, Any] | None:
-        messages = list(state.get("messages") or []) if isinstance(state, Mapping) else []
-        if not messages:
-            return None
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        """Keep the stable conversation prefix ahead of the dynamic trace."""
+
+        return handler(
+            request.override(messages=[*request.messages, self._trace_message()])
+        )
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        """Async equivalent of ``wrap_model_call``."""
+
+        return await handler(
+            request.override(messages=[*request.messages, self._trace_message()])
+        )
+
+    def _trace_message(self) -> SystemMessage:
         rounds = [
             {
                 "round": item.index,
@@ -44,21 +53,15 @@ class MasterTraceMiddleware(_base_middleware()):
             for item in self.controller.rounds
         ]
         changes = [asdict(item) for item in self.controller.changes[-6:]]
-        messages.insert(
-            0,
-            {
-                "role": "system",
-                "content": "Authoritative cognitive-control state: "
-                + json.dumps(
-                    {
-                        "rounds": rounds,
-                        "changes": changes,
-                        "best_score": self.controller.best_score,
-                        "best_round": self.controller.best_round,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
+        return SystemMessage(
+            content="Authoritative cognitive-control state: "
+            + json.dumps(
+                {
+                    "rounds": rounds,
+                    "changes": changes,
+                    "best_score": self.controller.best_score,
+                    "best_round": self.controller.best_round,
+                },
+                ensure_ascii=False,
+            )
         )
-        return {"messages": messages}
-

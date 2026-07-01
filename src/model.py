@@ -49,5 +49,14 @@ def _required_env(*names: str) -> str:
     raise RuntimeError(f"Missing required model setting in workspace/.env: {joined_names}")
 
 
-def build_codex_model():
-    return create_chat_model(model='gpt-5.4')
+def build_codex_model(
+    *,
+    model: str = "gpt-5.4",
+    reasoning_effort: str | None = "medium",
+    prompt_cache_key: str | None = None,
+):
+    return create_chat_model(
+        model=model,
+        reasoning_effort=reasoning_effort,
+        prompt_cache_key=prompt_cache_key,
+    )

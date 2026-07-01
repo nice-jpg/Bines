@@ -85,6 +85,8 @@ class OpenAICodexModel(BaseChatModel):
     connect_timeout_seconds: float = 20.0
     max_connection_age_seconds: float = 55.0 * 60.0
     instructions: str = "You are a helpful assistant."
+    reasoning_effort: str | None = "medium"
+    prompt_cache_key: str = Field(default_factory=lambda: str(uuid4()))
     token_provider: CodexOAuthTokenProvider = Field(default_factory=CodexOAuthTokenProvider)
     _usage_records: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     _usage_totals: dict[str, int] = PrivateAttr(default_factory=dict)
@@ -373,9 +375,22 @@ class OpenAICodexModel(BaseChatModel):
     ) -> dict[str, Any]:
         instructions = self.instructions
         input_messages: list[dict[str, Any]] = []
+        input_started = False
         for message in messages:
-            if isinstance(message, SystemMessage):
+            if isinstance(message, SystemMessage) and not input_started:
                 instructions = f"{instructions}\n\n{self._message_text(message)}"
+                continue
+            if isinstance(message, SystemMessage):
+                input_messages.append(
+                    {
+                        "type": "message",
+                        "role": "developer",
+                        "content": [
+                            {"type": "input_text", "text": self._message_text(message)}
+                        ],
+                    }
+                )
+                input_started = True
                 continue
             if isinstance(message, ToolMessage):
                 input_messages.append(
@@ -385,8 +400,14 @@ class OpenAICodexModel(BaseChatModel):
                         "output": self._message_text(message),
                     }
                 )
+                input_started = True
                 continue
             if isinstance(message, AIMessage):
+                for reasoning_item in (
+                    message.additional_kwargs.get("reasoning_items", []) or []
+                ):
+                    if isinstance(reasoning_item, Mapping):
+                        input_messages.append(dict(reasoning_item))
                 content = self._message_text(message)
                 if content:
                     input_messages.append(
@@ -398,6 +419,7 @@ class OpenAICodexModel(BaseChatModel):
                     )
                 for tool_call in getattr(message, "tool_calls", []) or []:
                     input_messages.append(_to_responses_function_call(tool_call))
+                input_started = True
                 continue
             role = "assistant" if isinstance(message, AIMessage) else "user"
             input_messages.append(
@@ -407,6 +429,13 @@ class OpenAICodexModel(BaseChatModel):
                     "content": [{"type": "input_text", "text": self._message_text(message)}],
                 }
             )
+            input_started = True
+
+        reasoning = (
+            {"effort": self.reasoning_effort}
+            if self.reasoning_effort is not None
+            else None
+        )
 
         return {
             "type": "response.create",
@@ -416,9 +445,10 @@ class OpenAICodexModel(BaseChatModel):
             "tools": [_to_responses_tool(tool) for tool in tools or []],
             "tool_choice": _normalize_tool_choice(tool_choice) if tool_choice is not None else "auto",
             "parallel_tool_calls": parallel_tool_calls,
-            "reasoning": None,
+            "reasoning": reasoning,
             "store": False,
-            "include": [],
+            "include": ["reasoning.encrypted_content"] if reasoning else [],
+            "prompt_cache_key": self.prompt_cache_key,
         }
 
     def _message_text(self, message: BaseMessage) -> str:
@@ -543,8 +573,14 @@ def _message_from_response_items(
 ) -> AIMessage:
     texts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
+    reasoning_items: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, Mapping):
+            continue
+        if item.get("type") == "reasoning":
+            reasoning_item = _reasoning_input_item(item)
+            if reasoning_item is not None:
+                reasoning_items.append(reasoning_item)
             continue
         if item.get("type") == "function_call":
             tool_calls.append(_parse_responses_function_call(item))
@@ -554,9 +590,27 @@ def _message_from_response_items(
     return AIMessage(
         content="".join(texts) or fallback_text,
         tool_calls=tool_calls,
+        additional_kwargs={"reasoning_items": reasoning_items}
+        if reasoning_items
+        else {},
         response_metadata=metadata,
         usage_metadata=_usage_metadata(usage),
     )
+
+
+def _reasoning_input_item(item: Mapping[str, Any]) -> dict[str, Any] | None:
+    encrypted_content = item.get("encrypted_content")
+    if not isinstance(encrypted_content, str) or not encrypted_content:
+        return None
+    result: dict[str, Any] = {
+        "type": "reasoning",
+        "summary": list(item.get("summary") or []),
+        "encrypted_content": encrypted_content,
+    }
+    content = item.get("content")
+    if isinstance(content, list) and content:
+        result["content"] = list(content)
+    return result
 
 
 def _response_item_texts(item: Mapping[str, Any]) -> list[str]:
@@ -677,10 +731,19 @@ def create_chat_model(
     temperature: float = 0.0,
     token_provider: CodexOAuthTokenProvider | None = None,
     base_url: str | None = None,
+    reasoning_effort: str | None = "medium",
+    prompt_cache_key: str | None = None,
 ) -> OpenAICodexModel:
     provider = token_provider or CodexOAuthTokenProvider()
+    model_kwargs: dict[str, Any] = {
+        "model": model,
+        "token_provider": provider,
+        "ws_url": base_url
+        or os.getenv("CODEX_WS_URL", "wss://chatgpt.com/backend-api/codex/responses"),
+        "reasoning_effort": reasoning_effort,
+    }
+    if prompt_cache_key is not None:
+        model_kwargs["prompt_cache_key"] = prompt_cache_key
     return OpenAICodexModel(
-        model=model,
-        token_provider=provider,
-        ws_url=base_url or os.getenv("CODEX_WS_URL", "wss://chatgpt.com/backend-api/codex/responses"),
+        **model_kwargs,
     )
