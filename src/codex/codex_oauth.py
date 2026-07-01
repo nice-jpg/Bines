@@ -26,6 +26,7 @@ from langchain_core.language_models.base import (
     LangSmithParams,
     LanguageModelInput,
 )
+from datetime import datetime, timezone
 
 class CodexOAuthTokenProvider:
     """Loads Codex login credentials the same way as ws_probe_codex_login.sh."""
@@ -200,6 +201,7 @@ class OpenAICodexModel(BaseChatModel):
             raise RuntimeError("Codex WebSocket transport is not initialized.")
         request = self._build_request(messages, **kwargs)
         payload = json.dumps(request, ensure_ascii=False)
+        json.dump(request, builtins.open(f"workspace/logs/codex_responses/codex_{datetime.now(timezone.utc).isoformat()}_request.json", "w", encoding="utf-8"), ensure_ascii=False)
 
         async with self._request_lock:
             ws = await self._ensure_connection()
@@ -432,9 +434,10 @@ class OpenAICodexModel(BaseChatModel):
             input_started = True
 
         reasoning = (
-            {"effort": self.reasoning_effort}
-            if self.reasoning_effort is not None
-            else None
+            {
+                "effort": self.reasoning_effort,
+                "summary": "detailed" if self.reasoning_effort else "auto",
+            } if self.reasoning_effort is not None else None
         )
 
         return {
@@ -472,6 +475,9 @@ class OpenAICodexModel(BaseChatModel):
                 continue
             data = json.loads(message)
             event_type = data.get("type")
+            if event_type == 'response.completed':
+                json.dump(data, builtins.open(f"workspace/logs/codex_responses/codex_{datetime.now(timezone.utc).isoformat()}_response.json", "w", encoding="utf-8"), ensure_ascii=False)
+
             if event_type in {"response.output_text.delta", "response.text.delta"}:
                 chunks.append(str(data.get("delta", "")))
             elif event_type in {"response.output_text.done", "response.text.done"}:
