@@ -38,6 +38,8 @@
   3. no row has an obviously borrowed price, truncated value, or malformed structure;
   4. the rows to be written are valid and complete enough to serialize cleanly.
 - Do not leave this merchant, write an empty product sheet, or write placeholder merchant values just to keep progress moving. If products or required merchant output fields are still recoverable from the current page by more inspection, keep inspecting.
-- Once the reachable product area meets the stop condition, write the merchant worksheet and the matching `Sheet1` row immediately, then return to the list. Do not pause on the merchant page to ask the user whether to continue.
+- Once the reachable product area meets the stop condition, write the merchant worksheet and the matching `Sheet1` row immediately.
+- After both writes succeed, your very next action should be `swipe_back` to the `美食` list. Do not pause for an overall-task `think`, do not summarize, and do not ask the user whether to continue while still on the merchant page.
+- If you need to reason about the overall run, do it only after you have returned to the list or if a write failed and the merchant remains unfinished.
 - If you are still inside a merchant page and are not blocked by captcha, popup, or tool failure, continue on-device collection rather than replying with a progress summary.
 - Write all collected rows to the `result.xlsx` worksheet named with this merchant's complete name before using `swipe_back` to return to the list.
