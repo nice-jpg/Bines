@@ -80,8 +80,10 @@ class CodexOAuthModelTests(unittest.TestCase):
         self.assertEqual(request["tool_choice"], {"type": "function", "name": "sample_lookup"})
         self.assertFalse(request["parallel_tool_calls"])
         self.assertEqual(request["prompt_cache_key"], "cache-key")
-        self.assertEqual(request["reasoning"], {"effort": "high"})
+        self.assertEqual(request["reasoning"], {"effort": "high", "summary": "detailed"})
         self.assertEqual(request["include"], ["reasoning.encrypted_content"])
+        self.assertTrue(request["store"])
+        self.assertNotIn("previous_response_id", request)
         self.assertNotIn("stream", request)
 
     def test_dynamic_system_message_stays_at_end_of_input(self) -> None:
@@ -167,6 +169,141 @@ class CodexOAuthModelTests(unittest.TestCase):
                 "output": "result text",
             },
         )
+
+    def test_build_request_chains_from_latest_response_with_only_new_input(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        previous = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_first",
+                    "store": True,
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "first answer"}],
+                        }
+                    ],
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                SystemMessage(content="stable system prompt"),
+                HumanMessage(content="first question"),
+                previous,
+                HumanMessage(content="follow-up question"),
+            ]
+        )
+
+        self.assertEqual(request["previous_response_id"], "resp_first")
+        self.assertEqual(
+            request["instructions"],
+            "You are a helpful assistant.\n\nstable system prompt",
+        )
+        self.assertEqual(
+            request["input"],
+            [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "follow-up question"}],
+                }
+            ],
+        )
+
+    def test_build_request_chains_tool_output_without_repeating_prior_history(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        previous = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_tool_call",
+                    "store": True,
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "sample_lookup",
+                            "arguments": '{"city": "宿州"}',
+                        }
+                    ],
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="Call a tool."),
+                previous,
+                ToolMessage(content="result text", tool_call_id="call_1"),
+            ]
+        )
+
+        self.assertEqual(request["previous_response_id"], "resp_tool_call")
+        self.assertEqual(
+            request["input"],
+            [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "result text",
+                }
+            ],
+        )
+
+    def test_build_request_does_not_chain_unstored_response(self) -> None:
+        model = OpenAICodexModel(model="test-model", store_responses=False)
+        previous = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_unstored",
+                    "store": False,
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "first answer"}],
+                        }
+                    ],
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="first question"),
+                previous,
+                HumanMessage(content="follow-up question"),
+            ]
+        )
+
+        self.assertFalse(request["store"])
+        self.assertNotIn("previous_response_id", request)
+        self.assertEqual(len(request["input"]), 3)
+
+    def test_build_request_uses_response_id_from_its_own_history(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        first_conversation = AIMessage(
+            content="first",
+            response_metadata={"response_id": "resp_a", "response_store": True},
+        )
+        second_conversation = AIMessage(
+            content="second",
+            response_metadata={"response_id": "resp_b", "response_store": True},
+        )
+
+        request_a = model._build_request(
+            [HumanMessage(content="a1"), first_conversation, HumanMessage(content="a2")]
+        )
+        request_b = model._build_request(
+            [HumanMessage(content="b1"), second_conversation, HumanMessage(content="b2")]
+        )
+
+        self.assertEqual(request_a["previous_response_id"], "resp_a")
+        self.assertEqual(request_b["previous_response_id"], "resp_b")
+        self.assertEqual(request_a["input"][0]["content"][0]["text"], "a2")
+        self.assertEqual(request_b["input"][0]["content"][0]["text"], "b2")
 
     def test_completed_message_parses_responses_function_calls(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -273,6 +410,22 @@ class CodexOAuthModelTests(unittest.TestCase):
                 "output_token_details": {"reasoning_tokens": 20},
             },
         )
+
+    def test_completed_message_exposes_response_chain_metadata(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+
+        message = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_123",
+                    "store": True,
+                    "output": [],
+                }
+            }
+        )
+
+        self.assertEqual(message.response_metadata["response_id"], "resp_123")
+        self.assertTrue(message.response_metadata["response_store"])
 
     def test_model_records_cumulative_usage(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -423,6 +576,46 @@ class CodexOAuthModelTests(unittest.TestCase):
         finally:
             model.close()
 
+    def test_sync_requests_chain_previous_response_on_persistent_connection(self) -> None:
+        ws = PersistentFakeWebSocket(
+            [
+                completed_events("first", response_id="resp_first"),
+                completed_events("second", response_id="resp_second"),
+            ]
+        )
+        model = OpenAICodexModel(
+            model="test-model",
+            token_provider=FakeTokenProvider(),
+        )
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect):
+                first = model.invoke([HumanMessage(content="first question")])
+                second = model.invoke(
+                    [
+                        HumanMessage(content="first question"),
+                        first,
+                        HumanMessage(content="follow-up question"),
+                    ]
+                )
+
+            first_payload = json.loads(ws.sent[0])
+            second_payload = json.loads(ws.sent[1])
+            self.assertNotIn("previous_response_id", first_payload)
+            self.assertEqual(second_payload["previous_response_id"], "resp_first")
+            self.assertEqual(len(second_payload["input"]), 1)
+            self.assertEqual(
+                second_payload["input"][0]["content"][0]["text"],
+                "follow-up question",
+            )
+            self.assertEqual(first.response_metadata["response_id"], "resp_first")
+            self.assertEqual(second.response_metadata["response_id"], "resp_second")
+        finally:
+            model.close()
+
     def test_async_requests_share_transport_and_are_serialized(self) -> None:
         ws = PersistentFakeWebSocket(
             [completed_events("first"), completed_events("second")],
@@ -503,9 +696,15 @@ class CodexOAuthModelTests(unittest.TestCase):
             return next(sockets)
 
         with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
-            model.invoke([HumanMessage(content="first")])
+            first = model.invoke([HumanMessage(content="first")])
             model._connected_at = float("-inf")
-            model.invoke([HumanMessage(content="second")])
+            model.invoke(
+                [
+                    HumanMessage(content="first"),
+                    first,
+                    HumanMessage(content="second"),
+                ]
+            )
 
         model.close()
         model.close()
@@ -513,6 +712,10 @@ class CodexOAuthModelTests(unittest.TestCase):
         self.assertEqual(provider.calls, 2)
         self.assertTrue(first_ws.closed)
         self.assertTrue(second_ws.closed)
+        self.assertEqual(
+            json.loads(second_ws.sent[0])["previous_response_id"],
+            "resp_first",
+        )
 
 
 class FakeWebSocket:
@@ -588,11 +791,13 @@ class PersistentFakeWebSocket:
         self.state.name = "CLOSED"
 
 
-def completed_events(text: str) -> list[dict]:
+def completed_events(text: str, response_id: str | None = None) -> list[dict]:
     return [
         {
             "type": "response.completed",
             "response": {
+                "id": response_id or f"resp_{text}",
+                "store": True,
                 "output": [
                     {
                         "type": "message",

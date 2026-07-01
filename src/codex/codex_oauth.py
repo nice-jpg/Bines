@@ -87,6 +87,7 @@ class OpenAICodexModel(BaseChatModel):
     max_connection_age_seconds: float = 55.0 * 60.0
     instructions: str = "You are a helpful assistant."
     reasoning_effort: str | None = "medium"
+    store_responses: bool = True
     prompt_cache_key: str = Field(default_factory=lambda: str(uuid4()))
     token_provider: CodexOAuthTokenProvider = Field(default_factory=CodexOAuthTokenProvider)
     _usage_records: list[dict[str, Any]] = PrivateAttr(default_factory=list)
@@ -201,7 +202,7 @@ class OpenAICodexModel(BaseChatModel):
             raise RuntimeError("Codex WebSocket transport is not initialized.")
         request = self._build_request(messages, **kwargs)
         payload = json.dumps(request, ensure_ascii=False)
-        json.dump(request, builtins.open(f"workspace/logs/codex_responses/codex_{datetime.now(timezone.utc).isoformat()}_request.json", "w", encoding="utf-8"), ensure_ascii=False)
+        _write_protocol_log("request", request)
 
         async with self._request_lock:
             ws = await self._ensure_connection()
@@ -373,15 +374,33 @@ class OpenAICodexModel(BaseChatModel):
         tools: Sequence[Mapping[str, Any]] | None = None,
         tool_choice: builtins.dict[str, Any] | str | bool | None = None,
         parallel_tool_calls: bool = True,
+        previous_response_id: str | None = None,
+        store: bool | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         instructions = self.instructions
-        input_messages: list[dict[str, Any]] = []
-        input_started = False
+        leading_system_count = 0
         for message in messages:
-            if isinstance(message, SystemMessage) and not input_started:
-                instructions = f"{instructions}\n\n{self._message_text(message)}"
-                continue
+            if not isinstance(message, SystemMessage):
+                break
+            instructions = f"{instructions}\n\n{self._message_text(message)}"
+            leading_system_count += 1
+
+        should_store = self.store_responses if store is None else bool(store)
+        anchor_index: int | None = None
+        if previous_response_id is not None:
+            previous_response_id = str(previous_response_id).strip() or None
+            if previous_response_id is not None:
+                anchor_index = _response_anchor_index(messages, previous_response_id)
+        elif should_store:
+            anchor_index, previous_response_id = _latest_response_anchor(messages)
+
+        input_start = leading_system_count
+        if anchor_index is not None:
+            input_start = max(input_start, anchor_index + 1)
+
+        input_messages: list[dict[str, Any]] = []
+        for message in messages[input_start:]:
             if isinstance(message, SystemMessage):
                 input_messages.append(
                     {
@@ -392,7 +411,6 @@ class OpenAICodexModel(BaseChatModel):
                         ],
                     }
                 )
-                input_started = True
                 continue
             if isinstance(message, ToolMessage):
                 input_messages.append(
@@ -402,7 +420,6 @@ class OpenAICodexModel(BaseChatModel):
                         "output": self._message_text(message),
                     }
                 )
-                input_started = True
                 continue
             if isinstance(message, AIMessage):
                 for reasoning_item in (
@@ -421,7 +438,6 @@ class OpenAICodexModel(BaseChatModel):
                     )
                 for tool_call in getattr(message, "tool_calls", []) or []:
                     input_messages.append(_to_responses_function_call(tool_call))
-                input_started = True
                 continue
             role = "assistant" if isinstance(message, AIMessage) else "user"
             input_messages.append(
@@ -431,7 +447,6 @@ class OpenAICodexModel(BaseChatModel):
                     "content": [{"type": "input_text", "text": self._message_text(message)}],
                 }
             )
-            input_started = True
 
         reasoning = (
             {
@@ -440,7 +455,7 @@ class OpenAICodexModel(BaseChatModel):
             } if self.reasoning_effort is not None else None
         )
 
-        return {
+        request = {
             "type": "response.create",
             "model": self.model,
             "instructions": instructions,
@@ -449,10 +464,13 @@ class OpenAICodexModel(BaseChatModel):
             "tool_choice": _normalize_tool_choice(tool_choice) if tool_choice is not None else "auto",
             "parallel_tool_calls": parallel_tool_calls,
             "reasoning": reasoning,
-            "store": False,
+            "store": should_store,
             "include": ["reasoning.encrypted_content"] if reasoning else [],
             "prompt_cache_key": self.prompt_cache_key,
         }
+        if previous_response_id is not None:
+            request["previous_response_id"] = previous_response_id
+        return request
 
     def _message_text(self, message: BaseMessage) -> str:
         content = message.content
@@ -476,7 +494,7 @@ class OpenAICodexModel(BaseChatModel):
             data = json.loads(message)
             event_type = data.get("type")
             if event_type == 'response.completed':
-                json.dump(data, builtins.open(f"workspace/logs/codex_responses/codex_{datetime.now(timezone.utc).isoformat()}_response.json", "w", encoding="utf-8"), ensure_ascii=False)
+                _write_protocol_log("response", data)
 
             if event_type in {"response.output_text.delta", "response.text.delta"}:
                 chunks.append(str(data.get("delta", "")))
@@ -493,11 +511,19 @@ class OpenAICodexModel(BaseChatModel):
             elif event_type in {"response.completed", "response.done"}:
                 fallback = done_text or "".join(chunks)
                 usage = _response_usage(data)
+                response_id = _response_id(data)
+                response_store = _response_store(data)
                 completed = self._completed_message(data, fallback_text="")
                 if completed.content or completed.tool_calls:
                     return completed
                 items = [output_items[key] for key in output_item_order]
-                return _message_from_response_items(items, fallback_text=fallback, usage=usage)
+                return _message_from_response_items(
+                    items,
+                    fallback_text=fallback,
+                    usage=usage,
+                    response_id=response_id,
+                    response_store=response_store,
+                )
             elif event_type in {"response.failed", "response.incomplete"}:
                 raise RuntimeError(f"Codex WebSocket response failed: {data}")
             elif event_type == "error":
@@ -509,8 +535,14 @@ class OpenAICodexModel(BaseChatModel):
             return AIMessage(content=fallback_text)
         output = response.get("output")
         if not isinstance(output, list):
-            return AIMessage(content=fallback_text)
-        return _message_from_response_items(output, fallback_text=fallback_text, usage=_response_usage(data))
+            output = []
+        return _message_from_response_items(
+            output,
+            fallback_text=fallback_text,
+            usage=_response_usage(data),
+            response_id=_response_id(data),
+            response_store=_response_store(data),
+        )
 
     def _completed_text(self, data: dict[str, Any]) -> str:
         return str(self._completed_message(data).content or "")
@@ -551,6 +583,14 @@ def _to_responses_tool(tool: Mapping[str, Any]) -> dict[str, Any]:
     return dict(tool)
 
 
+def _write_protocol_log(kind: str, data: Mapping[str, Any]) -> None:
+    log_dir = Path("workspace/logs/codex_responses")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    with (log_dir / f"codex_{timestamp}_{kind}.json").open("w", encoding="utf-8") as file:
+        json.dump(data, file, ensure_ascii=False)
+
+
 def _response_item_key(item: Mapping[str, Any], fallback_index: int) -> str:
     return str(
         item.get("id")
@@ -576,6 +616,8 @@ def _message_from_response_items(
     items: Sequence[Any],
     fallback_text: str = "",
     usage: Mapping[str, Any] | None = None,
+    response_id: str | None = None,
+    response_store: bool | None = None,
 ) -> AIMessage:
     texts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
@@ -592,7 +634,11 @@ def _message_from_response_items(
             tool_calls.append(_parse_responses_function_call(item))
             continue
         texts.extend(_response_item_texts(item))
-    metadata = _response_metadata(usage)
+    metadata = _response_metadata(
+        usage,
+        response_id=response_id,
+        response_store=response_store,
+    )
     return AIMessage(
         content="".join(texts) or fallback_text,
         tool_calls=tool_calls,
@@ -642,14 +688,76 @@ def _response_usage(data: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return usage if isinstance(usage, Mapping) else None
 
 
-def _response_metadata(usage: Mapping[str, Any] | None) -> dict[str, Any]:
-    if not usage:
-        return {}
-    usage_dict = dict(usage)
-    return {
-        "usage": usage_dict,
-        "token_usage": usage_dict,
-    }
+def _response_id(data: Mapping[str, Any]) -> str | None:
+    response = data.get("response")
+    if not isinstance(response, Mapping):
+        return None
+    response_id = response.get("id")
+    if not isinstance(response_id, str) or not response_id.strip():
+        return None
+    return response_id
+
+
+def _response_store(data: Mapping[str, Any]) -> bool | None:
+    response = data.get("response")
+    if not isinstance(response, Mapping):
+        return None
+    store = response.get("store")
+    return store if isinstance(store, bool) else None
+
+
+def _response_metadata(
+    usage: Mapping[str, Any] | None,
+    *,
+    response_id: str | None = None,
+    response_store: bool | None = None,
+) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    if usage:
+        usage_dict = dict(usage)
+        metadata.update(
+            {
+                "usage": usage_dict,
+                "token_usage": usage_dict,
+            }
+        )
+    if response_id is not None:
+        metadata["response_id"] = response_id
+    if response_store is not None:
+        metadata["response_store"] = response_store
+    return metadata
+
+
+def _latest_response_anchor(messages: Sequence[BaseMessage]) -> tuple[int | None, str | None]:
+    for index in range(len(messages) - 1, -1, -1):
+        response_id = _message_response_id(messages[index])
+        if response_id is not None:
+            return index, response_id
+    return None, None
+
+
+def _response_anchor_index(
+    messages: Sequence[BaseMessage],
+    response_id: str,
+) -> int | None:
+    for index in range(len(messages) - 1, -1, -1):
+        if _message_response_id(messages[index]) == response_id:
+            return index
+    return None
+
+
+def _message_response_id(message: BaseMessage) -> str | None:
+    if not isinstance(message, AIMessage):
+        return None
+    metadata = message.response_metadata
+    if not isinstance(metadata, Mapping):
+        return None
+    if metadata.get("response_store") is False:
+        return None
+    response_id = metadata.get("response_id")
+    if not isinstance(response_id, str) or not response_id.strip():
+        return None
+    return response_id
 
 
 def _usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, Any] | None:
