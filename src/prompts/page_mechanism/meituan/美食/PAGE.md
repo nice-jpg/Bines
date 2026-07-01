@@ -16,7 +16,9 @@
 - Enter merchants within range. Enter merchants with missing distance if distance may be recovered on the detail page.
 - After returning from one merchant, immediately resume the `美食` list workflow and continue handling the remaining visible or newly revealed in-range merchants.
 - Swipe within the merchant list after all visible candidates are handled. Do not stop because one screen has no in-range or new merchants.
-- Treat `美食` as incomplete until the list itself reaches a stop condition. Completing one merchant, creating Excel sheets, or writing a progress summary is not a valid stopping point.
+- Treat `美食` as incomplete until the list itself reaches a stop condition. Completing one merchant, creating Excel sheets, attempting another page, or writing a progress summary is not a valid stopping point.
+- The ordering rule is strict: finish the `美食` list first, then navigate to the separate configured page `外卖`. Do not leave `美食` early just to begin `外卖` while `美食` still has untested visible merchants or pending list swipes.
+- Only after the `美食` list reaches its own stop condition should you return or navigate onward to `外卖`.
 - Do not end the run, hand control back, or produce a final/progress summary while `美食` still has untested visible merchants, while additional list swipes are still required, or before the separate configured page `外卖` has also been attempted.
 - Stop the `美食` list only after 2 consecutive list swipes add no new merchants, or a clear no-more/bottom marker appears.
 
