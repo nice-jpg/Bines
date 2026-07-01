@@ -35,3 +35,19 @@
 - Once the merchant page reaches its stop condition, write the merchant worksheet and the matching `Sheet1` row immediately, then return to the list.
 - If you are still inside a merchant page and are not blocked by captcha, popup, or tool failure, continue on-device collection rather than replying with a progress summary.
 - Write all collected rows to the `result.xlsx` worksheet named with this merchant's complete name before using `swipe_back` to return to the list.
+
+## Price field mapping rules
+Product cards may show multiple prices. Map them to the four output fields as follows:
+
+- **price**: The standalone menu price, usually displayed as a larger `¥XX` or the main price next to the product name. This is the default price the product is sold at. Do not use a smaller cross-out/through price or a "到手价" label for this field.
+- **original price** (原价): A higher price shown crossed out, struck through, or labeled as "原价¥XX". If no struck-through or "原价" price exists, leave this field empty (`""`).
+- **discount price** (折扣价/到手价): A special promotional price displayed as the smaller "到手价¥XX", "折扣价¥XX", "神券价¥XX", or marked with a promotion tag. If the product card shows only one price (no struck-through price, no 到手价 label), leave discount price empty.
+- **monthly sales**: The text "月售XX" or "已售XX". Normalize: "月售200+" → 200, "月售1.7万+" → 17000.
+
+**Common example**: A product card shows `¥29.9 ¥39.9 月售100+` with "到手价" tag. Here: price=29.9, original_price=39.9, discount_price=29.9, monthly_sales=100.
+
+**Another example**: A product card shows `¥4.9` and a smaller `到手价￥1.6`. Here: price=4.9, original_price="", discount_price=1.6, monthly_sales=69.
+
+**Another example**: A product card shows only `¥25.9 月售700+`. Here: price=25.9, original_price="", discount_price="", monthly_sales=700.
+
+**Important**: Do not put the 到手价 value into the original_price column. The original_price is the struck-through or "原价" price, not the promotional discounted price.
