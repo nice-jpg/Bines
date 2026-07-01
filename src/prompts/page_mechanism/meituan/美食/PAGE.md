@@ -14,6 +14,9 @@
 - In each round, read XML, identify visible merchants, distance text, title/icon tap targets, and whether each merchant was already handled.
 - Use screenshot only when XML cannot show the visible merchant card layout.
 - Enter merchants within range. Enter merchants with missing distance if distance may be recovered on the detail page.
+- If multiple in-range unhandled merchants are visible on the same screen, prefer the merchant most likely to finish cleanly first: choose one with clearer distance/title and a simpler, shorter card or beverage/snack-style menu over a large meal-set merchant that is likely to have a very long catalog.
+- Use that priority only to choose order among already visible in-range merchants; do not skip any in-range merchant permanently.
+- After completing one merchant, return to the list and continue with the remaining in-range merchants on that screen before deeper scrolling.
 - Swipe within the merchant list after all visible candidates are handled. Do not stop because one screen has no in-range or new merchants.
 - Stop only after 2 consecutive list swipes add no new merchants, or a clear no-more/bottom marker appears.
 
