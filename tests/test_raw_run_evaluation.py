@@ -120,11 +120,11 @@ def test_eval_combines_quantity_context_and_correctness_grades(
 
     # The result-only merchant is counted but is not part of correctness comparison.
     assert raw_run.eval(result) == {
-        "total": 28,
+        "total": 46,
         "dimensions": {
             "result_count_grade": 8,
             "context_grade": 40,
-            "correctness_grade": -20,
+            "correctness_grade": -2,
         },
         "merchant_count": 3,
         "product_count": 5,

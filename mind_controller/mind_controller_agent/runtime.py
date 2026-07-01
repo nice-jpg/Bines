@@ -76,6 +76,10 @@ class CognitiveController:
                 "expected_outcome": self.debug_info.expected_outcome,
                 "prompt_structure": self.debug_info.prompt_structure,
                 "prompt_paths": [str(path) for path in self.prompt_paths],
+                "prompt_catalog": [
+                    _prompt_catalog_entry(path, self.debug_info.working_directory)
+                    for path in self.prompt_paths
+                ],
                 "additional_context": _json_safe(self.debug_info.additional_context),
             }
         )
@@ -443,6 +447,50 @@ def _result_summary(result: Any) -> Any:
         raise TypeError(
             "slave.run() result must expose a summary field for LLM context"
         ) from exc
+
+
+def _prompt_catalog_entry(
+    path: Path,
+    working_directory: Path | None,
+) -> dict[str, str]:
+    display_path = path
+    if working_directory is not None:
+        try:
+            display_path = path.relative_to(working_directory.expanduser().resolve())
+        except ValueError:
+            pass
+
+    normalized_name = path.name.casefold()
+    normalized_stem = path.stem.casefold()
+    if normalized_name == "page.md":
+        path_parts = path.parts
+        if "page_mechanism" in path_parts:
+            mechanism_index = len(path_parts) - 1 - path_parts[::-1].index(
+                "page_mechanism"
+            )
+            scope_parts = path_parts[mechanism_index + 1 : -1]
+        else:
+            scope_parts = (path.parent.name,)
+        scope = "/".join(scope_parts)
+        scope_hint = (
+            f"page-specific instructions for {scope}; choose this for behavior "
+            "confined to that page or page workflow"
+        )
+    elif "system" in normalized_stem:
+        scope_hint = (
+            "global or cross-cutting instructions; choose only when the rule must "
+            "govern multiple pages or the whole run"
+        )
+    else:
+        scope_hint = (
+            f"specialized prompt under {path.parent.name}; inspect its content and "
+            "prompt_structure before assigning ownership"
+        )
+    return {
+        "path": str(path),
+        "display_path": str(display_path),
+        "scope_hint": scope_hint,
+    }
 
 
 def _json(value: Any) -> str:

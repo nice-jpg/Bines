@@ -8,7 +8,11 @@ import pytest
 
 from mind_controller_agent.contracts import SlaveDebugInfo
 from mind_controller_agent.provenance import commit_prompt_files
-from mind_controller_agent.runtime import CognitiveController, normalize_evaluation
+from mind_controller_agent.runtime import (
+    CognitiveController,
+    _prompt_catalog_entry,
+    normalize_evaluation,
+)
 
 
 class FakeSlave:
@@ -98,6 +102,40 @@ def test_run_tool_sends_only_summary_but_eval_receives_full_result(
     assert "result" not in payload
     assert "full execution state" not in json.dumps(payload)
     assert slave.evaluated_results == [full_result]
+
+
+def test_inspect_slave_exposes_prompt_scope_catalog(tmp_path: Path) -> None:
+    controller, _, _ = make_controller(tmp_path)
+
+    inspection = json.loads(controller.inspect_slave_tool())
+
+    assert inspection["prompt_catalog"] == [
+        {
+            "path": str(tmp_path / "system.md"),
+            "display_path": "system.md",
+            "scope_hint": (
+                "global or cross-cutting instructions; choose only when the rule "
+                "must govern multiple pages or the whole run"
+            ),
+        }
+    ]
+
+
+def test_prompt_catalog_uses_page_mechanism_relative_scope(tmp_path: Path) -> None:
+    page_prompt = (
+        tmp_path
+        / "src"
+        / "prompts"
+        / "page_mechanism"
+        / "meituan"
+        / "美食"
+        / "PAGE.md"
+    )
+
+    entry = _prompt_catalog_entry(page_prompt, tmp_path)
+
+    assert entry["display_path"] == "src/prompts/page_mechanism/meituan/美食/PAGE.md"
+    assert entry["scope_hint"].startswith("page-specific instructions for meituan/美食;")
 
 
 def test_restore_best_discards_regressing_prompt(tmp_path: Path) -> None:

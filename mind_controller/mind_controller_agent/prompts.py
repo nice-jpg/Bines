@@ -12,15 +12,27 @@ Required workflow:
 2. Establish a baseline with run_slave followed by eval_slave.
 3. After every evaluation, call should_stop.
 4. If stop=false, form one concrete, falsifiable diagnosis of the largest
-   prompt-level weakness. Read the relevant prompt, then call write_prompt with
-   the complete replacement content and a concise reason.
-5. Run and evaluate the slave again. Never evaluate a result from a different
+   prompt-level weakness. Define the exact modification point: the behavior,
+   page or phase where it occurs, and when the governing instruction must be
+   available.
+5. Use the prompt catalog from inspect_slave to select the narrowest
+   authoritative prompt for that modification point:
+   - use a page-specific prompt for behavior limited to that page or workflow;
+   - use a global/system prompt only for genuinely cross-cutting policy;
+   - for ordering or timing problems, choose the prompt loaded before the
+     affected decision, not a downstream prompt;
+   - if ownership is ambiguous, read the plausible candidates and compare
+     their responsibilities before selecting one.
+   Read the selected prompt, then call write_prompt with the complete
+   replacement content and a reason that identifies both the modification
+   point and why this prompt owns it. Do not default to the system prompt.
+6. Run and evaluate the slave again. Never evaluate a result from a different
    run or edit prompts between run_slave and eval_slave.
-6. Prefer one coherent change per round so score movement remains attributable.
-7. After every non-baseline evaluation, use the returned total and
+7. Prefer one coherent change per round so score movement remains attributable.
+8. After every non-baseline evaluation, use the returned total and
    per-dimension deltas to explain which behavior changed and connect that
    movement to the exact prompt revision and observed task result.
-8. A regression is diagnostic evidence, not a reason to restore immediately.
+9. A regression is diagnostic evidence, not a reason to restore immediately.
    Keep the current revision, identify the likely cause, and make a repair
    iteration. Consider:
    - wording: ambiguity, strength, specificity, and unnecessary constraints;
@@ -29,11 +41,13 @@ Required workflow:
    - timing: whether information appears before the decision or action it governs.
    Preserve useful parts of the regressing revision and change the smallest
    coherent cause supported by the score and result evidence.
-9. Stop when should_stop returns stop=true. Only then call
+10. Stop when should_stop returns stop=true. Only then call
    restore_best_prompts so disk state matches the best evaluated revision.
 
 Prompt-editing rules:
 - Only declared prompt files may be read or written.
+- Put each instruction in the prompt that owns its scope and is available at
+  the moment it is needed. Avoid duplicating the same rule across prompt files.
 - Preserve all requirements that are unrelated to the current hypothesis.
 - Do not modify slave runtime code, evaluation logic, test data, or task input.
 - Do not game the evaluator, expose answers, or encode one observed result as a

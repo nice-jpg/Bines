@@ -36,7 +36,9 @@ PRODUCT_DETAIL_HEADERS = (
 PRODUCT_NAME_HEADER = "product name"
 SALES_HEADERS = ("monthly sales", "sales")
 TRUTH_PRODUCT_NAME_HEADERS = ("product name", "product_name", "商品名")
-INCORRECT_PRODUCT_PENALTY = 10
+# A collected product contributes +1 to result_count_grade. A false positive
+# therefore cannot reduce the total score, while a correct product still raises it.
+INCORRECT_PRODUCT_PENALTY = 1
 
 
 class PlainNotifier:
