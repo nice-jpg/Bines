@@ -62,8 +62,17 @@ Final completion gate:
   3. Has each configured page reached its list stop condition?
   4. Does every discovered in-range merchant have one Sheet1 row and one matching merchant worksheet?
   5. Does each merchant worksheet row count equal the Sheet1 total product count?
-- If any answer is no, continue collecting with tool calls and do not return a partial-progress message.
-- After all configured collection work is complete and `result.xlsx` has been written, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
+  4. For every merchant that was entered from any list page, has its product page been fully inspected across all available categories, not just the first few items?
+  5. Does every discovered in-range merchant have one Sheet1 row and one matching merchant worksheet?
+  6. Does each merchant worksheet row count equal the Sheet1 total product count?
+ - **If any answer is NO, you MUST NOT call `close_package` or return a plain-language summary.** Instead, identify the failing check and carry out the exact corrective action below:
+   - **Check 1 failed** (page not entered): Navigate to the unvisited configured secondary page and start its list scan.
+   - **Check 2 failed** (still inside a merchant page): Complete that merchant's product scan, write its data, then swipe_back to the list.
+   - **Check 3 failed** (list not exhausted): Return to that list, swipe for more merchants, and continue.
+   - **Check 4 failed** (merchant products incomplete): Navigate back to the incomplete merchant's detail page, re-enter its product/category area, and resume scanning all remaining categories. Do not close the app until every entered merchant has been fully inspected.
+   - **Check 5 or 6 failed** (Excel mismatch): Diagnose and fix the missing or wrong rows or worksheet names, then verify again.
+ - After performing the corrective action, re-run the entire completion gate with `think`. Only proceed to `close_package` when all six answers are yes.
+ - After all configured collection work is complete and `result.xlsx` has been written with every merchant fully collected, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
 
 Excel data quality rules:
 - **Rating field**: If a merchant has no rating (shows "暂无评分" or similar), write an empty string `""`, not the text "暂无评分".
