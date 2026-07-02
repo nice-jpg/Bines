@@ -28,6 +28,7 @@ def build_model() -> ChatOpenAI:
         api_key=config.api_key,
         model=config.model,
         streaming=False,
+        use_responses_api=False,
     )
 
 

@@ -12,6 +12,15 @@ from typing import Any, Mapping
 
 from .contracts import CognitiveSlave, SlaveDebugInfo
 from .models import CognitiveRound, Evaluation, PromptChange
+from .prompt_patch import (
+    APPLY_PATCH_FORMAT,
+    FREEFORM_APPLY_PATCH_DESCRIPTION,
+    FUNCTION_APPLY_PATCH_DESCRIPTION,
+    PromptPatchError,
+    PromptPatchInput,
+    apply_file_update,
+    parse_prompt_patch,
+)
 from .provenance import PromptCommit, commit_prompt_files
 
 
@@ -51,15 +60,39 @@ class CognitiveController:
         self._pending_prompt_paths: set[Path] = set()
         self._pending_reasons: list[str] = []
 
-    def build_tools(self) -> list[Any]:
+    def build_tools(self, *, freeform_patch: bool = True) -> list[Any]:
         from langchain_core.tools import StructuredTool
+
+        if freeform_patch:
+            from langchain_openai import custom_tool
+
+            @custom_tool(format=APPLY_PATCH_FORMAT)
+            def apply_patch(patch: str) -> str:
+                """Apply a raw Update-only patch to declared prompt files."""
+
+                return self.apply_prompt_patch_tool(patch)
+
+            apply_patch.description = FREEFORM_APPLY_PATCH_DESCRIPTION
+        else:
+
+            def apply_patch_json(input: str) -> str:
+                """Apply the complete patch supplied in ``input``."""
+
+                return self.apply_prompt_patch_tool(input)
+
+            apply_patch = StructuredTool.from_function(
+                apply_patch_json,
+                name="apply_patch",
+                description=FUNCTION_APPLY_PATCH_DESCRIPTION,
+                args_schema=PromptPatchInput,
+            )
 
         return [
             StructuredTool.from_function(self.inspect_slave_tool, name="inspect_slave"),
             StructuredTool.from_function(self.run_slave_tool, name="run_slave"),
             StructuredTool.from_function(self.eval_slave_tool, name="eval_slave"),
             StructuredTool.from_function(self.read_prompt_tool, name="read_prompt"),
-            StructuredTool.from_function(self.write_prompt_tool, name="write_prompt"),
+            apply_patch,
             StructuredTool.from_function(
                 self.restore_best_prompts_tool,
                 name="restore_best_prompts",
@@ -75,7 +108,15 @@ class CognitiveController:
                 "responsibility": self.debug_info.responsibility,
                 "expected_outcome": self.debug_info.expected_outcome,
                 "prompt_structure": self.debug_info.prompt_structure,
-                "prompt_paths": [str(path) for path in self.prompt_paths],
+                "prompt_paths": [
+                    str(
+                        _editable_prompt_path(
+                            path,
+                            self.debug_info.working_directory,
+                        )
+                    )
+                    for path in self.prompt_paths
+                ],
                 "prompt_catalog": [
                     _prompt_catalog_entry(path, self.debug_info.working_directory)
                     for path in self.prompt_paths
@@ -154,36 +195,89 @@ class CognitiveController:
         """Read one declared prompt file."""
 
         resolved = self._allowed_path(path)
-        return _json({"path": str(resolved), "content": resolved.read_text(encoding="utf-8")})
+        editable_path = _editable_prompt_path(
+            resolved,
+            self.debug_info.working_directory,
+        )
+        return _json(
+            {
+                "path": str(editable_path),
+                "content": resolved.read_text(encoding="utf-8"),
+            }
+        )
 
-    def write_prompt_tool(self, path: str, content: str, reason: str) -> str:
-        """Atomically replace one declared prompt file with complete UTF-8 content."""
+    def apply_prompt_patch_tool(self, patch: str) -> str:
+        """Apply one freeform patch while preserving prompt revision semantics."""
 
         if not self.rounds:
             return _json({"error": "establish a scored baseline before editing prompts"})
         if any(ref not in self._evaluated_runs for ref in self._results):
             return _json({"error": "cannot edit prompts between run_slave and eval_slave"})
-        resolved = self._allowed_path(path)
-        before = resolved.read_bytes()
-        after = str(content).encode("utf-8")
-        if before == after:
-            return _json({"error": "replacement content is unchanged"})
-        _atomic_write(resolved, after)
+
+        updates = parse_prompt_patch(str(patch))
+        prepared: list[tuple[Path, bytes, bytes]] = []
+        seen_paths: set[Path] = set()
+        for update in updates:
+            try:
+                resolved = self._allowed_path(update.path)
+            except ValueError as exc:
+                raise PromptPatchError(
+                    "path_not_declared",
+                    "Patch path is not a declared prompt file.",
+                    path=update.path,
+                    hint="Use an editable path returned by inspect_slave.",
+                ) from exc
+            if resolved in seen_paths:
+                raise PromptPatchError(
+                    "duplicate_path",
+                    "Patch contains the same Update File path more than once.",
+                    path=update.path,
+                    hint="Combine all changes for one file under a single Update File.",
+                )
+            seen_paths.add(resolved)
+            before = resolved.read_bytes()
+            try:
+                before_text = before.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise PromptPatchError(
+                    "invalid_encoding",
+                    "Prompt file is not UTF-8.",
+                    path=resolved,
+                ) from exc
+            after_text = apply_file_update(before_text, update, path=resolved)
+            after = after_text.encode("utf-8")
+            if before != after:
+                prepared.append((resolved, before, after))
+
+        if not prepared:
+            return _json({"error": "patch does not change any prompt file"})
+
+        for resolved, _before, after in prepared:
+            _atomic_write(resolved, after)
+
         self._next_revision += 1
         self._revision = self._next_revision
         self._snapshots[self._revision] = self._capture_prompts()
-        change = PromptChange(
-            revision=self._revision,
-            path=str(resolved),
-            reason=str(reason or "").strip(),
-            before_hash=_digest(before),
-            after_hash=_digest(after),
+        changes: list[PromptChange] = []
+        reason = "apply_patch prompt update"
+        for resolved, before, after in prepared:
+            change = PromptChange(
+                revision=self._revision,
+                path=str(resolved),
+                reason=reason,
+                before_hash=_digest(before),
+                after_hash=_digest(after),
+            )
+            self.changes.append(change)
+            changes.append(change)
+            self._pending_prompt_paths.add(resolved)
+        self._pending_reasons.append(reason)
+        return _json(
+            {
+                "revision": self._revision,
+                "changes": [asdict(change) for change in changes],
+            }
         )
-        self.changes.append(change)
-        self._pending_prompt_paths.add(resolved)
-        if change.reason:
-            self._pending_reasons.append(change.reason)
-        return _json(asdict(change))
 
     def restore_best_prompts_tool(self) -> str:
         """Restore the best revision only after an explicit stop condition."""
@@ -453,12 +547,7 @@ def _prompt_catalog_entry(
     path: Path,
     working_directory: Path | None,
 ) -> dict[str, str]:
-    display_path = path
-    if working_directory is not None:
-        try:
-            display_path = path.relative_to(working_directory.expanduser().resolve())
-        except ValueError:
-            pass
+    display_path = _editable_prompt_path(path, working_directory)
 
     normalized_name = path.name.casefold()
     normalized_stem = path.stem.casefold()
@@ -487,10 +576,19 @@ def _prompt_catalog_entry(
             "prompt_structure before assigning ownership"
         )
     return {
-        "path": str(path),
+        "path": str(display_path),
         "display_path": str(display_path),
+        "resolved_path": str(path),
         "scope_hint": scope_hint,
     }
+
+
+def _editable_prompt_path(
+    path: Path,
+    working_directory: Path | None,
+) -> Path:
+    base = (working_directory or Path.cwd()).expanduser().resolve()
+    return Path(os.path.relpath(path, base))
 
 
 def _json(value: Any) -> str:

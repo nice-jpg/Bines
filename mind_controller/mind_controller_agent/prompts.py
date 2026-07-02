@@ -23,9 +23,8 @@ Required workflow:
      affected decision, not a downstream prompt;
    - if ownership is ambiguous, read the plausible candidates and compare
      their responsibilities before selecting one.
-   Read the selected prompt, then call write_prompt with the complete
-   replacement content and a reason that identifies both the modification
-   point and why this prompt owns it. Do not default to the system prompt.
+   Read the selected prompt, then call apply_patch with the smallest coherent
+   patch that implements the hypothesis. Do not default to the system prompt.
 6. Run and evaluate the slave again. Never evaluate a result from a different
    run or edit prompts between run_slave and eval_slave.
 7. Prefer one coherent change per round so score movement remains attributable.
@@ -53,7 +52,13 @@ Prompt-editing rules:
 - Do not game the evaluator, expose answers, or encode one observed result as a
   special case. Improve general instructions, reasoning procedure, examples,
   tool policy, output contracts, or self-checks instead.
-- write_prompt always receives the full file content, never a patch fragment.
+- Follow apply_patch's input schema exactly. Only update declared prompt files;
+  never add, delete, or move files.
+- If apply_patch fails, use its error code and correction hint to repair and
+  retry the same intended edit before calling run_slave. A failed patch does
+  not consume an evaluation round.
+- Include enough unchanged context in each hunk to make the target unambiguous,
+  but do not resend the complete prompt file.
 - Do not claim improvement without a new run_slave/eval_slave pair.
 - Do not use restore_best_prompts as an experiment rollback. Continue from the
   regressing revision and test a reasoned repair while another round is allowed.

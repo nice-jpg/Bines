@@ -9,6 +9,7 @@ import pytest
 from mind_controller_agent.contracts import SlaveDebugInfo
 from mind_controller_agent.provenance import commit_prompt_files
 from mind_controller_agent.runtime import (
+    APPLY_PATCH_FORMAT,
     CognitiveController,
     _prompt_catalog_entry,
     normalize_evaluation,
@@ -58,12 +59,31 @@ def make_controller(tmp_path: Path) -> tuple[CognitiveController, Path, FakeSlav
     return controller, prompt, slave
 
 
+def apply_prompt_patch(
+    controller: CognitiveController,
+    *,
+    old: str,
+    new: str,
+    path: str = "system.md",
+) -> dict:
+    return json.loads(
+        controller.apply_prompt_patch_tool(
+            f"""*** Begin Patch
+*** Update File: {path}
+@@
+-{old}
++{new}
+*** End Patch"""
+        )
+    )
+
+
 def test_run_eval_preserves_exact_result_and_tracks_best(tmp_path: Path) -> None:
     controller, prompt, slave = make_controller(tmp_path)
 
     run = json.loads(controller.run_slave_tool())
     score = json.loads(controller.eval_slave_tool(run["run_ref"]))
-    controller.write_prompt_tool(str(prompt), "improved", "test hypothesis")
+    apply_prompt_patch(controller, old="base", new="improved")
     run2 = json.loads(controller.run_slave_tool())
     score2 = json.loads(controller.eval_slave_tool(run2["run_ref"]))
 
@@ -111,14 +131,16 @@ def test_inspect_slave_exposes_prompt_scope_catalog(tmp_path: Path) -> None:
 
     assert inspection["prompt_catalog"] == [
         {
-            "path": str(tmp_path / "system.md"),
+            "path": "system.md",
             "display_path": "system.md",
+            "resolved_path": str(tmp_path / "system.md"),
             "scope_hint": (
                 "global or cross-cutting instructions; choose only when the rule "
                 "must govern multiple pages or the whole run"
             ),
         }
     ]
+    assert inspection["prompt_paths"] == ["system.md"]
 
 
 def test_prompt_catalog_uses_page_mechanism_relative_scope(tmp_path: Path) -> None:
@@ -134,18 +156,206 @@ def test_prompt_catalog_uses_page_mechanism_relative_scope(tmp_path: Path) -> No
 
     entry = _prompt_catalog_entry(page_prompt, tmp_path)
 
+    assert entry["path"] == "src/prompts/page_mechanism/meituan/美食/PAGE.md"
     assert entry["display_path"] == "src/prompts/page_mechanism/meituan/美食/PAGE.md"
+    assert entry["resolved_path"] == str(page_prompt)
     assert entry["scope_hint"].startswith("page-specific instructions for meituan/美食;")
+
+
+def test_read_prompt_returns_patch_ready_relative_path(tmp_path: Path) -> None:
+    controller, _, _ = make_controller(tmp_path)
+
+    result = json.loads(controller.read_prompt_tool(str(tmp_path / "system.md")))
+
+    assert result == {"path": "system.md", "content": "base"}
+
+
+def test_apply_patch_tool_updates_prompt_without_full_replacement(tmp_path: Path) -> None:
+    controller, prompt, _ = make_controller(tmp_path)
+    baseline = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(baseline["run_ref"])
+    tool = next(tool for tool in controller.build_tools() if tool.name == "apply_patch")
+    patch = """*** Begin Patch
+*** Update File: system.md
+@@
+-base
++improved
+*** End Patch"""
+
+    tool_output = tool.invoke(patch)
+    result = json.loads(tool_output[0]["output"])
+
+    assert result["revision"] == 1
+    assert [change["path"] for change in result["changes"]] == [str(prompt)]
+    assert prompt.read_text(encoding="utf-8") == "improved"
+    assert controller.changes[-1].reason == "apply_patch prompt update"
+
+
+def test_build_tools_exposes_freeform_apply_patch_grammar(tmp_path: Path) -> None:
+    controller, _, _ = make_controller(tmp_path)
+
+    tool = next(tool for tool in controller.build_tools() if tool.name == "apply_patch")
+
+    assert tool.metadata == {"type": "custom_tool", "format": APPLY_PATCH_FORMAT}
+    assert tool.args_schema is None
+    assert "FREEFORM" in tool.description
+    assert "without JSON" in tool.description
+
+
+def test_build_tools_falls_back_to_codex_json_input_argument(tmp_path: Path) -> None:
+    controller, prompt, _ = make_controller(tmp_path)
+    baseline = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(baseline["run_ref"])
+
+    tool = next(
+        tool
+        for tool in controller.build_tools(freeform_patch=False)
+        if tool.name == "apply_patch"
+    )
+
+    assert tool.metadata is None
+    assert tool.args_schema is not None
+    assert set(tool.get_input_schema().model_fields) == {"input"}
+    schema = tool.get_input_schema().model_json_schema()
+    assert schema["additionalProperties"] is False
+    assert "complete raw Update-only" in schema["properties"]["input"]["description"]
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "input": """*** Begin Patch
+*** Update File: system.md
+@@
+-base
++improved
+*** End Patch"""
+            }
+        )
+    )
+    assert result["revision"] == 1
+    assert prompt.read_text(encoding="utf-8") == "improved"
+
+
+def test_apply_patch_matches_context_like_codex(tmp_path: Path) -> None:
+    controller, prompt, _ = make_controller(tmp_path)
+    prompt.write_text("section:\n  “base”   \n", encoding="utf-8")
+    baseline = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(baseline["run_ref"])
+
+    controller.apply_prompt_patch_tool(
+        """*** Begin Patch
+*** Update File: system.md
+@@ section:
+-"base"
++"improved"
+*** End Patch"""
+    )
+
+    assert prompt.read_text(encoding="utf-8") == 'section:\n"improved"\n'
+
+
+def test_apply_patch_accepts_codex_lenient_heredoc_wrapper(tmp_path: Path) -> None:
+    controller, prompt, _ = make_controller(tmp_path)
+    baseline = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(baseline["run_ref"])
+
+    controller.apply_prompt_patch_tool(
+        """<<'EOF'
+*** Begin Patch
+*** Update File: system.md
+@@
+-base
++improved
+*** End Patch
+EOF"""
+    )
+
+    assert prompt.read_text(encoding="utf-8") == "improved"
+
+
+def test_apply_patch_validates_every_file_before_writing(tmp_path: Path) -> None:
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    first.write_text("first", encoding="utf-8")
+    second.write_text("second", encoding="utf-8")
+    _git(tmp_path, "init", "-q")
+    _git(tmp_path, "config", "user.name", "mind-controller-test")
+    _git(tmp_path, "config", "user.email", "mind-controller-test@example.invalid")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-qm", "initial prompts")
+    slave = FakeSlave(first)
+    controller = CognitiveController(
+        slave=slave,
+        debug_info=SlaveDebugInfo(
+            prompt_paths=(Path("first.md"), Path("second.md")),
+            prompt_structure="two prompts",
+            responsibility="test",
+            expected_outcome="test",
+            working_directory=tmp_path,
+        ),
+        max_rounds=3,
+        target_score=None,
+        stale_rounds=2,
+    )
+    baseline = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(baseline["run_ref"])
+
+    with pytest.raises(ValueError, match="context_not_found"):
+        controller.apply_prompt_patch_tool(
+            """*** Begin Patch
+*** Update File: first.md
+@@
+-first
++changed first
+*** Update File: second.md
+@@
+-stale second
++changed second
+*** End Patch"""
+        )
+
+    assert first.read_text(encoding="utf-8") == "first"
+    assert second.read_text(encoding="utf-8") == "second"
+    assert controller.changes == []
+    assert controller._revision == 0
+    assert controller._pending_prompt_paths == set()
+
+
+def test_apply_patch_rejects_non_prompt_and_file_lifecycle_changes(
+    tmp_path: Path,
+) -> None:
+    controller, _, _ = make_controller(tmp_path)
+    baseline = json.loads(controller.run_slave_tool())
+    controller.eval_slave_tool(baseline["run_ref"])
+    other = tmp_path / "other.md"
+    other.write_text("other", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not a declared prompt"):
+        controller.apply_prompt_patch_tool(
+            """*** Begin Patch
+*** Update File: other.md
+@@
+-other
++changed
+*** End Patch"""
+        )
+    with pytest.raises(ValueError, match="unsupported_operation"):
+        controller.apply_prompt_patch_tool(
+            """*** Begin Patch
+*** Add File: added.md
++content
+*** End Patch"""
+        )
 
 
 def test_restore_best_discards_regressing_prompt(tmp_path: Path) -> None:
     controller, prompt, _ = make_controller(tmp_path)
     run = json.loads(controller.run_slave_tool())
     controller.eval_slave_tool(run["run_ref"])
-    controller.write_prompt_tool(str(prompt), "much better", "increase useful detail")
+    apply_prompt_patch(controller, old="base", new="much better")
     run2 = json.loads(controller.run_slave_tool())
     controller.eval_slave_tool(run2["run_ref"])
-    controller.write_prompt_tool(str(prompt), "x", "bad experiment")
+    apply_prompt_patch(controller, old="much better", new="x")
     run3 = json.loads(controller.run_slave_tool())
     controller.eval_slave_tool(run3["run_ref"])
 
@@ -163,7 +373,7 @@ def test_regression_requires_repair_before_final_restore(tmp_path: Path) -> None
     controller, prompt, _ = make_controller(tmp_path)
     baseline_run = json.loads(controller.run_slave_tool())
     controller.eval_slave_tool(baseline_run["run_ref"])
-    controller.write_prompt_tool(str(prompt), "x", "test a shorter instruction")
+    apply_prompt_patch(controller, old="base", new="x")
     regressing_run = json.loads(controller.run_slave_tool())
     regressing_score = json.loads(
         controller.eval_slave_tool(regressing_run["run_ref"])
@@ -191,8 +401,13 @@ def test_cannot_edit_undeclared_file(tmp_path: Path) -> None:
     run = json.loads(controller.run_slave_tool())
     controller.eval_slave_tool(run["run_ref"])
 
-    with pytest.raises(ValueError, match="not a declared prompt"):
-        controller.write_prompt_tool(str(other), "changed", "invalid")
+    with pytest.raises(ValueError, match="absolute_path"):
+        apply_prompt_patch(
+            controller,
+            path=str(other),
+            old="code",
+            new="changed",
+        )
 
 
 def test_normalize_evaluation_supports_int_and_dimensions() -> None:
@@ -240,7 +455,7 @@ def test_prompt_commit_does_not_include_or_unstage_other_files(tmp_path: Path) -
     controller.eval_slave_tool(run["run_ref"])
     other.write_text("staged user change", encoding="utf-8")
     _git(tmp_path, "add", "other.txt")
-    controller.write_prompt_tool(str(prompt), "prompt revision", "focused prompt change")
+    apply_prompt_patch(controller, old="base", new="prompt revision")
 
     next_run = json.loads(controller.run_slave_tool())
 

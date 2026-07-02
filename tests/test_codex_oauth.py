@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langchain_openai import custom_tool
 
 
 def sample_lookup(city: str) -> str:
@@ -53,6 +54,35 @@ class CodexOAuthModelTests(unittest.TestCase):
                 },
                 "strict": True,
             },
+        )
+
+    def test_bind_tools_preserves_custom_tool_grammar(self) -> None:
+        patch_format = {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": 'start: "patch"',
+        }
+
+        @custom_tool(format=patch_format)
+        def apply_patch(patch: str) -> str:
+            """Apply a patch."""
+
+            return patch
+
+        model = OpenAICodexModel(model="test-model")
+
+        bound = model.bind_tools([apply_patch])
+
+        self.assertEqual(
+            bound.kwargs["tools"],
+            [
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "Apply a patch.",
+                    "format": patch_format,
+                }
+            ],
         )
 
     def test_build_request_includes_bound_tools_and_tool_choice(self) -> None:
@@ -167,6 +197,68 @@ class CodexOAuthModelTests(unittest.TestCase):
                 "type": "function_call_output",
                 "call_id": "call_1",
                 "output": "result text",
+            },
+        )
+
+    def test_custom_tool_call_and_output_round_trip(self) -> None:
+        model = OpenAICodexModel(model="test-model", store_responses=False)
+        message = model._completed_message(
+            {
+                "response": {
+                    "output": [
+                        {
+                            "type": "custom_tool_call",
+                            "call_id": "patch_1",
+                            "name": "apply_patch",
+                            "input": "*** Begin Patch\\n*** End Patch",
+                        }
+                    ]
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="Patch the prompt."),
+                message,
+                ToolMessage(
+                    content=[
+                        {
+                            "type": "custom_tool_call_output",
+                            "output": '{"revision": 1}',
+                        }
+                    ],
+                    tool_call_id="patch_1",
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            message.tool_calls,
+            [
+                {
+                    "name": "apply_patch",
+                    "args": {"__arg1": "*** Begin Patch\\n*** End Patch"},
+                    "id": "patch_1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        self.assertEqual(
+            request["input"][1],
+            {
+                "type": "custom_tool_call",
+                "call_id": "patch_1",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\\n*** End Patch",
+            },
+        )
+        self.assertEqual(
+            request["input"][2],
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "patch_1",
+                "output": '{"revision": 1}',
             },
         )
 

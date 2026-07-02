@@ -83,7 +83,9 @@ def build_master_agent(model: Any, controller: CognitiveController):
 
     return create_agent(
         model=model,
-        tools=controller.build_tools(),
+        tools=controller.build_tools(
+            freeform_patch=_supports_freeform_patch_tool(model)
+        ),
         system_prompt=MASTER_SYSTEM_PROMPT,
         name="cognitive_master",
         middleware=[
@@ -91,6 +93,19 @@ def build_master_agent(model: Any, controller: CognitiveController):
             ToolErrorMiddleware()
         ],
     )
+
+
+def _supports_freeform_patch_tool(model: Any) -> bool:
+    """Return whether the model endpoint supports Responses custom tools."""
+
+    if getattr(model, "_llm_type", None) == "codex-websocket":
+        return True
+    if getattr(model, "use_responses_api", None) is False:
+        return False
+    base_url = str(getattr(model, "openai_api_base", "") or "").lower()
+    if base_url and "api.openai.com" not in base_url:
+        return False
+    return True
 
 
 def _build_default_model(model_name: str) -> Any:

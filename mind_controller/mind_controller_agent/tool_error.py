@@ -51,15 +51,20 @@ def make_tool_error_message(request: Any, error: Exception) -> ToolMessage:
         f"Tool '{tool_name}' failed with {error_type}: {error_message}\n"
         "Review the failure, correct the tool arguments or choose another action, and continue."
     )
+    error_metadata = {
+        "error_type": error_type,
+        "tool_name": tool_name,
+    }
+    for attribute in ("error_code", "line", "path"):
+        value = getattr(error, attribute, None)
+        if value is not None:
+            error_metadata[attribute] = value
     return ToolMessage(
         content=content,
         tool_call_id=tool_call_id,
         name=tool_name,
         status="error",
-        additional_kwargs={
-            "error_type": error_type,
-            "tool_name": tool_name,
-        },
+        additional_kwargs=error_metadata,
     )
 
 

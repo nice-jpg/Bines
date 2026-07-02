@@ -413,13 +413,17 @@ class OpenAICodexModel(BaseChatModel):
                 )
                 continue
             if isinstance(message, ToolMessage):
-                input_messages.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": str(getattr(message, "tool_call_id", "")),
-                        "output": self._message_text(message),
-                    }
-                )
+                custom_output = _custom_tool_output(message)
+                if custom_output is not None:
+                    input_messages.append(custom_output)
+                else:
+                    input_messages.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": str(getattr(message, "tool_call_id", "")),
+                            "output": self._message_text(message),
+                        }
+                    )
                 continue
             if isinstance(message, AIMessage):
                 for reasoning_item in (
@@ -436,8 +440,15 @@ class OpenAICodexModel(BaseChatModel):
                             "content": [{"type": "output_text", "text": content}],
                         }
                     )
+                custom_call_ids = set(
+                    message.additional_kwargs.get("custom_tool_call_ids", []) or []
+                )
                 for tool_call in getattr(message, "tool_calls", []) or []:
-                    input_messages.append(_to_responses_function_call(tool_call))
+                    call_id = _tool_call_id(tool_call)
+                    if call_id in custom_call_ids:
+                        input_messages.append(_to_responses_custom_tool_call(tool_call))
+                    else:
+                        input_messages.append(_to_responses_function_call(tool_call))
                 continue
             role = "assistant" if isinstance(message, AIMessage) else "user"
             input_messages.append(
@@ -622,6 +633,7 @@ def _message_from_response_items(
     texts: list[str] = []
     tool_calls: list[dict[str, Any]] = []
     reasoning_items: list[dict[str, Any]] = []
+    custom_tool_call_ids: list[str] = []
     for item in items:
         if not isinstance(item, Mapping):
             continue
@@ -633,6 +645,11 @@ def _message_from_response_items(
         if item.get("type") == "function_call":
             tool_calls.append(_parse_responses_function_call(item))
             continue
+        if item.get("type") == "custom_tool_call":
+            tool_call = _parse_responses_custom_tool_call(item)
+            tool_calls.append(tool_call)
+            custom_tool_call_ids.append(tool_call["id"])
+            continue
         texts.extend(_response_item_texts(item))
     metadata = _response_metadata(
         usage,
@@ -642,9 +659,14 @@ def _message_from_response_items(
     return AIMessage(
         content="".join(texts) or fallback_text,
         tool_calls=tool_calls,
-        additional_kwargs={"reasoning_items": reasoning_items}
-        if reasoning_items
-        else {},
+        additional_kwargs={
+            **({"reasoning_items": reasoning_items} if reasoning_items else {}),
+            **(
+                {"custom_tool_call_ids": custom_tool_call_ids}
+                if custom_tool_call_ids
+                else {}
+            ),
+        },
         response_metadata=metadata,
         usage_metadata=_usage_metadata(usage),
     )
@@ -806,6 +828,16 @@ def _normalize_tool_choice(tool_choice: builtins.dict[str, Any] | str | bool) ->
     return "auto"
 
 
+def _tool_call_id(tool_call: Any) -> str:
+    if isinstance(tool_call, Mapping):
+        return str(tool_call.get("id") or tool_call.get("call_id") or "")
+    return str(
+        getattr(tool_call, "id", None)
+        or getattr(tool_call, "call_id", None)
+        or ""
+    )
+
+
 def _to_responses_function_call(tool_call: Any) -> dict[str, Any]:
     if isinstance(tool_call, Mapping):
         call_id = tool_call.get("id") or tool_call.get("call_id")
@@ -823,6 +855,24 @@ def _to_responses_function_call(tool_call: Any) -> dict[str, Any]:
     }
 
 
+def _to_responses_custom_tool_call(tool_call: Any) -> dict[str, Any]:
+    if isinstance(tool_call, Mapping):
+        call_id = tool_call.get("id") or tool_call.get("call_id")
+        name = tool_call.get("name")
+        args = tool_call.get("args") or {}
+    else:
+        call_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None)
+        name = getattr(tool_call, "name", None)
+        args = getattr(tool_call, "args", None) or {}
+    tool_input = args.get("__arg1", "") if isinstance(args, Mapping) else args
+    return {
+        "type": "custom_tool_call",
+        "call_id": str(call_id or uuid4()),
+        "name": str(name or ""),
+        "input": str(tool_input),
+    }
+
+
 def _parse_responses_function_call(item: Mapping[str, Any]) -> dict[str, Any]:
     arguments = item.get("arguments") or {}
     if isinstance(arguments, str):
@@ -837,6 +887,28 @@ def _parse_responses_function_call(item: Mapping[str, Any]) -> dict[str, Any]:
         "args": arguments,
         "id": str(item.get("call_id") or item.get("id") or uuid4()),
     }
+
+
+def _parse_responses_custom_tool_call(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "name": str(item.get("name", "")),
+        "args": {"__arg1": str(item.get("input", ""))},
+        "id": str(item.get("call_id") or item.get("id") or uuid4()),
+    }
+
+
+def _custom_tool_output(message: ToolMessage) -> dict[str, Any] | None:
+    content = message.content
+    if not isinstance(content, list):
+        return None
+    for block in content:
+        if isinstance(block, Mapping) and block.get("type") == "custom_tool_call_output":
+            return {
+                "type": "custom_tool_call_output",
+                "call_id": str(getattr(message, "tool_call_id", "")),
+                "output": str(block.get("output") or ""),
+            }
+    return None
 
 
 def create_chat_model(
