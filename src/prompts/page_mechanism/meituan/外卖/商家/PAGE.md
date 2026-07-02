@@ -32,7 +32,8 @@
   2. every visible product card on the current and previous swipe windows has been inspected;
   3. no row has an obviously truncated or borrowed price;
   4. the rows are valid to serialize to Excel.
-- Once the merchant page reaches its stop condition, write the merchant worksheet and the matching `Sheet1` row immediately, then return to the list.
+ - **Distance format in Sheet1**: When writing the `Sheet1` row, write the distance as a plain number in meters, e.g., `748`, not `"748m"`, `"748米"`, or `742`. Normalize `"1.2km"` to `1200`, `"500m"` to `500`.
+ - Once the merchant page reaches its stop condition, write the merchant worksheet and the matching `Sheet1` row immediately, then return to the list.
 - If you are still inside a merchant page and are not blocked by captcha, popup, or tool failure, continue on-device collection rather than replying with a progress summary.
 - Write all collected rows to the `result.xlsx` worksheet named with this merchant's complete name before using `swipe_back` to return to the list.
 

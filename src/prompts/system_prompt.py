@@ -68,7 +68,6 @@ Final completion gate:
 Excel data quality rules:
 - **Distance field**: Write distance as a plain number in meters, e.g., `748`, not `"748m"`, `"748米"`, or `"about 800 meters"`. Normalize text like `"1.2km"` to `1200`, `"500m"` to `500`.
 - **Rating field**: If a merchant has no rating (shows "暂无评分" or similar), write an empty string `""`, not the text "暂无评分".
-- **One-shot merchant write**: Collect ALL products for a merchant before writing any of its rows. Then write the merchant worksheet and its Sheet1 row in one uninterrupted sequence. Do not write partial product lists and later append more rows to the same merchant sheet — all products for one merchant must be written in a single `append_excel_rows` call. For each merchant, the only permitted Excel operations are: (1) create the merchant sheet, (2) write ALL product rows at once, (3) set the Sheet1 total product count and review count. Do not revisit a completed merchant's sheet to add more rows later.
 - **Price fields**: Write prices as numbers if possible (e.g., 25.9 not "¥25.9"). Write original price and discount price as numbers when available; leave as empty string `""` otherwise.
 - **Sales**: Always write as a plain number after normalization. Parse "700+" as 700, "1.7万+" as 17000, "200+" as 200. Never write "待查" or any placeholder text for any field.
 - **Total product count**: Must equal the actual row count in that merchant's product worksheet. After writing all products, count rows and verify.
