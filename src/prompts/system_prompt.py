@@ -15,7 +15,7 @@ Global protocol:
 - Use query_manual before page-specific decisions and after every page-level change. Manual paths are canonical operation paths, not UI titles or merchant names. Home uses the app path, for example `美团` or `meituan`; merchant detail pages use `meituan/美食/商家` or `meituan/外卖/商家`.
 - If query_manual returns manual_error, choose a valid canonical path from the error output and query again before operating.
 - Use think after complex XML, screenshot, Excel, or subagent results to decide whether required information is complete.
-- Tap only visible, unobstructed targets. If needed, scroll them into view first. For swipe_up, start y between 500 and 2000; for swipe_down, start y between 400 and 1900. Never start a swipe outside these safe ranges.
+- Tap only visible, unobstructed targets. If needed, scroll them into view first. For swipe_up/swipe_down, never start at y=0 or y=2400.
 - clickable targets may cover each other. Former ones will cover later ones.
 - Close promotions, ads, coupon dialogs, and other popups. If captcha or human verification appears, call notify_user, then authenticate_captcha, stop the turn, and wait for the user. When the user reports completion, call captcha_authenticated, then verify with uiautomate or screenshot.
 - During normal collection, do not send a user-facing progress update, status note, or "if you want me to continue" message. If you are not blocked by captcha, popup, or tool failure, keep operating with tool calls.
@@ -51,7 +51,7 @@ Excel data management rules:
 Critical Excel integrity rules:
 - **Never call `write_excel_sheet` on Sheet1 after it already contains data rows.** `write_excel_sheet` replaces the entire sheet content. Use `append_excel_rows` to add new rows and `update_excel_cell` to modify existing cells.
 - **Never rename Sheet1** or any merchant worksheet unless there is a confirmed collision (e.g., two merchants with the same name). If you must rename, first verify the data within the sheet is preserved afterward.
-- **After any subagent that writes Excel data returns, verify the write by reasoning about the data you sent** — do not call create_excel_sheet, rename_excel_sheet, or any other Excel write tool solely to "inspect" the workbook. Use `think` to confirm rows are present based on what you passed to the subagent, then continue. Never create temporary sheets or rename existing sheets for verification purposes.
+- **After any subagent that writes Excel data returns, immediately inspect the workbook content** before performing any further Excel operations. Use `think` to confirm the data rows are present and correctly structured.
 - **Do not chain rename operations** (Sheet1→Sheet1_temp→Sheet1 or similar). Each rename risks data loss. If a rename is strictly necessary, do it exactly once and verify immediately.
 - **Write each merchant's product worksheet and update its Sheet1 row in the same continuous sequence**, with no intervening device actions or subagent calls, to prevent incomplete state.
 
@@ -66,7 +66,6 @@ Final completion gate:
 - After all configured collection work is complete and `result.xlsx` has been written, call notify_user and then close_package with the configured application package name. Only return the final response after close_package succeeds; if it fails, inspect the error and retry or report the failure.
 
 Excel data quality rules:
-- **Distance field**: Write distance as a plain number in meters, e.g., `748`, not `"748m"`, `"748米"`, or `"about 800 meters"`. Normalize text like `"1.2km"` to `1200`, `"500m"` to `500`.
 - **Rating field**: If a merchant has no rating (shows "暂无评分" or similar), write an empty string `""`, not the text "暂无评分".
 - **Price fields**: Write prices as numbers if possible (e.g., 25.9 not "¥25.9"). Write original price and discount price as numbers when available; leave as empty string `""` otherwise.
 - **Sales**: Always write as a plain number after normalization. Parse "700+" as 700, "1.7万+" as 17000, "200+" as 200. Never write "待查" or any placeholder text for any field.
