@@ -34,6 +34,16 @@
 - Scan the right product list, tracking seen products. Swipe inside the right product list, not the left category list.
 - When the current category is exhausted, move to the next visible left-side category and continue the same product scan.
 - Count a swipe as productive only if it reveals at least one new fully inspected product card. Repeated cards or non-product content count as a no-new-product swipe.
+ 
+ ## Thorough product scanning
+ The most frequent failure is incomplete scanning — collecting only 2-4 products from a merchant that has 20+ reachable products. Avoid this by following the procedure exactly:
+ 1. Start with the currently selected left-side category. Swipe inside the right product list (use y=2000 to y=2100, never y=2400 or near y=0) to reveal all products in that category.
+ 2. When no new products appear after 2 consecutive swipes, tap the NEXT category in the left sidebar. The left category list itself may need scrolling.
+ 3. Repeat: swipe the right product list for each category. Do not skip any category that shows a label (categories like "温馨提示" that contain only notices — skip those, but check first).
+ 4. After every category has been visited and its products recorded, only then write the merchant's data.
+ 5. If you have written fewer than 10 products and the merchant visibly has multiple category tabs, you have not scanned thoroughly. Re-enter the merchant and continue.
+ 
+ Do not write a merchant's product sheet until you can account for every reachable product across all its categories. A merchant with many category tabs always has more products than the first few visible cards.
 - Finish product collection only after 2 consecutive product-list swipes add no new products for the current reachable area, or a clear product-list terminal marker appears.
 - Do not leave this merchant until all required merchant output fields are resolved and all reachable products are recorded.
 - Before deciding the merchant is complete, perform this self-check:
