@@ -20,6 +20,14 @@
 - Verify this is the expected merchant detail page. If it is an activity, coupon, product, ad, or unrelated page, return to the list.
 - Collect only the merchant fields needed by the workbook contract: name, distance, rating, and total review count. Do not spend extra swipes chasing merchant metrics that are not written to Excel, such as merchant sales or positive-review counts.
 - Collect every reachable product: product name, price, original price, discount price, and monthly sales.
+ 
+ ## Non-product item exclusion
+ Product collection must include only real purchasable food, drink, or goods items. Skip items that are purely informational — instructions, warnings, reminders, policies, or notices that are not actual products. Examples of items to exclude:
+ - Instruction or warning notices: "默认有一份免费餐具...", "本身带打包盒，慎拍", "一人节约，全家光荣", "光盘行动，从我做起", "配送说明", "制作说明", "给个满意呗", "饭量大的朋友可以备注...", "小店诚信经营..."
+ - Placeholder items with price 0 and no meaningful sales that function as notices.
+ - Items whose names describe a policy, instruction, or reminder rather than a food or drink.
+ - Decorative or meta items labeled as "温馨提示" or containing only delivery/policy text.
+ To decide: read the item name. If it describes a food, drink, bundle, or condiment and has a price >0 or genuine sales, include it. If the name is purely a notice/instruction and price is 0 or missing, skip it. When uncertain, inspect the card fully before deciding.
 - Use product sales = `0` only when the product's sales value is truly missing after inspection.
 - Do not use `0` as a fallback for missing price. If price is not yet visible, re-center the card or inspect again; leave price blank only if the page still does not expose it.
 - If a visible product row is cut off, missing a price, or missing a sales value because the card is only partially on screen, re-center it and inspect again before deciding the row is complete.
