@@ -140,12 +140,13 @@ class ContentProvider:
             workbook = _load_existing_workbook(path)
             try:
                 worksheet = _get_sheet(workbook, sheet_name)
+                old_value = worksheet[cell].value
                 worksheet[cell] = value
                 _save_workbook(workbook, path)
             except Exception:
                 workbook.close()
                 raise
-        return str(path)
+        return f'{str(path)}:{sheet_name}:{cell} has been updated from "{old_value}" to "{value}"'
 
     def _resolve_excel_path(self, relative_path: str) -> Path:
         normalized = posixpath.normpath(str(relative_path or "").replace("\\", "/")).lstrip("/")

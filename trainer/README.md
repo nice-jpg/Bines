@@ -21,6 +21,9 @@ If captcha HITL interrupts a task, `run()` keeps the same runtime and session
 alive, waits for the exact input `done`, and calls `resume_turn()` with the
 standard `respond` resume path owned by `AgentRuntime`. It repeats this process
 for consecutive interruptions and returns only after the task is complete.
+When called from a master tool node, the adapter invokes the slave in a detached
+Python context so LangChain does not classify it as a nested subgraph and bubble
+its `GraphInterrupt` into the master workflow.
 Non-interactive callers must inject a blocking input source:
 
 ```python

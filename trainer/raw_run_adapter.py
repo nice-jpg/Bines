@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import sys
 from collections.abc import Callable, Mapping, Sequence
+from contextvars import Context
 from dataclasses import is_dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -81,7 +82,8 @@ class RawRunSlave:
             tools=list(self._tool_factory(notifier)),
             name="main",
         )
-        result = runtime.run_turn(
+        result = _call_in_detached_context(
+            runtime.run_turn,
             [{"role": "user", "content": self.task_message}],
             session_id=self.session_id,
             max_iterations=self.max_iterations,
@@ -149,7 +151,8 @@ class RawRunSlave:
             user_input = str(self._human_input_provider(result)).strip()
             if user_input != CAPTCHA_RESUME_TEXT:
                 continue
-            result = runtime.resume_turn(
+            result = _call_in_detached_context(
+                runtime.resume_turn,
                 session_id=self.session_id,
                 user_input=user_input,
                 max_iterations=self.max_iterations,
@@ -231,7 +234,7 @@ def _evaluate_raw_run(result: RunResult) -> int | dict[str, Any]:
 
 
 def _build_raw_model() -> Any:
-    return _raw_run_module().build_codex_model()
+    return _raw_run_module().build_model()
 
 
 def _build_plain_notifier() -> Callable[[str], None]:
@@ -268,6 +271,17 @@ def _read_human_input(_result: RunResult) -> str:
             "HITL input is unavailable; provide RawRunSlave(human_input_provider=...) "
             "for non-interactive execution"
         ) from exc
+
+
+def _call_in_detached_context(
+    function: Callable[..., RunResult],
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> RunResult:
+    """Run an independent slave without inheriting a parent graph task."""
+
+    return Context().run(function, *args, **kwargs)
 
 
 # Importable instance for:

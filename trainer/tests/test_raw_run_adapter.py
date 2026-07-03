@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -7,7 +8,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.messages.tool import tool_call
 
-from trainer.raw_run_adapter import APP_PROBE_MESSAGE, RawRunSlave
+from trainer.raw_run_adapter import APP_PROBE_MESSAGE, PAGE_MECHANISM_DIR, RawRunSlave
 
 
 @dataclass
@@ -97,7 +98,9 @@ def test_debug_info_declares_existing_prompt_files() -> None:
     assert info.prompt_paths
     assert all(path.is_file() for path in info.prompt_paths)
     assert any(path.name == "system_prompt.py" for path in info.prompt_paths)
-    assert sum(path.name == "PAGE.md" for path in info.prompt_paths) == 5
+    assert {
+        path for path in info.prompt_paths if path.name == "PAGE.md"
+    } == set(PAGE_MECHANISM_DIR.rglob("PAGE.md"))
     assert info.working_directory is not None
 
 
@@ -131,6 +134,51 @@ def test_adapter_resumes_repeated_hitl_interrupts_before_returning() -> None:
         {"session_id": "main", "user_input": "done", "max_iterations": 1000},
         {"session_id": "main", "user_input": "done", "max_iterations": 1000},
     ]
+
+
+def test_adapter_detaches_hitl_run_and_resume_from_parent_graph_context() -> None:
+    parent_graph_marker: ContextVar[str | None] = ContextVar(
+        "parent_graph_marker",
+        default=None,
+    )
+
+    class ContextAwareRuntime(FakeRuntime):
+        observed_contexts: list[str | None] = []
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.pending = False
+
+        def run_turn(self, messages, **kwargs: Any) -> FakeResult:
+            type(self).observed_contexts.append(parent_graph_marker.get())
+            self.pending = True
+            return FakeResult(output="", interrupted=True)
+
+        def has_pending_interrupt(self, session_id: str) -> bool:
+            return self.pending
+
+        def resume_turn(self, **kwargs: Any) -> FakeResult:
+            type(self).observed_contexts.append(parent_graph_marker.get())
+            self.pending = False
+            return FakeResult(output="complete")
+
+    ContextAwareRuntime.observed_contexts = []
+    slave = RawRunSlave(
+        runtime_factory=ContextAwareRuntime,
+        model_factory=lambda: "model",
+        tool_factory=lambda notifier: ["tool"],
+        notifier_factory=lambda: lambda text: None,
+        human_input_provider=lambda result: "done",
+        print_result=False,
+    )
+    token = parent_graph_marker.set("master-tool-node")
+    try:
+        result = slave.run()
+    finally:
+        parent_graph_marker.reset(token)
+
+    assert result.output == "complete"
+    assert ContextAwareRuntime.observed_contexts == [None, None]
 
 
 def test_adapter_rejects_interrupted_result_without_pending_checkpoint() -> None:
