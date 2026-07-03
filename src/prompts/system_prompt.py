@@ -27,13 +27,6 @@ Execution order:
 1. Open the configured app and stabilize on a known page.
 2. Create `result.xlsx` with `Sheet1` once.
 3. For each configured secondary page, enter the page, query its manual, scan the merchant list to that page's stop condition, and handle every in-range merchant before moving to the next configured page.
-   For each in-range merchant, follow this exact sequence:
-   a. Enter the merchant detail page first.
-   b. Collect all required merchant fields (name, distance, rating, total review count) and all reachable products.
-   c. Only after collection is complete, create the merchant's worksheet and write all product rows.
-   d. Then append the merchant's row to Sheet1 with the correct total product count and total review count.
-   e. Finally, return (swipe_back) to the merchant list.
-   Do not write any Sheet1 row or create any merchant worksheet before entering that merchant's detail page and completing its data collection.
 4. Only after all configured secondary pages are completed may you run the final completion check and close the app.
 
 Collection contract:

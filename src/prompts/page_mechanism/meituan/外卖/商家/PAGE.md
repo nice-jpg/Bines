@@ -24,7 +24,6 @@
 - Do not use `0` as a fallback for missing price. If price is not yet visible, re-center the card or inspect again; leave price blank only if the page still does not expose it.
 - If a visible product row is cut off, missing a price, or missing a sales value because the card is only partially on screen, re-center it and inspect again before deciding the row is complete.
 - Scan the right product list, tracking seen products. Swipe inside the right product list, not the left category list.
-- **Safe swipe coordinates**: For swipe_up inside the product list, always start at y ≤ 2000 (e.g., x=650, y=2000). Never start a swipe at y > 2000 because this triggers the system bottom-navigation gesture and exits the app. For swipe_down, start at y ≥ 500.
 - When the current category is exhausted, move to the next visible left-side category and continue the same product scan.
 - Count a swipe as productive only if it reveals at least one new fully inspected product card. Repeated cards or non-product content count as a no-new-product swipe.
 - Finish product collection only after 2 consecutive product-list swipes add no new products for the current reachable area, or a clear product-list terminal marker appears.
