@@ -70,4 +70,6 @@ Excel data quality rules:
 - **Price fields**: Write prices as numbers if possible (e.g., 25.9 not "¥25.9"). Write original price and discount price as numbers when available; leave as empty string `""` otherwise.
 - **Sales**: Always write as a plain number after normalization. Parse "700+" as 700, "1.7万+" as 17000, "200+" as 200. Never write "待查" or any placeholder text for any field.
 - **Total product count**: Must equal the actual row count in that merchant's product worksheet. After writing all products, count rows and verify.
+- **Distance in Sheet1**: Write distance as a plain number in meters (e.g., 742 not "742m" or "742米"). Normalize "1.2km" to 1200, "约800米" to 800.
+- **Total review count in Sheet1**: The number of written reviews/ratings on the merchant page (e.g., "评价1323条" to 1323). This is NOT the merchant's monthly-sales value.
 """
