@@ -23,14 +23,6 @@
 - Enter merchants within range. Enter merchants with missing distance if distance may be recovered on the detail page.
 - Swipe within the merchant list after all visible candidates are handled. Do not stop because one screen has no in-range or new merchants.
 - Stop only after 2 consecutive list swipes add no new merchants, or a clear no-more/bottom marker appears.
- 
- ## Post-recovery re-scan rule
- If the app is closed and re-opened, or if you return to this page after a navigation disruption (swipe_back chain, app crash, captcha), the merchant list may have reshuffled. In that case, re-scan the full list from the first visible merchant as if starting fresh:
- 1. Read the visible merchant cards from top to bottom.
- 2. Process every in-range merchant, including ones you may have processed before on a previous visit.
- 3. Swipe down (swipe_up) to scroll through the entire list. Do not stop after finding a few familiar merchants.
- 4. Only conclude the list is exhausted after 2 consecutive swipes add no new in-range candidates AND you have scrolled far enough to see the list recycle or hit a terminal marker.
- Do not assume a prior scan is still valid after a restart or navigation disruption.
 
 ## Merchant Card Click Logic
 - Merchant cards have multiple tap zones. To enter the merchant, prefer the icon, avatar, or title.
