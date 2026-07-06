@@ -104,7 +104,9 @@ def test_debug_info_declares_existing_prompt_files() -> None:
     assert info.working_directory is not None
 
 
-def test_adapter_resumes_repeated_hitl_interrupts_before_returning() -> None:
+def test_adapter_resumes_repeated_hitl_interrupts_before_returning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     InterruptingRuntime.resume_calls = []
     inputs = iter(["not-yet", "done", "done"])
     evaluated: list[FakeResult] = []
@@ -120,7 +122,7 @@ def test_adapter_resumes_repeated_hitl_interrupts_before_returning() -> None:
         tool_factory=lambda notifier: ["tool"],
         notifier_factory=lambda: lambda text: None,
         human_input_provider=lambda result: next(inputs),
-        print_result=False,
+        print_result=True,
     )
 
     result = slave.run()
@@ -134,6 +136,36 @@ def test_adapter_resumes_repeated_hitl_interrupts_before_returning() -> None:
         {"session_id": "main", "user_input": "done", "max_iterations": 1000},
         {"session_id": "main", "user_input": "done", "max_iterations": 1000},
     ]
+    assert capsys.readouterr().out.splitlines() == [
+        "[HITL] HITL input 'not-yet' was ignored; enter 'done' after completing the captcha.",
+        "[HITL] HITL input accepted; resuming the slave agent...",
+        "[HITL] The slave agent reached another HITL interrupt; complete it and enter 'done' again.",
+        "[HITL] HITL input accepted; resuming the slave agent...",
+        "[HITL] The slave agent resumed successfully.",
+    ]
+
+
+def test_adapter_can_suppress_hitl_status_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class OneInterruptRuntime(InterruptingRuntime):
+        def resume_turn(self, **kwargs: Any) -> FakeResult:
+            self.pending = False
+            return FakeResult(output="complete")
+
+    slave = RawRunSlave(
+        runtime_factory=OneInterruptRuntime,
+        model_factory=lambda: "model",
+        tool_factory=lambda notifier: ["tool"],
+        notifier_factory=lambda: lambda text: None,
+        human_input_provider=lambda result: "done",
+        print_result=False,
+    )
+
+    result = slave.run()
+
+    assert result.output == "complete"
+    assert capsys.readouterr().out == ""
 
 
 def test_adapter_detaches_hitl_run_and_resume_from_parent_graph_context() -> None:
