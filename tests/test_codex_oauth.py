@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex.codex_oauth import OpenAICodexModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langchain_openai import custom_tool
 
 
 def sample_lookup(city: str) -> str:
@@ -53,8 +56,41 @@ class CodexOAuthModelTests(unittest.TestCase):
             },
         )
 
-    def test_build_request_includes_bound_tools_and_tool_choice(self) -> None:
+    def test_bind_tools_preserves_custom_tool_grammar(self) -> None:
+        patch_format = {
+            "type": "grammar",
+            "syntax": "lark",
+            "definition": 'start: "patch"',
+        }
+
+        @custom_tool(format=patch_format)
+        def apply_patch(patch: str) -> str:
+            """Apply a patch."""
+
+            return patch
+
         model = OpenAICodexModel(model="test-model")
+
+        bound = model.bind_tools([apply_patch])
+
+        self.assertEqual(
+            bound.kwargs["tools"],
+            [
+                {
+                    "type": "custom",
+                    "name": "apply_patch",
+                    "description": "Apply a patch.",
+                    "format": patch_format,
+                }
+            ],
+        )
+
+    def test_build_request_includes_bound_tools_and_tool_choice(self) -> None:
+        model = OpenAICodexModel(
+            model="test-model",
+            prompt_cache_key="cache-key",
+            reasoning_effort="high",
+        )
         request = model._build_request(
             [HumanMessage(content="Use the tool.")],
             tools=[
@@ -73,6 +109,59 @@ class CodexOAuthModelTests(unittest.TestCase):
         self.assertEqual(request["tools"][0]["name"], "sample_lookup")
         self.assertEqual(request["tool_choice"], {"type": "function", "name": "sample_lookup"})
         self.assertFalse(request["parallel_tool_calls"])
+        self.assertEqual(request["prompt_cache_key"], "cache-key")
+        self.assertEqual(request["reasoning"], {"effort": "high", "summary": "detailed"})
+        self.assertEqual(request["include"], ["reasoning.encrypted_content"])
+        self.assertTrue(request["store"])
+        self.assertNotIn("previous_response_id", request)
+        self.assertNotIn("stream", request)
+
+    def test_dynamic_system_message_stays_at_end_of_input(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+
+        request = model._build_request(
+            [
+                SystemMessage(content="stable system prompt"),
+                HumanMessage(content="conversation history"),
+                SystemMessage(content="dynamic trace"),
+            ]
+        )
+
+        self.assertEqual(
+            request["instructions"],
+            "You are a helpful assistant.\n\nstable system prompt",
+        )
+        self.assertEqual(
+            request["input"],
+            [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "conversation history"}],
+                },
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "dynamic trace"}],
+                },
+            ],
+        )
+
+    def test_prompt_cache_key_is_stable_per_model_instance(self) -> None:
+        first_model = OpenAICodexModel(model="test-model")
+        second_model = OpenAICodexModel(model="test-model")
+
+        first_request = first_model._build_request([HumanMessage(content="first")])
+        second_request = first_model._build_request([HumanMessage(content="second")])
+
+        self.assertEqual(
+            first_request["prompt_cache_key"],
+            second_request["prompt_cache_key"],
+        )
+        self.assertNotEqual(
+            first_request["prompt_cache_key"],
+            second_model.prompt_cache_key,
+        )
 
     def test_build_request_serializes_tool_call_history(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -111,6 +200,203 @@ class CodexOAuthModelTests(unittest.TestCase):
             },
         )
 
+    def test_custom_tool_call_and_output_round_trip(self) -> None:
+        model = OpenAICodexModel(model="test-model", store_responses=False)
+        message = model._completed_message(
+            {
+                "response": {
+                    "output": [
+                        {
+                            "type": "custom_tool_call",
+                            "call_id": "patch_1",
+                            "name": "apply_patch",
+                            "input": "*** Begin Patch\\n*** End Patch",
+                        }
+                    ]
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="Patch the prompt."),
+                message,
+                ToolMessage(
+                    content=[
+                        {
+                            "type": "custom_tool_call_output",
+                            "output": '{"revision": 1}',
+                        }
+                    ],
+                    tool_call_id="patch_1",
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            message.tool_calls,
+            [
+                {
+                    "name": "apply_patch",
+                    "args": {"__arg1": "*** Begin Patch\\n*** End Patch"},
+                    "id": "patch_1",
+                    "type": "tool_call",
+                }
+            ],
+        )
+        self.assertEqual(
+            request["input"][1],
+            {
+                "type": "custom_tool_call",
+                "call_id": "patch_1",
+                "name": "apply_patch",
+                "input": "*** Begin Patch\\n*** End Patch",
+            },
+        )
+        self.assertEqual(
+            request["input"][2],
+            {
+                "type": "custom_tool_call_output",
+                "call_id": "patch_1",
+                "output": '{"revision": 1}',
+            },
+        )
+
+    def test_build_request_chains_from_latest_response_with_only_new_input(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        previous = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_first",
+                    "store": True,
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "first answer"}],
+                        }
+                    ],
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                SystemMessage(content="stable system prompt"),
+                HumanMessage(content="first question"),
+                previous,
+                HumanMessage(content="follow-up question"),
+            ]
+        )
+
+        self.assertEqual(request["previous_response_id"], "resp_first")
+        self.assertEqual(
+            request["instructions"],
+            "You are a helpful assistant.\n\nstable system prompt",
+        )
+        self.assertEqual(
+            request["input"],
+            [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "follow-up question"}],
+                }
+            ],
+        )
+
+    def test_build_request_chains_tool_output_without_repeating_prior_history(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        previous = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_tool_call",
+                    "store": True,
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "sample_lookup",
+                            "arguments": '{"city": "宿州"}',
+                        }
+                    ],
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="Call a tool."),
+                previous,
+                ToolMessage(content="result text", tool_call_id="call_1"),
+            ]
+        )
+
+        self.assertEqual(request["previous_response_id"], "resp_tool_call")
+        self.assertEqual(
+            request["input"],
+            [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "result text",
+                }
+            ],
+        )
+
+    def test_build_request_does_not_chain_unstored_response(self) -> None:
+        model = OpenAICodexModel(model="test-model", store_responses=False)
+        previous = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_unstored",
+                    "store": False,
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "first answer"}],
+                        }
+                    ],
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="first question"),
+                previous,
+                HumanMessage(content="follow-up question"),
+            ]
+        )
+
+        self.assertFalse(request["store"])
+        self.assertNotIn("previous_response_id", request)
+        self.assertEqual(len(request["input"]), 3)
+
+    def test_build_request_uses_response_id_from_its_own_history(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        first_conversation = AIMessage(
+            content="first",
+            response_metadata={"response_id": "resp_a", "response_store": True},
+        )
+        second_conversation = AIMessage(
+            content="second",
+            response_metadata={"response_id": "resp_b", "response_store": True},
+        )
+
+        request_a = model._build_request(
+            [HumanMessage(content="a1"), first_conversation, HumanMessage(content="a2")]
+        )
+        request_b = model._build_request(
+            [HumanMessage(content="b1"), second_conversation, HumanMessage(content="b2")]
+        )
+
+        self.assertEqual(request_a["previous_response_id"], "resp_a")
+        self.assertEqual(request_b["previous_response_id"], "resp_b")
+        self.assertEqual(request_a["input"][0]["content"][0]["text"], "a2")
+        self.assertEqual(request_b["input"][0]["content"][0]["text"], "b2")
+
     def test_completed_message_parses_responses_function_calls(self) -> None:
         model = OpenAICodexModel(model="test-model")
         message = model._completed_message(
@@ -133,6 +419,50 @@ class CodexOAuthModelTests(unittest.TestCase):
             message.tool_calls,
             [{"name": "sample_lookup", "args": {"city": "宿州"}, "id": "call_1", "type": "tool_call"}],
         )
+
+    def test_reasoning_state_is_preserved_for_tool_followup(self) -> None:
+        model = OpenAICodexModel(model="test-model", reasoning_effort="high")
+        message = model._completed_message(
+            {
+                "response": {
+                    "output": [
+                        {
+                            "type": "reasoning",
+                            "id": "reasoning_1",
+                            "summary": [
+                                {"type": "summary_text", "text": "Inspect first."}
+                            ],
+                            "encrypted_content": "encrypted-state",
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "sample_lookup",
+                            "arguments": '{"city": "宿州"}',
+                        },
+                    ]
+                }
+            }
+        )
+
+        request = model._build_request(
+            [
+                HumanMessage(content="Call a tool."),
+                message,
+                ToolMessage(content="result", tool_call_id="call_1"),
+            ]
+        )
+
+        self.assertEqual(
+            request["input"][1],
+            {
+                "type": "reasoning",
+                "summary": [{"type": "summary_text", "text": "Inspect first."}],
+                "encrypted_content": "encrypted-state",
+            },
+        )
+        self.assertEqual(request["input"][2]["type"], "function_call")
+        self.assertEqual(request["input"][3]["type"], "function_call_output")
 
     def test_completed_message_extracts_openai_response_usage(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -172,6 +502,22 @@ class CodexOAuthModelTests(unittest.TestCase):
                 "output_token_details": {"reasoning_tokens": 20},
             },
         )
+
+    def test_completed_message_exposes_response_chain_metadata(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+
+        message = model._completed_message(
+            {
+                "response": {
+                    "id": "resp_123",
+                    "store": True,
+                    "output": [],
+                }
+            }
+        )
+
+        self.assertEqual(message.response_metadata["response_id"], "resp_123")
+        self.assertTrue(message.response_metadata["response_store"])
 
     def test_model_records_cumulative_usage(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -301,6 +647,168 @@ class CodexOAuthModelTests(unittest.TestCase):
 
         self.assertEqual(message.content, "hello delta")
 
+    def test_sync_requests_reuse_one_persistent_connection(self) -> None:
+        ws = PersistentFakeWebSocket([completed_events("first"), completed_events("second")])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+                first = model.invoke([HumanMessage(content="first")])
+                second = model.invoke([HumanMessage(content="second")])
+
+            self.assertEqual(first.content, "first")
+            self.assertEqual(second.content, "second")
+            self.assertEqual(mocked_connect.call_count, 1)
+            self.assertEqual(len(ws.sent), 2)
+            self.assertEqual(provider.calls, 1)
+        finally:
+            model.close()
+
+    def test_sync_requests_chain_previous_response_on_persistent_connection(self) -> None:
+        ws = PersistentFakeWebSocket(
+            [
+                completed_events("first", response_id="resp_first"),
+                completed_events("second", response_id="resp_second"),
+            ]
+        )
+        model = OpenAICodexModel(
+            model="test-model",
+            token_provider=FakeTokenProvider(),
+        )
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect):
+                first = model.invoke([HumanMessage(content="first question")])
+                second = model.invoke(
+                    [
+                        HumanMessage(content="first question"),
+                        first,
+                        HumanMessage(content="follow-up question"),
+                    ]
+                )
+
+            first_payload = json.loads(ws.sent[0])
+            second_payload = json.loads(ws.sent[1])
+            self.assertNotIn("previous_response_id", first_payload)
+            self.assertEqual(second_payload["previous_response_id"], "resp_first")
+            self.assertEqual(len(second_payload["input"]), 1)
+            self.assertEqual(
+                second_payload["input"][0]["content"][0]["text"],
+                "follow-up question",
+            )
+            self.assertEqual(first.response_metadata["response_id"], "resp_first")
+            self.assertEqual(second.response_metadata["response_id"], "resp_second")
+        finally:
+            model.close()
+
+    def test_async_requests_share_transport_and_are_serialized(self) -> None:
+        ws = PersistentFakeWebSocket(
+            [completed_events("first"), completed_events("second")],
+            block_first_response=True,
+        )
+        model = OpenAICodexModel(model="test-model", token_provider=FakeTokenProvider())
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        async def scenario() -> tuple[AIMessage, AIMessage]:
+            first = asyncio.create_task(model.ainvoke([HumanMessage(content="first")]))
+            self.assertTrue(await asyncio.to_thread(ws.first_recv_started.wait, 2.0))
+            second = asyncio.create_task(model.ainvoke([HumanMessage(content="second")]))
+            await asyncio.sleep(0.05)
+            self.assertEqual(len(ws.sent), 1)
+            ws.release_first_response.set()
+            results = await asyncio.gather(first, second)
+            await model.aclose()
+            return results[0], results[1]
+
+        with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            first, second = asyncio.run(scenario())
+
+        self.assertEqual(first.content, "first")
+        self.assertEqual(second.content, "second")
+        self.assertEqual(mocked_connect.call_count, 1)
+        self.assertEqual(len(ws.sent), 2)
+
+    def test_send_failure_reconnects_and_retries_once(self) -> None:
+        failed_ws = PersistentFakeWebSocket([], send_error=ConnectionError("closed"))
+        working_ws = PersistentFakeWebSocket([completed_events("recovered")])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return failed_ws if provider.calls == 1 else working_ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+                message = model.invoke([HumanMessage(content="retry")])
+
+            self.assertEqual(message.content, "recovered")
+            self.assertEqual(mocked_connect.call_count, 2)
+            self.assertEqual(provider.calls, 2)
+            self.assertTrue(failed_ws.closed)
+            self.assertEqual(len(working_ws.sent), 1)
+        finally:
+            model.close()
+
+    def test_receive_failure_invalidates_connection_without_replaying(self) -> None:
+        failed_ws = PersistentFakeWebSocket([ConnectionError("read failed")])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return failed_ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+                with self.assertRaisesRegex(ConnectionError, "read failed"):
+                    model.invoke([HumanMessage(content="do not replay")])
+
+            self.assertEqual(mocked_connect.call_count, 1)
+            self.assertEqual(len(failed_ws.sent), 1)
+            self.assertTrue(failed_ws.closed)
+        finally:
+            model.close()
+
+    def test_expired_connection_is_replaced_and_close_is_idempotent(self) -> None:
+        first_ws = PersistentFakeWebSocket([completed_events("first")])
+        second_ws = PersistentFakeWebSocket([completed_events("second")])
+        sockets = iter([first_ws, second_ws])
+        provider = FakeTokenProvider()
+        model = OpenAICodexModel(model="test-model", token_provider=provider)
+
+        async def connect(*args, **kwargs):
+            return next(sockets)
+
+        with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            first = model.invoke([HumanMessage(content="first")])
+            model._connected_at = float("-inf")
+            model.invoke(
+                [
+                    HumanMessage(content="first"),
+                    first,
+                    HumanMessage(content="second"),
+                ]
+            )
+
+        model.close()
+        model.close()
+        self.assertEqual(mocked_connect.call_count, 2)
+        self.assertEqual(provider.calls, 2)
+        self.assertTrue(first_ws.closed)
+        self.assertTrue(second_ws.closed)
+        self.assertEqual(
+            json.loads(second_ws.sent[0])["previous_response_id"],
+            "resp_first",
+        )
+
 
 class FakeWebSocket:
     def __init__(self, events: list[dict]) -> None:
@@ -310,6 +818,89 @@ class FakeWebSocket:
         if not self._messages:
             raise AssertionError("No fake websocket messages remain.")
         return self._messages.pop(0)
+
+
+class FakeTokenProvider(CodexOAuthTokenProvider):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def get_credentials(self) -> tuple[str, str]:
+        self.calls += 1
+        return f"token-{self.calls}", "account"
+
+
+class FakeConnectionState:
+    def __init__(self, name: str = "OPEN") -> None:
+        self.name = name
+
+
+class PersistentFakeWebSocket:
+    def __init__(
+        self,
+        response_batches: list[list[dict] | BaseException],
+        *,
+        send_error: BaseException | None = None,
+        block_first_response: bool = False,
+    ) -> None:
+        self._response_batches = list(response_batches)
+        self._current_messages: list[str] = []
+        self._send_error = send_error
+        self._block_first_response = block_first_response
+        self._response_number = 0
+        self.sent: list[str] = []
+        self.state = FakeConnectionState()
+        self.closed = False
+        self.first_recv_started = threading.Event()
+        self.release_first_response = threading.Event()
+
+    async def send(self, payload: str) -> None:
+        if self._send_error is not None:
+            error = self._send_error
+            self._send_error = None
+            raise error
+        self.sent.append(payload)
+        batch = self._response_batches.pop(0)
+        if isinstance(batch, BaseException):
+            self._current_messages = [batch]  # type: ignore[list-item]
+        else:
+            self._current_messages = [json.dumps(event, ensure_ascii=False) for event in batch]
+        self._response_number += 1
+
+    async def recv(self) -> str:
+        if self._response_number == 1 and self._block_first_response:
+            self.first_recv_started.set()
+            while not self.release_first_response.is_set():
+                await asyncio.sleep(0.01)
+        if not self._current_messages:
+            raise AssertionError("No fake websocket messages remain.")
+        message = self._current_messages.pop(0)
+        if isinstance(message, BaseException):
+            raise message
+        return message
+
+    async def close(self) -> None:
+        self.closed = True
+        self.state.name = "CLOSED"
+
+
+def completed_events(text: str, response_id: str | None = None) -> list[dict]:
+    return [
+        {
+            "type": "response.completed",
+            "response": {
+                "id": response_id or f"resp_{text}",
+                "store": True,
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }
+                ],
+                "usage": {},
+            },
+        }
+    ]
 
 
 if __name__ == "__main__":

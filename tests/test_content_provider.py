@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openpyxl import load_workbook
+from openpyxl.workbook.workbook import Workbook as OpenpyxlWorkbook
 from tools.content_provider import ContentProvider, _read_xlsx, create_content_provider_tools
 
 
@@ -109,6 +112,69 @@ class ContentProviderTests(unittest.TestCase):
         self.assertIn("create_excel_sheet", tool_names)
         self.assertIn("rename_excel_sheet", tool_names)
         self.assertIn("write_excel_sheet", tool_names)
+
+    def test_concurrent_provider_instances_serialize_updates_to_same_workbook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            first_provider = ContentProvider(tmp_dir)
+            second_provider = ContentProvider(tmp_dir)
+            path = Path(
+                first_provider.create_excel_file(
+                    "result.xlsx",
+                    headers_json='["商家名称"]',
+                )
+            )
+
+            def append_row(index: int) -> None:
+                provider = first_provider if index % 2 == 0 else second_provider
+                provider.append_excel_rows("result.xlsx", f'[["商家{index}"]]')
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(append_row, range(40)))
+
+            rows = _read_xlsx(path)
+            self.assertEqual(rows[0], ["商家名称"])
+            self.assertEqual(len(rows), 41)
+            self.assertEqual({row[0] for row in rows[1:]}, {f"商家{i}" for i in range(40)})
+
+    def test_failed_save_preserves_existing_workbook(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            provider = ContentProvider(tmp_dir)
+            path = Path(
+                provider.create_excel_file(
+                    "result.xlsx",
+                    headers_json='["商家名称"]',
+                    rows_json='[["原始商家"]]',
+                )
+            )
+            original_bytes = path.read_bytes()
+
+            def fail_after_partial_write(_workbook, target_path) -> None:
+                Path(target_path).write_bytes(b"incomplete zip")
+                raise OSError("simulated save failure")
+
+            with patch.object(
+                OpenpyxlWorkbook,
+                "save",
+                autospec=True,
+                side_effect=fail_after_partial_write,
+            ):
+                with self.assertRaisesRegex(OSError, "simulated save failure"):
+                    provider.append_excel_rows("result.xlsx", '[["不应写入"]]')
+
+            self.assertEqual(path.read_bytes(), original_bytes)
+            self.assertEqual(_read_xlsx(path), [["商家名称"], ["原始商家"]])
+            self.assertEqual(list(path.parent.glob(".result.*.tmp.xlsx")), [])
+
+    def test_corrupted_workbook_returns_recovery_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            provider = ContentProvider(tmp_dir)
+            Path(tmp_dir, "result.xlsx").write_bytes(b"incomplete zip")
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "corrupted.*recreate it with create_excel_file",
+            ):
+                provider.append_excel_rows("result.xlsx", '[["商家A"]]')
 
 
 if __name__ == "__main__":
