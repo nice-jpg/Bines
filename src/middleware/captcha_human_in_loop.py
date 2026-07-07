@@ -6,18 +6,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
-
-try:
-    from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
-except (ImportError, ModuleNotFoundError):  # Lightweight fallback for tests that stub only AgentMiddleware.
-    class HumanInTheLoopMiddleware(AgentMiddleware):  # type: ignore[no-redef]
-        def __init__(self, interrupt_on=None, description_prefix: str = "") -> None:
-            self.interrupt_on = interrupt_on or {}
-            self.description_prefix = description_prefix
-
-    class InterruptOnConfig(dict):  # type: ignore[no-redef]
-        def __init__(self, **kwargs: Any) -> None:
-            super().__init__(**kwargs)
+from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
 
 CAPTCHA_AUTHENTICATION_TOOL_NAME = "authenticate_captcha"
 CAPTCHA_AUTHENTICATED_TOOL_NAME = "captcha_authenticated"
@@ -74,27 +63,14 @@ def create_captcha_human_in_the_loop_middleware(tools: Sequence[Any] | None = No
     """Create captcha HITL middleware and bind the captcha start tool."""
 
     authentication_tool = _find_tool(tools or (), CAPTCHA_AUTHENTICATION_TOOL_NAME)
-    try:
-        return CaptchaHumanInTheLoopMiddleware(authentication_tool=authentication_tool)
-    except TypeError:
-        # Lightweight unit-test stubs may not accept constructor args.
-        middleware = HumanInTheLoopMiddleware()
-        setattr(middleware, "interrupt_on", {CAPTCHA_AUTHENTICATION_TOOL_NAME: _respond_interrupt_config()})
-        setattr(middleware, "authentication_tool", authentication_tool)
-        return middleware
+    return CaptchaHumanInTheLoopMiddleware(authentication_tool=authentication_tool)
 
 
 def _respond_interrupt_config() -> Any:
-    try:
-        return InterruptOnConfig(
-            allowed_decisions=["respond"],
-            description=CAPTCHA_HITL_DESCRIPTION,
-        )
-    except TypeError:
-        return {
-            "allowed_decisions": ["respond"],
-            "description": CAPTCHA_HITL_DESCRIPTION,
-        }
+    return InterruptOnConfig(
+        allowed_decisions=["respond"],
+        description=CAPTCHA_HITL_DESCRIPTION,
+    )
 
 
 def _find_tool(tools: Sequence[Any], name: str) -> Any | None:

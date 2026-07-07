@@ -53,8 +53,9 @@ def compact_device_messages(messages: Sequence[Any]) -> list[Any]:
         tool_info = tool_calls.get(tool_call_id or "")
         tool_name = _tool_name(message) or (tool_info.name if tool_info else None)
         content = _message_content(message)
+        xml_content = _xml_content(content)
 
-        if not tool_name or tool_name not in XML_DEVICE_TOOLS or not _is_xml_content(content):
+        if not tool_name or tool_name not in XML_DEVICE_TOOLS or xml_content is None:
             continue
 
         args = tool_info.args if tool_info else _message_args(message)
@@ -66,7 +67,7 @@ def compact_device_messages(messages: Sequence[Any]) -> list[Any]:
                 prior_xml=latest_xml,
             )
         )
-        latest_xml = content
+        latest_xml = xml_content
 
     if len(xml_results) <= 1:
         return list(messages)
@@ -156,9 +157,23 @@ def _get_value(value: Any, key: str) -> Any:
 
 
 def _is_xml_content(content: str | None) -> bool:
+    return _xml_content(content) is not None
+
+
+def _xml_content(content: str | None) -> str | None:
     if not content:
-        return False
-    return "<?xml" in content or "<hierarchy" in content or "</hierarchy>" in content
+        return None
+    if content.lstrip().startswith("{"):
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, Mapping) and isinstance(parsed.get("xml"), str):
+            return parsed["xml"]
+        return None
+    if "<?xml" in content or "<hierarchy" in content or "</hierarchy>" in content or content.startswith("<h>"):
+        return content
+    return None
 
 
 def _summarize_tool_result(result: XmlToolResult) -> str:

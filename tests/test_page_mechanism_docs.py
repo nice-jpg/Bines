@@ -24,6 +24,24 @@ class PageMechanismDocTests(unittest.TestCase):
                 self.assertIn("## Canonical Manual Path", content)
                 self.assertIn(marker, content)
 
+    def test_page_mechanism_dirs_include_task_and_run_py(self) -> None:
+        expected_dirs = [
+            Path("."),
+            Path("美食"),
+            Path("外卖"),
+            Path("美食/商家"),
+            Path("外卖/商家"),
+        ]
+
+        for relative_dir in expected_dirs:
+            with self.subTest(relative_dir=relative_dir.as_posix()):
+                page_dir = PAGE_ROOT / relative_dir
+                self.assertTrue((page_dir / "PAGE.md").is_file())
+                self.assertTrue((page_dir / "task.md").is_file())
+                self.assertTrue((page_dir / "run.py").is_file())
+                run_text = (page_dir / "run.py").read_text(encoding="utf-8")
+                self.assertIn("def run(xml: str, previous: dict | None = None) -> dict", run_text)
+
     def test_secondary_page_docs_point_to_generic_merchant_manuals(self) -> None:
         food = (PAGE_ROOT / "美食" / "PAGE.md").read_text(encoding="utf-8")
         takeout = (PAGE_ROOT / "外卖" / "PAGE.md").read_text(encoding="utf-8")
@@ -37,14 +55,10 @@ class PageMechanismDocTests(unittest.TestCase):
         for relative_path in ["美食/商家/PAGE.md", "外卖/商家/PAGE.md"]:
             with self.subTest(relative_path=relative_path):
                 content = (PAGE_ROOT / relative_path).read_text(encoding="utf-8")
-                self.assertIn("Collect merchant fields: name, rating, sales, distance", content)
-                self.assertIn("total review count, and positive review count", content)
-                self.assertIn("Collect every reachable product: product name, price, and sales", content)
-                self.assertIn("Do not leave this merchant until all merchant fields are resolved", content)
-                self.assertIn(
-                    "Write all collected rows to the `result.xlsx` worksheet named with this merchant's complete name",
-                    content,
-                )
+                task = (PAGE_ROOT / relative_path).with_name("task.md").read_text(encoding="utf-8")
+                self.assertIn("## Structure", content)
+                self.assertIn("Do not directly extract product names", task)
+                self.assertIn("page-local run.py JSON", task)
 
 
 if __name__ == "__main__":

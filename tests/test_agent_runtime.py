@@ -208,7 +208,7 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(captured["configs"][0]["configurable"]["thread_id"], "s1")
         self.assertEqual(captured["configs"][1]["configurable"]["thread_id"], "s1")
         self.assertEqual(
-            captured["commands"][0].kwargs["resume"],
+            captured["commands"][0].resume,
             {"decisions": [{"type": "respond", "message": "验证码已完成"}]},
         )
 

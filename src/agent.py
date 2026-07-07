@@ -17,17 +17,8 @@ from langchain_core.messages import BaseMessage
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
-
-try:
-    from langgraph.checkpoint.memory import InMemorySaver
-    from langgraph.types import Command
-except ModuleNotFoundError:  # Lightweight fallback for unit tests without LangGraph installed.
-    class InMemorySaver:  # type: ignore[no-redef]
-        pass
-
-    class Command:  # type: ignore[no-redef]
-        def __init__(self, **kwargs: Any) -> None:
-            self.kwargs = kwargs
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 try:
     from src.middleware import (
@@ -36,9 +27,8 @@ try:
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
-    from src.subagents_manager import SubagentManager
-    from src.tools import collect_tools
-    from src.prompts import SYSTEM_PROMPT
+    from src.tools import collect_conductor_tools
+    from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
@@ -47,9 +37,8 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
-    from subagents_manager import SubagentManager
-    from tools import collect_tools
-    from prompts import SYSTEM_PROMPT
+    from tools import collect_conductor_tools
+    from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from tasks import build_app_probe_messages, messages_request_app_probe
 
 @dataclass(frozen=True)
@@ -176,6 +165,7 @@ def build_agent(
     model: str | BaseChatModel,
     tools: Sequence[Any],
     name: str | None = None,
+    system_prompt: str = CONDUCTOR_PROMPT,
 ):
     """Create a standard LangChain agent with ``langchain.agents.create_agent``."""
 
@@ -188,15 +178,9 @@ def build_agent(
     def parent_context_provider() -> list[Any]:
         return list(runtime_messages)
 
-    subagent_manager = SubagentManager(
-        model=model,
-        parent_context_provider=parent_context_provider,
-        tool_factory=lambda: collect_tools(include_subagents=False),
-        system_prompt=SYSTEM_PROMPT,
-    )
     registered_tools = _with_collected_tools(
         tools,
-        collect_tools(include_subagents=True, subagent_manager=subagent_manager),
+        collect_conductor_tools(model=model),
     )
     middlewares: list[AgentMiddleware] = []
     # middlewares.append(TodoListMiddleware())
@@ -209,10 +193,37 @@ def build_agent(
     return create_agent(
         model=model,
         tools=registered_tools,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         name=name,
         middleware=middlewares,
         checkpointer=InMemorySaver(),
+    )
+
+
+def build_conductor_runtime(
+    *,
+    model: str | BaseChatModel,
+    tools: Sequence[Any] | None = None,
+    name: str | None = "conductor",
+) -> AgentRuntime:
+    """Build the main page-operating conductor runtime."""
+
+    return AgentRuntime(model=model, tools=list(tools or []), name=name)
+
+
+def build_collector_runtime(
+    *,
+    model: str | BaseChatModel,
+    tools: Sequence[Any],
+    name: str | None = "collector",
+) -> Any:
+    """Build a collector agent with caller-provided page-scoped tools."""
+
+    return create_agent(
+        model=model,
+        tools=list(tools),
+        system_prompt=COLLECTOR_PROMPT,
+        name=name,
     )
 
 

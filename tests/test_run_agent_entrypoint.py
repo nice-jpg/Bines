@@ -87,7 +87,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_channel.FeishuChannelRuntime = FakeChannel
         fake_channel.load_feishu_config = lambda: "config"
         fake_model = types.ModuleType("src.model")
-        fake_model.build_model = lambda: "model"
+        fake_model.build_model = FakeModel
         fake_model.build_codex_model = FakeModel
         fake_tools_common = types.ModuleType("src.tools.common")
         fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
@@ -187,7 +187,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_channel.FeishuChannelRuntime = FakeChannel
         fake_channel.load_feishu_config = lambda: "config"
         fake_model = types.ModuleType("src.model")
-        fake_model.build_model = lambda: "model"
+        fake_model.build_model = FakeModel
         fake_model.build_codex_model = FakeModel
         fake_tools_common = types.ModuleType("src.tools.common")
         fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool

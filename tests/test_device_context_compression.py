@@ -1,44 +1,13 @@
 from __future__ import annotations
 
+import json
 import sys
-import types
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-_ORIGINAL_LANGCHAIN_MODULES = {
-    name: sys.modules.get(name)
-    for name in (
-        "langchain",
-        "langchain.agents",
-        "langchain.agents.middleware",
-        "langchain.agents.middleware.types",
-    )
-}
-
-if "langchain.agents.middleware.types" not in sys.modules:
-    langchain = types.ModuleType("langchain")
-    langchain_agents = types.ModuleType("langchain.agents")
-    langchain_agents_middleware = types.ModuleType("langchain.agents.middleware")
-    langchain_agents_middleware_types = types.ModuleType("langchain.agents.middleware.types")
-
-    class AgentMiddleware:
-        pass
-
-    langchain_agents_middleware_types.AgentMiddleware = AgentMiddleware
-    sys.modules["langchain"] = langchain
-    sys.modules["langchain.agents"] = langchain_agents
-    sys.modules["langchain.agents.middleware"] = langchain_agents_middleware
-    sys.modules["langchain.agents.middleware.types"] = langchain_agents_middleware_types
-
 from middleware.device_context_compression import DeviceContextCompressionMiddleware, compact_device_messages
-
-for _name, _module in _ORIGINAL_LANGCHAIN_MODULES.items():
-    if _module is None:
-        sys.modules.pop(_name, None)
-    else:
-        sys.modules[_name] = _module
 
 
 PRIOR_XML = """<hierarchy>
@@ -94,6 +63,33 @@ class DeviceContextCompressionTests(unittest.TestCase):
         compacted = compact_device_messages(messages)
 
         self.assertEqual(compacted[3]["content"], "tap '美食' on (320, 620) to load a subpage")
+
+    def test_tap_summary_uses_target_from_json_wrapped_prior_xml(self) -> None:
+        messages = [
+            assistant_tool_call("call_1", "uiautomate", {}),
+            tool_message(
+                "call_1",
+                "uiautomate",
+                json.dumps({"xml": PRIOR_XML, "collection": {"ok": True}}, ensure_ascii=False),
+            ),
+            assistant_tool_call("call_2", "tap", {"x": 320, "y": 620}),
+            tool_message(
+                "call_2",
+                "tap",
+                json.dumps({"xml": AFTER_TAP_XML, "collection": {"ok": True}}, ensure_ascii=False),
+            ),
+            assistant_tool_call("call_3", "uiautomate", {}),
+            tool_message(
+                "call_3",
+                "uiautomate",
+                json.dumps({"xml": LATEST_XML, "collection": {"ok": True}}, ensure_ascii=False),
+            ),
+        ]
+
+        compacted = compact_device_messages(messages)
+
+        self.assertEqual(compacted[3]["content"], "tap '美食' on (320, 620) to load a subpage")
+        self.assertEqual(compacted[5]["content"], messages[5]["content"])
 
     def test_tap_summary_falls_back_when_target_is_unknown(self) -> None:
         messages = [

@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from page_mechanism import PageMechanism, PageRunHook, eval_collection
+
+
+def test_query_page_and_task_docs_are_separate(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan" / "外卖"
+    page_dir.mkdir(parents=True)
+    (page_dir / "PAGE.md").write_text("page structure", encoding="utf-8")
+    (page_dir / "task.md").write_text("task flow", encoding="utf-8")
+
+    mechanism = PageMechanism(tmp_path)
+
+    page = mechanism.query_page_doc("com.sankuai.meituan/外卖")
+    task = mechanism.query_task_doc("meituan/外卖")
+
+    assert "page structure" in page
+    assert "task flow" not in page
+    assert "task flow" in task
+    assert "page structure" not in task
+
+
+def test_run_py_is_page_scoped_and_rejects_path_escape(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    mechanism = PageMechanism(tmp_path)
+
+    result = mechanism.write_run_py("meituan", "def run(xml: str, previous=None):\n    return {'items': []}\n")
+    rejected = mechanism.write_run_py("../secret", "bad")
+
+    assert json.loads(result)["ok"] is True
+    assert (page_dir / "run.py").is_file()
+    assert "must not contain '..'" in rejected
+
+
+def test_sniff_run_passes_previous_and_persists_json_state(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.py").write_text(
+        "def run(xml: str, previous=None):\n"
+        "    items = list((previous or {}).get('items', []))\n"
+        "    items.append({'name': xml})\n"
+        "    return {'items': items}\n",
+        encoding="utf-8",
+    )
+    mechanism = PageMechanism(tmp_path)
+
+    first = json.loads(mechanism.sniff_run("meituan", "one"))
+    second = json.loads(mechanism.sniff_run("meituan", "two"))
+
+    assert first["ok"] is True
+    assert first["result"] == {"items": [{"name": "one"}]}
+    assert second["result"] == {"items": [{"name": "one"}, {"name": "two"}]}
+
+
+def test_run_py_exception_returns_structured_repair_signal(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.py").write_text("def run(xml: str, previous=None):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+
+    result = json.loads(PageMechanism(tmp_path).sniff_run("meituan", "<xml/>"))
+
+    assert result["ok"] is False
+    assert result["error_type"] == "ValueError"
+    assert result["error"] == "bad parse"
+    assert "traceback" in result
+
+
+def test_eval_collection_scores_exact_match_and_mismatch() -> None:
+    assert eval_collection({"items": [{"name": "cup"}]}, {"items": [{"name": "cup"}]})["score"] == 100
+    mismatch = eval_collection({"items": [{"name": "cup"}]}, {"items": [{"name": "bowl"}]})
+    assert mismatch["score"] < 100
+    assert mismatch["issues"]
+
+
+def test_page_run_hook_appends_collection_json(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.py").write_text("def run(xml: str, previous=None):\n    return {'items': [{'xml': xml}]}\n", encoding="utf-8")
+    hook = PageRunHook(PageMechanism(tmp_path))
+
+    hook.set_current_path("meituan")
+    result = json.loads(hook.after_xml("<h></h>"))
+
+    assert result["xml"] == "<h></h>"
+    assert result["collection"]["ok"] is True
+    assert result["collection"]["result"]["items"] == [{"xml": "<h></h>"}]

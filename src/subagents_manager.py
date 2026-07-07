@@ -9,17 +9,7 @@ from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Callable, Mapping, Sequence
 
-try:
-    from langchain_core.tools import StructuredTool
-except ModuleNotFoundError:  # Lightweight fallback for unit tests without LangChain installed.
-    class StructuredTool:  # type: ignore[no-redef]
-        @classmethod
-        def from_function(cls, **kwargs):
-            instance = cls()
-            instance.name = kwargs["name"]
-            instance.description = kwargs["description"]
-            instance.func = kwargs["func"]
-            return instance
+from langchain_core.tools import StructuredTool
 
 
 SUBAGENT_TOOL_NAMES = {"spawn_subagent", "call_subagent", "kill_subagent"}

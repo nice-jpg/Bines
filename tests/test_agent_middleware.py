@@ -122,11 +122,11 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         agent = importlib.import_module("agent")
         collect_calls = []
 
-        def collect_tools(**kwargs):
+        def collect_conductor_tools(**kwargs):
             collect_calls.append(kwargs)
             return []
 
-        agent.collect_tools = collect_tools
+        agent.collect_conductor_tools = collect_conductor_tools
 
         agent.build_agent(model="model", tools=[])
 
@@ -145,7 +145,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
-        self.assertTrue(any(call.get("include_subagents") is True for call in collect_calls))
+        self.assertTrue(any(call.get("model") == "model" for call in collect_calls))
 
     def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:
         self.test_build_agent_registers_context_compression_before_summarization()

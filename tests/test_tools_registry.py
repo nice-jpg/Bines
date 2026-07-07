@@ -1,28 +1,10 @@
 from __future__ import annotations
 
 import sys
-import types
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-if "langchain_core.tools" not in sys.modules:
-    langchain_core = types.ModuleType("langchain_core")
-    langchain_core_tools = types.ModuleType("langchain_core.tools")
-
-    class StructuredTool:
-        @classmethod
-        def from_function(cls, **kwargs):
-            instance = cls()
-            instance.name = kwargs["name"]
-            instance.description = kwargs["description"]
-            instance.func = kwargs["func"]
-            return instance
-
-    langchain_core_tools.StructuredTool = StructuredTool
-    sys.modules["langchain_core"] = langchain_core
-    sys.modules["langchain_core.tools"] = langchain_core_tools
 
 from tools import collect_tools
 
@@ -49,16 +31,19 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("authenticate_captcha", tool_names)
         self.assertIn("captcha_authenticated", tool_names)
         self.assertIn("think", tool_names)
-        self.assertIn("query_manual", tool_names)
+        self.assertIn("set_current_page", tool_names)
+        self.assertIn("query_page_doc", tool_names)
+        self.assertIn("query_task_doc", tool_names)
         self.assertIn("close_package", tool_names)
-        self.assertIn("create_excel_sheet", tool_names)
-        self.assertIn("rename_excel_sheet", tool_names)
-        self.assertIn("write_excel_sheet", tool_names)
+        self.assertIn("prepare_collector", tool_names)
+        self.assertNotIn("create_excel_sheet", tool_names)
+        self.assertNotIn("rename_excel_sheet", tool_names)
+        self.assertNotIn("write_excel_sheet", tool_names)
         self.assertLess(tool_names.index("notify_user"), tool_names.index("tap"))
         self.assertLess(tool_names.index("authenticate_captcha"), tool_names.index("tap"))
         self.assertLess(tool_names.index("captcha_authenticated"), tool_names.index("tap"))
         self.assertLess(tool_names.index("think"), tool_names.index("tap"))
-        self.assertLess(tool_names.index("query_manual"), tool_names.index("tap"))
+        self.assertLess(tool_names.index("query_page_doc"), tool_names.index("tap"))
 
     def test_collect_tools_can_include_subagent_tools_for_main_agent(self) -> None:
         tool_names = [
@@ -69,6 +54,7 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("spawn_subagent", tool_names)
         self.assertIn("call_subagent", tool_names)
         self.assertIn("kill_subagent", tool_names)
+        self.assertIn("query_manual", tool_names)
         self.assertGreater(tool_names.index("spawn_subagent"), tool_names.index("append_excel_rows"))
 
 

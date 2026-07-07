@@ -9,7 +9,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 
-from src.codex import create_chat_model
+try:
+    # This is the canonical import when launched through mind_controller/run_master.py.
+    from codex import create_chat_model
+except ModuleNotFoundError:
+    # Also support importing trainer directly from the repository root.
+    from src.codex import create_chat_model
 
 WORKSPACE_ENV_PATH = Path(__file__).resolve().parents[1] / "workspace" / ".env"
 

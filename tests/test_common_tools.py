@@ -2,28 +2,10 @@ from __future__ import annotations
 
 import sys
 import tempfile
-import types
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-if "langchain_core.tools" not in sys.modules:
-    langchain_core = types.ModuleType("langchain_core")
-    langchain_core_tools = types.ModuleType("langchain_core.tools")
-
-    class StructuredTool:
-        @classmethod
-        def from_function(cls, **kwargs):
-            instance = cls()
-            instance.name = kwargs["name"]
-            instance.description = kwargs["description"]
-            instance.func = kwargs["func"]
-            return instance
-
-    langchain_core_tools.StructuredTool = StructuredTool
-    sys.modules["langchain_core"] = langchain_core
-    sys.modules["langchain_core.tools"] = langchain_core_tools
 
 from tools.common import (
     CaptchaAuthenticationTool,
@@ -214,10 +196,12 @@ class CommonToolTests(unittest.TestCase):
                 "authenticate_captcha",
                 "captcha_authenticated",
                 "think",
-                "query_manual",
+                "set_current_page",
+                "query_page_doc",
+                "query_task_doc",
             ],
         )
-        self.assertIn("before any external device or Excel operation", tools[0].description)
+        self.assertIn("before any external device or collector operation", tools[0].description)
         self.assertIn("human captcha authentication", tools[1].description)
         self.assertIn("captcha has been completed", tools[2].description)
         self.assertIn("complex tool outputs", tools[3].description)
