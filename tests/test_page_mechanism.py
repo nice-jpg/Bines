@@ -33,7 +33,7 @@ def test_run_py_is_page_scoped_and_rejects_path_escape(tmp_path: Path) -> None:
     page_dir.mkdir()
     mechanism = PageMechanism(tmp_path)
 
-    result = mechanism.write_run_py("meituan", "def run(xml: str, previous=None):\n    return {'items': []}\n")
+    result = mechanism.write_run_py("meituan", "def run(xml: str):\n    return {'items': []}\n")
     rejected = mechanism.write_run_py("../secret", "bad")
 
     assert json.loads(result)["ok"] is True
@@ -41,14 +41,12 @@ def test_run_py_is_page_scoped_and_rejects_path_escape(tmp_path: Path) -> None:
     assert "must not contain '..'" in rejected
 
 
-def test_sniff_run_passes_previous_and_persists_json_state(tmp_path: Path) -> None:
+def test_sniff_run_uses_only_current_xml_and_persists_latest_json_state(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
     (page_dir / "run.py").write_text(
-        "def run(xml: str, previous=None):\n"
-        "    items = list((previous or {}).get('items', []))\n"
-        "    items.append({'name': xml})\n"
-        "    return {'items': items}\n",
+        "def run(xml: str):\n"
+        "    return {'items': [{'name': xml}]}\n",
         encoding="utf-8",
     )
     mechanism = PageMechanism(tmp_path)
@@ -58,13 +56,14 @@ def test_sniff_run_passes_previous_and_persists_json_state(tmp_path: Path) -> No
 
     assert first["ok"] is True
     assert first["result"] == {"items": [{"name": "one"}]}
-    assert second["result"] == {"items": [{"name": "one"}, {"name": "two"}]}
+    assert second["result"] == {"items": [{"name": "two"}]}
+    assert mechanism.state_for("meituan") == {"items": [{"name": "two"}]}
 
 
 def test_run_py_exception_returns_structured_repair_signal(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text("def run(xml: str, previous=None):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+    (page_dir / "run.py").write_text("def run(xml: str):\n    raise ValueError('bad parse')\n", encoding="utf-8")
 
     result = json.loads(PageMechanism(tmp_path).sniff_run("meituan", "<xml/>"))
 
@@ -84,7 +83,7 @@ def test_eval_collection_scores_exact_match_and_mismatch() -> None:
 def test_page_run_hook_appends_collection_json(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text("def run(xml: str, previous=None):\n    return {'items': [{'xml': xml}]}\n", encoding="utf-8")
+    (page_dir / "run.py").write_text("def run(xml: str):\n    return {'items': [{'xml': xml}]}\n", encoding="utf-8")
     hook = PageRunHook(PageMechanism(tmp_path))
 
     hook.set_current_path("meituan")

@@ -31,7 +31,7 @@ class FakeEventHub:
 def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text("def run(xml: str, previous=None):\n    return {'items': []}\n", encoding="utf-8")
+    (page_dir / "run.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
 
     tools = create_collector_tools(
         mechanism=PageMechanism(tmp_path),
@@ -47,6 +47,7 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
         "read_run_py",
         "write_run_py",
         "sniff_run",
+        "save_baseline",
         "eval_collection",
     ]
     assert "tap" not in names
@@ -56,7 +57,7 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
 def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text("def run(xml: str, previous=None):\n    return {'items': [{'name': 'cup'}]}\n", encoding="utf-8")
+    (page_dir / "run.py").write_text("def run(xml: str):\n    return {'items': [{'name': 'cup'}]}\n", encoding="utf-8")
     tools = {
         tool.name: tool
         for tool in create_collector_tools(
@@ -70,6 +71,32 @@ def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> Non
 
     assert result["ok"] is True
     assert result["result"] == {"items": [{"name": "cup"}]}
+
+
+def test_eval_collection_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
+    tools = {
+        tool.name: tool
+        for tool in create_collector_tools(
+            mechanism=PageMechanism(tmp_path),
+            event_hub=FakeEventHub(),
+            page_path="meituan",
+        )
+    }
+
+    missing = json.loads(tools["eval_collection"].func('{"items": []}'))
+    saved = json.loads(tools["save_baseline"].func('{"items": [{"name": "cup"}]}'))
+    matched = json.loads(tools["eval_collection"].func('{"items": [{"name": "cup"}]}'))
+    tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
+    replaced = json.loads(tools["eval_collection"].func('{"items": [{"name": "cup"}]}'))
+
+    assert missing["score"] == 0
+    assert "missing_baseline" in missing["issues"][0]
+    assert saved["baseline_saved"] is True
+    assert matched["score"] == 100
+    assert replaced["score"] < 100
 
 
 def test_prepare_collector_invokes_isolated_collector_agent() -> None:

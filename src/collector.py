@@ -54,11 +54,12 @@ class CollectorManager:
                 f"<output_schema>{_escape_text(output_schema)}</output_schema>",
                 "<workflow>",
                 "1. Call collector_uiautomate to inspect the real page XML.",
-                "2. Scroll only with collector_swipe_up/collector_swipe_down until the required data is visible.",
+                "2. Scroll only if needed to find a suitable same-page collection region before baseline creation.",
                 "3. Produce r1 directly from the current XML as the baseline JSON.",
-                "4. Call sniff_run without changing page state to get r2.",
-                "5. Call eval_collection(r1, r2, required_fields, output_schema).",
-                "6. If score is below 100, edit run.py and repeat until score is 100.",
+                "4. Call save_baseline with r1. A later save_baseline replaces the stored baseline.",
+                "5. Call sniff_run without changing page state to get r2.",
+                "6. Call eval_collection with only r2; the tool uses the stored r1.",
+                "7. If the tool score is below 100, analyze the mismatch cause, improve run.py with a general same-class-page heuristic, and repeat evaluation on the same XML/page state.",
                 "</workflow>",
                 "</collector_assignment>",
             ]
@@ -120,6 +121,7 @@ class CollectorToolbox:
         self.page_path = page_path
         self.required_fields = required_fields
         self.output_schema = output_schema
+        self._baseline: Any | None = None
 
     def collector_uiautomate(self) -> str:
         return str(self.event_hub.uiautomate())
@@ -140,9 +142,27 @@ class CollectorToolbox:
         xml = self.collector_uiautomate()
         return self.mechanism.sniff_run(self.page_path, xml)
 
-    def eval_collection(self, r1: str, r2: str) -> str:
+    def save_baseline(self, r1: str) -> str:
+        self._baseline = _coerce_json(r1)
         return json.dumps(
-            eval_collection(r1, r2, self.required_fields, self.output_schema),
+            {"ok": True, "baseline_saved": True, "baseline": self._baseline},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def eval_collection(self, r2: str) -> str:
+        if self._baseline is None:
+            return json.dumps(
+                {
+                    "score": 0,
+                    "ok": False,
+                    "issues": ["missing_baseline: call save_baseline before eval_collection"],
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        return json.dumps(
+            eval_collection(self._baseline, r2, self.required_fields, self.output_schema),
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -195,9 +215,20 @@ def create_collector_tools(
             description="Capture current XML and run the current page's run.py without changing page state.",
         ),
         StructuredTool.from_function(
+            func=toolbox.save_baseline,
+            name="save_baseline",
+            description=(
+                "Store the collector-produced baseline r1 JSON for later evaluation. "
+                "Input: r1 JSON string. The baseline is unique; calling this again replaces the prior baseline."
+            ),
+        ),
+        StructuredTool.from_function(
             func=toolbox.eval_collection,
             name="eval_collection",
-            description="Compare collector baseline r1 with run.py result r2. Inputs: r1 and r2 JSON strings.",
+            description=(
+                "Compare stored baseline r1 with run.py result r2. Input: r2 JSON string only. "
+                "The score and issues returned by this tool are the authoritative loop condition."
+            ),
         ),
     ]
 
@@ -227,3 +258,9 @@ def _latest_text(state: Any) -> str:
 
 def _escape_text(value: Any) -> str:
     return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _coerce_json(value: Any) -> Any:
+    if isinstance(value, str):
+        return json.loads(value)
+    return value

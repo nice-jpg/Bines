@@ -72,7 +72,7 @@ class SubagentManager:
         agent_type: str,
         instructions: str,
         tool_names: str = "",
-        max_iterations: int = 80,
+        max_iterations: int = 1000,
     ) -> str:
         """Create a subagent and return its registry id."""
 

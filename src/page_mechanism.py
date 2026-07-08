@@ -63,13 +63,12 @@ class PageMechanism:
         if not run_path.is_file():
             return _script_error("missing_run_py", "run.py was not found.", canonical_path=canonical_path)
 
-        previous = self._states.get(canonical_path)
         try:
             module = _load_run_module(run_path)
             run = getattr(module, "run", None)
             if not callable(run):
-                return _script_error("missing_run_function", "run.py must define run(xml, previous=None).", canonical_path=canonical_path)
-            output = run(xml, previous=previous)
+                return _script_error("missing_run_function", "run.py must define run(xml).", canonical_path=canonical_path)
+            output = run(xml)
             _assert_json_object(output)
         except Exception as exc:  # noqa: BLE001 - script failures are repair signals for collector.
             return {

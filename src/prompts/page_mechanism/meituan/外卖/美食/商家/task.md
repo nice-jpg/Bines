@@ -1,8 +1,13 @@
-# Meituan Takeout Merchant Task
+# Meituan `外卖/美食` Merchant Task
 
-- Confirm this is a merchant detail page, not an ad, activity, coupon, or unrelated destination.
-- Use merchant page controls and scrolling to expose all reachable product categories described by PAGE.md.
-- Continue operating until page-local run.py JSON indicates required merchant/product content is complete or unavailable.
-- If run.py output is missing required fields or errors, call `prepare_collector` again before further collection-oriented operation.
-- After the reachable product area reaches its stop condition, return to the `meituan/外卖` list.
-- Do not directly extract product names, prices, sales, ratings, or review counts.
+## Entry Check
+- Confirm this is a merchant detail page entered from `meituan/外卖/美食`.
+- If the destination is an ad, activity page, coupon page, standalone product page, blank page, or unrelated page, return to the list.
+- If a popup blocks the page, close it before continuing.
+- If captcha or human verification appears, follow the global captcha flow.
+
+## Page Operation
+- Use XML first to identify safe controls and scroll areas; use screenshot only when XML is insufficient.
+- For single-list layouts, keep scrolling the product area until a clear terminal marker appears.
+- Do not tap promotion/coupon/recommendation targets that leave the merchant detail workflow unless they are required to expose the merchant's product list.
+- When the reachable product/menu area reaches the stop condition, return to `meituan/外卖/美食`.

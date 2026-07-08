@@ -31,15 +31,22 @@ class SystemPromptTests(unittest.TestCase):
     def test_conductor_prompt_forbids_direct_collection(self) -> None:
         self.assertIn("Do not collect merchant/product fields directly", SYSTEM_PROMPT)
         self.assertIn("Do not edit run.py", SYSTEM_PROMPT)
-        self.assertIn("run.py JSON output as the only collection fact source", SYSTEM_PROMPT)
-        self.assertIn("must not extract product names, prices, sales", SYSTEM_PROMPT)
+        self.assertIn("transparent automatic collection", SYSTEM_PROMPT)
+        self.assertIn("must not extract information yourself", SYSTEM_PROMPT)
 
     def test_collector_prompt_has_isolated_fixed_loop(self) -> None:
         self.assertIn("Keep your own context", COLLECTOR_PROMPT)
         self.assertIn("collector_uiautomate", COLLECTOR_PROMPT)
         self.assertIn("collector_swipe_up", COLLECTOR_PROMPT)
         self.assertIn("Read and write only the current page's run.py", COLLECTOR_PROMPT)
+        self.assertIn("Call save_baseline immediately after producing baseline r1", COLLECTOR_PROMPT)
+        self.assertIn("Call eval_collection with r2 only", COLLECTOR_PROMPT)
         self.assertIn("eval_collection returns score 100", COLLECTOR_PROMPT)
+        self.assertIn("Do not decide pass/fail yourself", COLLECTOR_PROMPT)
+        self.assertIn("tool score is the only completion signal", COLLECTOR_PROMPT)
+        self.assertIn("Do not evade a bad score by scrolling away", COLLECTOR_PROMPT)
+        self.assertIn("general extraction heuristic for same-class pages", COLLECTOR_PROMPT)
+        self.assertIn("Define run(xml: str) -> dict", COLLECTOR_PROMPT)
         self.assertIn("Do not tap", COLLECTOR_PROMPT)
         self.assertIn("Do not enter a lower-level page", COLLECTOR_PROMPT)
 
