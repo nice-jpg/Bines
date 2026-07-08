@@ -57,9 +57,8 @@ class CollectorManager:
                 "2. Scroll only if needed to find a suitable same-page collection region before baseline creation.",
                 "3. Produce r1 directly from the current XML as the baseline JSON.",
                 "4. Call save_baseline with r1. A later save_baseline replaces the stored baseline.",
-                "5. Call sniff_run without changing page state to get r2.",
-                "6. Call eval_collection with only r2; the tool uses the stored r1.",
-                "7. If the tool score is below 100, analyze the mismatch cause, improve run.py with a general same-class-page heuristic, and repeat evaluation on the same XML/page state.",
+                "5. Call sniff_run without changing page state to get r2 and the internal evaluation result.",
+                "6. If sniff_run.evaluation.score is below 100, analyze sniff_run.evaluation.errors and sniff_run.evaluation.missing, improve run.py with a general same-class-page heuristic, and repeat sniff_run on the same XML/page state.",
                 "</workflow>",
                 "</collector_assignment>",
             ]
@@ -140,29 +139,29 @@ class CollectorToolbox:
 
     def sniff_run(self) -> str:
         xml = self.collector_uiautomate()
-        return self.mechanism.sniff_run(self.page_path, xml)
+        run_result = json.loads(self.mechanism.sniff_run(self.page_path, xml))
+        if self._baseline is None:
+            evaluation = {
+                "score": 0,
+                "errors": ["missing_baseline"],
+                "missing": ["result"],
+            }
+        else:
+            evaluation = eval_collection(self._baseline, run_result, self.required_fields, self.output_schema)
+        return json.dumps(
+            {
+                "ok": run_result.get("ok") is True and evaluation["score"] == 100,
+                "run": run_result,
+                "evaluation": evaluation,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
 
     def save_baseline(self, r1: str) -> str:
         self._baseline = _coerce_json(r1)
         return json.dumps(
             {"ok": True, "baseline_saved": True, "baseline": self._baseline},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-
-    def eval_collection(self, r2: str) -> str:
-        if self._baseline is None:
-            return json.dumps(
-                {
-                    "score": 0,
-                    "ok": False,
-                    "issues": ["missing_baseline: call save_baseline before eval_collection"],
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        return json.dumps(
-            eval_collection(self._baseline, r2, self.required_fields, self.output_schema),
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -212,7 +211,10 @@ def create_collector_tools(
         StructuredTool.from_function(
             func=toolbox.sniff_run,
             name="sniff_run",
-            description="Capture current XML and run the current page's run.py without changing page state.",
+            description=(
+                "Capture current XML, run the current page's run.py without changing page state, "
+                "then internally compare r2 against the saved baseline r1. Returns run output and evaluation."
+            ),
         ),
         StructuredTool.from_function(
             func=toolbox.save_baseline,
@@ -220,14 +222,6 @@ def create_collector_tools(
             description=(
                 "Store the collector-produced baseline r1 JSON for later evaluation. "
                 "Input: r1 JSON string. The baseline is unique; calling this again replaces the prior baseline."
-            ),
-        ),
-        StructuredTool.from_function(
-            func=toolbox.eval_collection,
-            name="eval_collection",
-            description=(
-                "Compare stored baseline r1 with run.py result r2. Input: r2 JSON string only. "
-                "The score and issues returned by this tool are the authoritative loop condition."
             ),
         ),
     ]

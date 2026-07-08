@@ -48,10 +48,10 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
         "write_run_py",
         "sniff_run",
         "save_baseline",
-        "eval_collection",
     ]
     assert "tap" not in names
     assert "swipe_back" not in names
+    assert "eval_collection" not in names
 
 
 def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> None:
@@ -67,16 +67,23 @@ def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> Non
         )
     }
 
+    tools["save_baseline"].func('{"items": [{"name": "cup"}]}')
     result = json.loads(tools["sniff_run"].func())
 
     assert result["ok"] is True
-    assert result["result"] == {"items": [{"name": "cup"}]}
+    assert result["run"]["ok"] is True
+    assert result["run"]["result"] == {"items": [{"name": "cup"}]}
+    assert result["evaluation"] == {"score": 100, "errors": [], "missing": []}
 
 
-def test_eval_collection_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
+def test_sniff_run_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
+    (page_dir / "run.py").write_text(
+        "def run(xml: str):\n"
+        "    return {'items': [{'name': 'cup'}]}\n",
+        encoding="utf-8",
+    )
     tools = {
         tool.name: tool
         for tool in create_collector_tools(
@@ -86,17 +93,18 @@ def test_eval_collection_uses_saved_baseline_and_replacement(tmp_path: Path) -> 
         )
     }
 
-    missing = json.loads(tools["eval_collection"].func('{"items": []}'))
+    missing = json.loads(tools["sniff_run"].func())
     saved = json.loads(tools["save_baseline"].func('{"items": [{"name": "cup"}]}'))
-    matched = json.loads(tools["eval_collection"].func('{"items": [{"name": "cup"}]}'))
+    matched = json.loads(tools["sniff_run"].func())
     tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
-    replaced = json.loads(tools["eval_collection"].func('{"items": [{"name": "cup"}]}'))
+    replaced = json.loads(tools["sniff_run"].func())
 
-    assert missing["score"] == 0
-    assert "missing_baseline" in missing["issues"][0]
+    assert missing["evaluation"]["score"] == 0
+    assert "missing_baseline" in missing["evaluation"]["errors"]
     assert saved["baseline_saved"] is True
-    assert matched["score"] == 100
-    assert replaced["score"] < 100
+    assert matched["evaluation"]["score"] == 100
+    assert replaced["evaluation"]["score"] < 100
+    assert replaced["evaluation"]["errors"] == ["result.items[0].name"]
 
 
 def test_prepare_collector_invokes_isolated_collector_agent() -> None:

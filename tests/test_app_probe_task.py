@@ -55,7 +55,7 @@ class AppProbeTaskTests(unittest.TestCase):
         self.assertEqual(len(messages), 2)
         self.assertIn("<environment_context>", messages[0]["content"])
         self.assertIn("<config_context>", messages[1]["content"])
-        self.assertIn("- 应用名称：com.sankuai.meituan", messages[1]["content"])
+        self.assertIn("- 应用包名：com.sankuai.meituan", messages[1]["content"])
 
 
 if __name__ == "__main__":

@@ -194,13 +194,15 @@ def eval_collection(r1: Any, r2: Any, required_fields: str = "", output_schema: 
     if isinstance(actual, Mapping) and actual.get("ok") is True and "result" in actual:
         actual = actual["result"]
     if isinstance(actual, Mapping) and actual.get("ok") is False:
-        return {"score": 0, "ok": False, "issues": [f"script_error: {actual.get('error_type')}: {actual.get('error')}"]}
+        return {"score": 0, "errors": ["result"], "missing": []}
 
-    required = _parse_required_fields(required_fields, output_schema)
-    issues: list[str] = []
-    _compare(expected, actual, "$", required, issues)
-    score = 100 if not issues else max(0, 100 - min(100, len(issues) * 20))
-    return {"score": score, "ok": score == 100, "issues": issues}
+    errors: list[str] = []
+    missing: list[str] = []
+    matched = _compare_json(expected, actual, "result", errors, missing)
+    failures = len(errors) + len(missing)
+    total = matched + failures
+    score = 100 if total == 0 else round((matched / total) * 100)
+    return {"score": score, "errors": errors, "missing": missing}
 
 
 def _load_run_module(path: Path) -> ModuleType:
@@ -228,40 +230,38 @@ def _coerce_json(value: Any) -> Any:
     return value
 
 
-def _parse_required_fields(required_fields: str, output_schema: str) -> set[str]:
-    raw = f"{required_fields}\n{output_schema}"
-    fields: set[str] = set()
-    for token in raw.replace("{", " ").replace("}", " ").replace("[", " ").replace("]", " ").replace('"', " ").replace("'", " ").split():
-        normalized = token.strip(",:")
-        if normalized and normalized.replace("_", "").isalnum():
-            fields.add(normalized)
-    return fields
-
-
-def _compare(expected: Any, actual: Any, path: str, required: set[str], issues: list[str]) -> None:
+def _compare_json(expected: Any, actual: Any, path: str, errors: list[str], missing: list[str]) -> int:
     if isinstance(expected, Mapping):
         if not isinstance(actual, Mapping):
-            issues.append(f"{path}: expected object")
-            return
-        keys = set(expected)
-        keys.update(key for key in required if key in expected)
-        for key in sorted(keys):
+            errors.append(path)
+            return 0
+        matched = 0
+        for key in sorted(expected):
+            child_path = f"{path}.{key}"
             if key not in actual:
-                issues.append(f"{path}.{key}: missing")
+                missing.append(child_path)
             else:
-                _compare(expected[key], actual[key], f"{path}.{key}", required, issues)
-        return
+                matched += _compare_json(expected[key], actual[key], child_path, errors, missing)
+        for key in sorted(set(actual) - set(expected)):
+            errors.append(f"{path}.{key}")
+        return matched
     if isinstance(expected, list):
         if not isinstance(actual, list):
-            issues.append(f"{path}: expected list")
-            return
-        if len(expected) != len(actual):
-            issues.append(f"{path}: length expected {len(expected)} actual {len(actual)}")
-        for index, expected_item in enumerate(expected[: len(actual)]):
-            _compare(expected_item, actual[index], f"{path}[{index}]", required, issues)
-        return
+            errors.append(path)
+            return 0
+        matched = 0
+        common_length = min(len(expected), len(actual))
+        for index in range(common_length):
+            matched += _compare_json(expected[index], actual[index], f"{path}[{index}]", errors, missing)
+        for index in range(common_length, len(expected)):
+            missing.append(f"{path}[{index}]")
+        for index in range(common_length, len(actual)):
+            errors.append(f"{path}[{index}]")
+        return matched
     if expected != actual:
-        issues.append(f"{path}: expected {expected!r} actual {actual!r}")
+        errors.append(path)
+        return 0
+    return 1
 
 
 def _app_slug(application_name: str) -> str:

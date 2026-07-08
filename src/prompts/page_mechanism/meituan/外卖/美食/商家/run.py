@@ -36,6 +36,11 @@ def is_inside(n: Dict, x1: float, y1: float, x2: float, y2: float) -> bool:
     return x1 <= cx <= x2 and y1 <= cy <= y2
 
 
+def x_overlap(n1: Dict, n2: Dict) -> bool:
+    """Check if two nodes have overlapping x-ranges."""
+    return n1["x1"] < n2["x2"] and n2["x1"] < n1["x2"]
+
+
 UI_LABELS = {
     "评分", "月售", "外送", "自取", "点菜", "评价", "商家",
     "返回", "搜索", "收藏", "联系商家", "拼单", "更多",
@@ -49,7 +54,7 @@ UI_LABELS = {
     "堂食店", "为你推荐",
     "汉堡主食", "炸鸡小吃", "满足大串", "精品小串",
     "正新饮品", "正新鸡排", "炸鸡桶",
-    "非常哇塞",
+    "非常哇塞", "免起送价",
 }
 
 
@@ -87,12 +92,20 @@ def is_ui_label(text: str) -> bool:
     return False
 
 
-def collect_price_digits(nodes: List[Dict], start_idx: int, card_x1: float, card_y1: float, card_x2: float, card_y2: float) -> str:
-    """Collect consecutive digit/decimal nodes after a ¥ or ￥ symbol within card bounds."""
+def collect_price_digits(nodes: List[Dict], start_idx: int, 
+                          card_x1: float, card_y1: float, 
+                          card_x2: float, card_y2: float) -> str:
+    """Collect consecutive digit/decimal nodes after a position within card bounds.
+    Skips non-text nodes. Detects row changes by checking if a new digit node
+    starts significantly to the left of where the previous segment ended (indicating
+    a new line/row for discount price)."""
     parts = []
+    last_x2 = None
     for k in range(start_idx + 1, min(start_idx + 10, len(nodes))):
         nk = nodes[k]
         t = nk["text"]
+        if not t:
+            continue  # skip non-text nodes
         cxk, cyk = center(nk)
         if not (card_x1 <= cxk <= card_x2 and card_y1 <= cyk <= card_y2):
             break
@@ -102,7 +115,47 @@ def collect_price_digits(nodes: List[Dict], start_idx: int, card_x1: float, card
         if t.startswith("比单点"):
             break
         if re.match(r'^[\d.]+$', t):
+            # If the new digit starts significantly left of the previous end,
+            # it's a new row (discount price below the regular price)
+            if last_x2 is not None and nk["x1"] < last_x2 - 20:
+                break
             parts.append(t)
+            if last_x2 is None or nk["x2"] > last_x2:
+                last_x2 = nk["x2"]
+        else:
+            break
+    result = "".join(parts)
+    while ".." in result:
+        result = result.replace("..", ".")
+    result = result.strip(".")
+    return result
+
+
+def collect_price_digits_backward(nodes: List[Dict], start_idx: int,
+                                   card_x1: float, card_y1: float,
+                                   card_x2: float, card_y2: float) -> str:
+    """Collect digit nodes going backward from a node index within card bounds.
+    Skips non-text nodes. Detects row changes by x-position."""
+    parts = []
+    first_x1 = None
+    for k in range(start_idx - 1, max(start_idx - 10, -1), -1):
+        nk = nodes[k]
+        t = nk["text"]
+        if not t:
+            continue  # skip non-text nodes
+        cxk, cyk = center(nk)
+        if not (card_x1 <= cxk <= card_x2 and card_y1 <= cyk <= card_y2):
+            break
+        if t in ("¥", "￥"):
+            break
+        if re.match(r'^[\d.]+$', t):
+            # Going backward: if this digit is significantly to the right of
+            # the first collected digit, it's from a different row (the ¥ price row above)
+            if first_x1 is not None and nk["x1"] > first_x1 + 20:
+                break
+            parts.insert(0, t)
+            if first_x1 is None or nk["x1"] < first_x1:
+                first_x1 = nk["x1"]
         else:
             break
     result = "".join(parts)
@@ -116,14 +169,22 @@ def run(xml: str) -> dict:
     """
     Extract merchant info and product items from a Meituan merchant detail page.
 
-    Page structure (same-class pages):
-    - Top: merchant header area (merchant name, rating, distance, coupons)
-    - Middle: tab bar ("点菜", "评价", "商家")
-    - Below tabs: main content area with:
-        - Left sidebar: category list (RecyclerView, x in [0, ~231])
-        - Right panel: product items (RecyclerView/ScrollView, x in [~231, 1080])
-    - Each product is inside a ViewGroup container (c="ViewGroup", k="1")
-      positioned in the right panel area with significant height.
+    Same-class page heuristic:
+    - The page topology: top header (merchant info) → tab bar → main content
+      (left sidebar + right product panel).
+    - Tab bar contains "点菜" tab text; its y-position separates header from content.
+    - Merchant name: long (>=5 chars) Chinese text in header area, often with （）.
+    - Rating: text node near "评分" label.
+    - Distance: text starting with "距您".
+    - Product cards: ViewGroup (c="ViewGroup", k="1") in right panel area
+      (center x > 400, width > 400, height > 40) AND below tab_y position.
+    - Each card has: name (first non-UI Chinese text >= 3 chars),
+      monthly_sales ("月售X"), ¥ price (original), and a discount price
+      marked by ￥ or by a "新客价" label with nearby digits.
+    - Price row detection: uses x-position changes to separate ¥ price row
+      from discount price row below it.
+    - Edge case: When ￥ symbol is cut off at bottom of viewport, find digits
+      near "新客价" label going backward, using x-position to avoid crossing rows.
     """
     result = {
         "merchant": {"name": "", "rating": "", "distance": ""},
@@ -138,7 +199,6 @@ def run(xml: str) -> dict:
     # ========================
     # 1. FIND THE TAB BAR Y-POSITION
     # ========================
-    # The "点菜" tab text marks the boundary between header and content.
     tab_y = None
     for n in text_nodes:
         if n["text"] == "点菜":
@@ -152,24 +212,21 @@ def run(xml: str) -> dict:
     if tab_y is not None:
         merchant_header_nodes = [n for n in text_nodes if n["y2"] <= tab_y]
     else:
-        # Fallback: use first 30% of screen as header
-        header_bottom = min(nodes, key=lambda n: n["y1"]).get("y2", 0) + 600 if nodes else 600
+        header_bottom = 600
         merchant_header_nodes = [n for n in text_nodes if n["y1"] < header_bottom]
 
-    # Merchant name: find long Chinese text, preferably with brackets
+    # Merchant name: find long Chinese text with brackets, in header area
     merchant_name = ""
     for n in merchant_header_nodes:
         t = n["text"]
-        if len(t) < 4:
+        if len(t) < 5:
             continue
         if is_ui_label(t):
             continue
         if not re.search(r'[\u4e00-\u9fff]', t):
             continue
-        # Skip product-like names with 【】
         if t.startswith("【"):
             continue
-        # Skip if it contains "月售"
         if "月售" in t:
             continue
         # Prefer names with brackets （）
@@ -178,7 +235,6 @@ def run(xml: str) -> dict:
             break
 
     if not merchant_name:
-        # Fallback: first reasonable Chinese text
         for n in merchant_header_nodes:
             t = n["text"]
             if len(t) < 5:
@@ -195,23 +251,26 @@ def run(xml: str) -> dict:
 
     result["merchant"]["name"] = merchant_name
 
-    # Rating: find "评分" label, then find nearest numeric value
+    # Rating: find "评分" label, then find text node directly below it
+    rating_label_node = None
     for n in merchant_header_nodes:
         if n["text"] == "评分":
-            rx, ry = center(n)
-            best_val = ""
-            best_dist = 999
-            for m in merchant_header_nodes:
-                if re.match(r'^[\d.]+$', m["text"]):
-                    mx, my = center(m)
-                    if abs(mx - rx) < 200 and 0 <= my - ry <= 80:
-                        dist = abs(mx - rx) + abs(my - ry)
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_val = m["text"]
-            if best_val:
-                result["merchant"]["rating"] = best_val
-                break
+            rating_label_node = n
+            break
+
+    if rating_label_node:
+        for n in merchant_header_nodes:
+            if x_overlap(rating_label_node, n):
+                if rating_label_node["y1"] <= n["y1"] <= rating_label_node["y2"] + 60:
+                    t = n["text"]
+                    if t and t != "评分":
+                        if re.match(r'^[\d.]+$', t):
+                            result["merchant"]["rating"] = t
+                        elif t == "暂无":
+                            result["merchant"]["rating"] = ""
+                        else:
+                            result["merchant"]["rating"] = t
+                        break
 
     # Distance: find "距您" text
     for n in merchant_header_nodes:
@@ -225,10 +284,7 @@ def run(xml: str) -> dict:
     # 3. PRODUCT ITEMS
     # ========================
 
-    # Find product card containers in the right panel
-    # Cards are ViewGroup (c="ViewGroup") with k="1", in the right panel area
-    # with significant height
-    
+    # Find product card containers in the right panel, below the tab bar
     card_containers = []
     for n in nodes:
         if n["cls"] == "ViewGroup" and n.get("key") == "1":
@@ -236,18 +292,22 @@ def run(xml: str) -> dict:
             h = n["y2"] - n["y1"]
             cx = (n["x1"] + n["x2"]) / 2
             
-            # Right panel: x center > ~400 (not left sidebar)
-            # Substantial size: width > 400, height > 150
-            if cx > 400 and w > 400 and h > 150:
-                card_containers.append(n)
+            # Must be in right panel (not left sidebar)
+            if not (cx > 400 and w > 400 and h > 40):
+                continue
+            
+            # Must be below the tab bar (product area)
+            if tab_y is not None and n["y1"] < tab_y:
+                continue
+            
+            card_containers.append(n)
 
     # Sort by y position
     card_containers.sort(key=lambda n: n["y1"])
 
-    # Also skip cards that overlap too much - keep only distinct ones
+    # Filter out cards that are contained within others
     filtered_cards = []
     for card in card_containers:
-        # Check if this card is mostly inside another card
         is_contained = False
         for other in filtered_cards:
             if (card["x1"] >= other["x1"] and card["x2"] <= other["x2"] and
@@ -272,7 +332,6 @@ def run(xml: str) -> dict:
             continue
 
         # Find product name: first non-UI-label Chinese text >= 3 chars
-        # that's not a category header (not "小新福利", "单人餐", etc.)
         product_name = ""
         name_node = None
         for n in card_texts:
@@ -284,10 +343,6 @@ def run(xml: str) -> dict:
             if not re.search(r'[\u4e00-\u9fff]', t):
                 continue
             if t.startswith("月售"):
-                continue
-            if t in ("小新福利", "单人餐", "正新鸡排", "汉堡主食", "炸鸡小吃",
-                     "满足大串", "精品小串", "正新饮品", "推荐", "券类核销",
-                     "炸鸡桶"):
                 continue
             if not product_name or n["y1"] < (name_node["y1"] if name_node else 9999):
                 product_name = t
@@ -309,10 +364,11 @@ def run(xml: str) -> dict:
                     monthly_sales = t.replace("月售", "")
                 break
 
-        # Find prices: look for ¥ and ￥ symbols within the card
+        # Find prices
         regular_price = ""
         discount_price = ""
 
+        # Strategy 1: Find ¥ symbol and collect digits after it
         for i, n in enumerate(nodes):
             t = n["text"]
             if t == "¥" and is_inside(n, cx1, cy1, cx2, cy2):
@@ -320,6 +376,7 @@ def run(xml: str) -> dict:
                 if digits:
                     regular_price = digits
 
+        # Strategy 2: Find ￥ symbol and collect digits after it
         for i, n in enumerate(nodes):
             t = n["text"]
             if t == "￥" and is_inside(n, cx1, cy1, cx2, cy2):
@@ -327,10 +384,28 @@ def run(xml: str) -> dict:
                 if digits:
                     discount_price = digits
 
-        # Determine price mapping:
-        # price = the ¥ price (current selling price)
-        # original_price = the ¥ price (menu price, same if no discount)
-        # discount_price = the ￥ price (discounted/new customer price)
+        # Strategy 3: If no ￥ symbol found, look for "新客价" label
+        # and collect digits backward
+        if not discount_price:
+            new_customer_node = None
+            for n in card_texts:
+                if n["text"] == "新客价":
+                    new_customer_node = n
+                    break
+            if new_customer_node:
+                found_idx = None
+                for i, n in enumerate(nodes):
+                    if (n["text"] == "新客价" and 
+                        abs(n["x1"] - new_customer_node["x1"]) < 5 and
+                        abs(n["y1"] - new_customer_node["y1"]) < 5):
+                        found_idx = i
+                        break
+                
+                if found_idx is not None:
+                    digits = collect_price_digits_backward(nodes, found_idx, cx1, cy1, cx2, cy2)
+                    if digits:
+                        discount_price = digits
+
         price = regular_price if regular_price else discount_price
         original_price = regular_price if regular_price else (discount_price if discount_price else "")
 

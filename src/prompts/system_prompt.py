@@ -53,30 +53,21 @@ Mission:
 - Optimize the current page's run.py until it extracts the required JSON from a single real page XML.
 - Generalize from the current XML to same-class pages: handle changed text positions, split labels across multiple nodes, multiline names, reordered sibling nodes, and equivalent repeated card structures.
 
-Allowed behavior:
-- Read current XML with collector_uiautomate.
-- Scroll only with collector_swipe_up and collector_swipe_down to reveal data on the same page.
-- Read and write only the current page's run.py.
-- Call sniff_run to capture XML and execute run.py. The run.py exists, no need to create it from scratch. The sniff_run output is the only source of r2 for eval_collection.
-- Call save_baseline immediately after producing baseline r1.
-- Call eval_collection with only r2; the tool compares against the saved baseline.
-
 Fixed workflow:
 1. Analyze the conductor assignment.
 2. Swipe to find a suitable same-page collection region before baseline creation.
-4. Directly produce r1 from the current XML as baseline JSON without a tool. Trust your own extraction and save it immediately.
-5. Without changing page state, call sniff_run to get r2.
-6. Evaluate r2 to get a score.
-7. If the tool score is less than 100, use the tool's issues with XML/sniff output to summarize the mismatch cause, propose a general extraction heuristic for same-class pages, read_run_py, write a corrected run.py, and repeat steps 6-7 on the same XML/page state.
-8. When the tool score is 100, return a concise readiness result including the final score and JSON shape.
+3. Extract data from the current XML as baseline JSON without a tool. Trust your own extraction, save the baseline as soon as possible.
+4. Without changing page state, call sniff_run to evaluate current run.py.
+5. If sniff_run.evaluation.score is less than 100, use sniff_run.evaluation.errors, sniff_run.evaluation.missing, XML, and run output to summarize the mismatch cause, propose a general extraction heuristic for same-class pages, read_run_py, write a corrected run.py, and repeat step 4 on the same XML/page state.
+6. Whenever run.py is modified, call sniff_run to evaluate the new run.py on the same XML/page state.
+7. When sniff_run.evaluation.score is 100, return a concise readiness result including the final score and JSON shape.
 
 Forbidden behavior:
 - Do not tap.
 - Do not enter a lower-level page.
 - Do not go back to an upper-level page.
-- Do not read or modify run.py before eval_collection returns a score. 
-- Do not finish until eval_collection returns score 100, unless a real blocker prevents a valid script.
-- Do not decide pass/fail yourself. The eval_collection tool score is the only completion signal.
+- **Focus on data reliability**. Never modify run.py before sniff_run returns an evaluation score.
+- Do not finish until sniff_run.evaluation.score is 100, unless a real blocker prevents a valid script.
 - Do not evade a bad score by scrolling away or changing page state. Diagnose the current XML, current run.py output, and tool issues first.
 
 run.py contract:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 import re
@@ -69,35 +70,79 @@ def _build_environment_context(cwd: Path, shell: str, current_date: str, timezon
 def _build_config_context(config: "_Config") -> str:
     lines = [
         "<config_context>",
-        f"  - 应用名称：{config.application_name}",
-        f"    - 城市：{config.city}",
-        "    - 采集参数",
-        f"      - 地址：{config.address}",
-        f"      - 范围：{config.range_text}",
+        f"  - 应用包名：{config.package_name}",
     ]
-    for index, page in enumerate(config.secondary_pages, start=1):
-        lines.append(f"    - 二级页面{index}：{page}")
-    if not config.secondary_pages:
-        lines.extend(["    - 二级页面1：未配置", "    - 二级页面2：未配置"])
+    if not config.cities:
+        lines.extend(
+            [
+                "    - 城市：未配置",
+                "      - 采集参数",
+                "        - 地址：未配置",
+                "        - 范围：未配置",
+                "      - 页面任务树：未配置",
+            ]
+        )
+        return "\n".join(lines)
+    for city in config.cities:
+        lines.extend(
+            [
+                f"    - 城市：{city.name}",
+                "      - 采集参数",
+                f"        - 地址：{city.address}",
+                f"        - 范围：{city.range_text}",
+                "      - 页面任务树",
+            ]
+        )
+        if city.page_roots:
+            for node in city.page_roots:
+                _append_page_node(lines, node, indent_level=4, ancestors=[])
+        else:
+            lines.append("        - 未配置")
     lines.append("</config_context>")
     return "\n".join(lines)
 
 
+def _append_page_node(
+    lines: list[str],
+    node: "_PageNode",
+    *,
+    indent_level: int,
+    ancestors: list[str],
+) -> None:
+    indent = "  " * indent_level
+    path_parts = [*ancestors, node.name]
+    path_text = " -> ".join(path_parts)
+    if node.kind == "leaf":
+        lines.append(f"{indent}- leaf：{node.name}（最终采集目标页面，路径：{path_text}）")
+        return
+    lines.append(f"{indent}- subpage：{node.name}（当前页面内可点击跳转，路径：{path_text}）")
+    for child in node.children:
+        _append_page_node(lines, child, indent_level=indent_level + 1, ancestors=path_parts)
+
+
+@dataclass(frozen=True)
 class _Config:
-    def __init__(
-        self,
-        *,
-        application_name: str = "未配置",
-        city: str = "未配置",
-        address: str = "未配置",
-        range_text: str = "未配置",
-        secondary_pages: list[str] | None = None,
-    ) -> None:
-        self.application_name = application_name
-        self.city = city
-        self.address = address
-        self.range_text = range_text
-        self.secondary_pages = secondary_pages or []
+    package_name: str = "未配置"
+    cities: list["_CityConfig"] | None = None
+
+    def __post_init__(self) -> None:
+        if self.cities is None:
+            object.__setattr__(self, "cities", [])
+
+
+@dataclass(frozen=True)
+class _CityConfig:
+    name: str
+    address: str
+    range_text: str
+    page_roots: list["_PageNode"]
+
+
+@dataclass(frozen=True)
+class _PageNode:
+    kind: str
+    name: str
+    children: list["_PageNode"]
 
 
 def _read_config(config_path: Path) -> _Config:
@@ -109,14 +154,46 @@ def _read_config(config_path: Path) -> _Config:
     except ET.ParseError:
         return _Config()
 
-    return _Config(
-        application_name=_node_value(root, ["package", "应用名称", "app_name", "application_name", "application", "app", "name"]),
-        city=_node_value(root, ["city", "城市"]),
-        address=_node_value(root, ["address", "地址"]),
-        range_text=_format_range_text(
-            _node_value(root, ["range", "范围", "radius", "scope"], attribute_names=["size", "name", "value"])
-        ),
-        secondary_pages=_secondary_pages(root),
+    if root.tag != "package":
+        return _Config()
+
+    package_name = _attribute_value(root, "name")
+    cities = [_parse_city(child) for child in root if child.tag == "city"]
+    return _Config(package_name=package_name, cities=cities)
+
+
+def _parse_city(city_element: ET.Element) -> _CityConfig:
+    children = list(city_element)
+    args_element = children[0] if children and children[0].tag == "args" else None
+    address = "未配置"
+    range_text = "未配置"
+    if args_element is not None:
+        address_element = args_element.find("address")
+        range_element = args_element.find("range")
+        if address_element is not None:
+            address = _attribute_value(address_element, "name")
+        if range_element is not None:
+            range_text = _format_range_text(_attribute_value(range_element, "size"))
+
+    page_roots = [_parse_page_node(child) for child in children[1:] if child.tag == "subpage"]
+    return _CityConfig(
+        name=_attribute_value(city_element, "name"),
+        address=address,
+        range_text=range_text,
+        page_roots=page_roots,
+    )
+
+
+def _parse_page_node(element: ET.Element) -> _PageNode:
+    children = [
+        _parse_page_node(child)
+        for child in element
+        if child.tag in {"subpage", "leaf"}
+    ]
+    return _PageNode(
+        kind=element.tag,
+        name=_attribute_value(element, "name"),
+        children=children,
     )
 
 
@@ -152,49 +229,9 @@ def _format_range_text(range_text: str) -> str:
     return value or "未配置"
 
 
-def _node_value(root: ET.Element, names: list[str], attribute_names: list[str] | None = None) -> str:
-    wanted = {_normalize_name(name) for name in names}
-    attributes = [_normalize_name(name) for name in (attribute_names or ["name", "value"])]
-    for element in root.iter():
-        if _normalize_name(element.tag) in wanted:
-            value = _element_value(element, attributes)
-            if value:
-                return value
-        for key, value in element.attrib.items():
-            if _normalize_name(key) in wanted and value.strip():
-                return value.strip()
-    return "未配置"
-
-
-def _secondary_pages(root: ET.Element) -> list[str]:
-    pages: list[str] = []
-    for element in root.iter():
-        normalized = _normalize_name(element.tag)
-        text = _element_value(element, ["name", "value"])
-        if not text:
-            continue
-        if normalized.startswith("二级页面") or normalized in {"subpage", "secondary_page", "secondarypage", "level2page"}:
-            pages.append(text)
-            continue
-        if element.attrib.get("level") == "2" and normalized in {"page", "页面"}:
-            pages.append(text)
-    return pages
-
-
-def _element_value(element: ET.Element, attribute_names: list[str]) -> str:
-    for attribute_name in attribute_names:
-        for key, value in element.attrib.items():
-            if _normalize_name(key) == attribute_name and value.strip():
-                return value.strip()
-    return _element_text(element)
-
-
-def _element_text(element: ET.Element) -> str:
-    return " ".join(text.strip() for text in element.itertext() if text and text.strip())
-
-
-def _normalize_name(name: str) -> str:
-    return re.sub(r"[\s\-_.]", "", str(name).strip().lower())
+def _attribute_value(element: ET.Element, name: str) -> str:
+    value = element.attrib.get(name, "").strip()
+    return value or "未配置"
 
 
 def _default_workspace_dir() -> Path:

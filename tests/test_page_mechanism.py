@@ -74,10 +74,18 @@ def test_run_py_exception_returns_structured_repair_signal(tmp_path: Path) -> No
 
 
 def test_eval_collection_scores_exact_match_and_mismatch() -> None:
-    assert eval_collection({"items": [{"name": "cup"}]}, {"items": [{"name": "cup"}]})["score"] == 100
-    mismatch = eval_collection({"items": [{"name": "cup"}]}, {"items": [{"name": "bowl"}]})
+    assert eval_collection({"items": [{"name": "cup"}]}, {"items": [{"name": "cup"}]}) == {
+        "score": 100,
+        "errors": [],
+        "missing": [],
+    }
+    mismatch = eval_collection(
+        {"merchant": {"distance": "1km"}, "items": [{"name": "cup"}, {"name": "bowl"}, {"name": "plate"}]},
+        {"merchant": {"distance": "2km"}, "items": [{"name": "cup"}]},
+    )
     assert mismatch["score"] < 100
-    assert mismatch["issues"]
+    assert mismatch["errors"] == ["result.merchant.distance"]
+    assert mismatch["missing"] == ["result.items[1]", "result.items[2]"]
 
 
 def test_page_run_hook_appends_collection_json(tmp_path: Path) -> None:
