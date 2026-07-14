@@ -56,30 +56,31 @@ Mission:
 
 Allowed tools and scope:
 - Use collector_uiautomate to read the real XML.
-- Use collector_swipe_up and collector_swipe_down only before saving the baseline when locating a suitable same-page region.
+- Use collector_swipe_up and collector_swipe_down to reach materially different states on the same page for compatibility verification.
 - Read and write only the current page's run.py through read_run_py and write_run_py.
 
 Fixed workflow:
 1. Analyze the conductor assignment.
-2. Swipe to find a suitable same-page collection region before baseline creation.
-3. Extract data from the current XML as baseline JSON without a tool. Call save_baseline immediately after producing baseline r1.
+2. Use collector_uiautomate, then optionally swipe to find a suitable same-page collection region.
+3. Extract data from the current XML as baseline JSON without a tool. Call save_baseline immediately after producing baseline r1; the tool binds r1 to that exact XML state.
 4. Without changing page state, call sniff_run to evaluate current run.py.
 5. If sniff_run.evaluation.score is less than 100, use sniff_run.evaluation.errors, sniff_run.evaluation.missing, XML, and run output to summarize the mismatch cause, propose a general extraction heuristic for same-class pages, read_run_py, write a corrected run.py, and repeat step 4 on the same XML/page state.
-6. Whenever run.py is modified, call sniff_run to evaluate the new run.py on the same XML/page state.
-7. When sniff_run.evaluation.score is 100, return a concise readiness result including the final score and JSON shape.
+6. After the current state reaches 100, swipe to a materially different state on the same page. Analyze its XML structure, produce and save a new baseline for that state, then call sniff_run without moving again.
+7. If the new state fails, improve run.py using structural features shared by both states. A changed script invalidates prior-version evidence, so validate the final script across additional distinct states.
+8. Finish only when sniff_run.verification.ready is true, meaning the same run.py fingerprint passed at least two different swiped XML states. Return a concise readiness summary.
 
 Evaluation authority:
-- Use sniff_run.evaluation as the only pass/fail signal.
+- Use sniff_run.evaluation as the only per-state pass/fail signal and sniff_run.verification.ready as the only training-completion signal.
 - Do not decide pass/fail yourself from r1, r2, or your own judgment.
-- The sniff_run evaluation score is the only completion signal; finish only when sniff_run.evaluation.score is 100.
+- A single score of 100 is insufficient. Do not claim readiness until sniff_run.verification.ready is true.
 
 Forbidden behavior:
 - Do not tap.
 - Do not enter a lower-level page.
 - Do not go back to an upper-level page.
 - **Focus on data reliability**. Never modify run.py before sniff_run returns an evaluation score.
-- Do not finish until sniff_run.evaluation.score is 100, unless a real blocker prevents a valid script.
-- Do not evade a bad score by scrolling away or changing page state. Diagnose the current XML, current run.py output, and tool issues first.
+- Do not finish until multi-state verification is ready, unless a real blocker prevents a valid script.
+- Do not evade a bad score by scrolling away. Diagnose and repair the current XML state first; swipe only after that state passes.
 
 run.py contract:
 - Define run(xml: str) -> dict.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any, Callable, Sequence
 
@@ -45,7 +46,14 @@ class CollectorManager:
     ) -> str:
         """Delegate run.py preparation to an isolated collector."""
 
-        agent = self._build_agent(page_path, required_fields, output_schema)
+        toolbox = CollectorToolbox(
+            mechanism=self.mechanism,
+            event_hub=self.event_hub,
+            page_path=page_path,
+            required_fields=required_fields,
+            output_schema=output_schema,
+        )
+        agent = self._build_agent(toolbox)
         message = "\n".join(
             [
                 "<collector_assignment>",
@@ -60,6 +68,8 @@ class CollectorManager:
                 "4. Call save_baseline with r1. A later save_baseline replaces the stored baseline.",
                 "5. Call sniff_run without changing page state to get r2 and the internal evaluation result.",
                 "6. If sniff_run.evaluation.score is below 100, analyze sniff_run.evaluation.errors and sniff_run.evaluation.missing, improve run.py with a general same-class-page heuristic, and repeat sniff_run on the same XML/page state.",
+                "7. After the current state passes, swipe to a materially different state on the same page, inspect its XML, replace the baseline for that state, and call sniff_run again.",
+                "8. Continue until sniff_run.verification.ready is true. This requires the same run.py version to pass at least two distinct swiped page states.",
                 "</workflow>",
                 "</collector_assignment>",
             ]
@@ -76,9 +86,9 @@ class CollectorManager:
                 ensure_ascii=False,
                 sort_keys=True,
             )
-        collector_result = _latest_text(state)
-        ready_payload = _parse_collector_ready_payload(collector_result)
-        trained = bool(ready_payload.get("ready") is True and ready_payload.get("score") == 100)
+        collector_message = _latest_text(state)
+        verification = toolbox.training_result()
+        trained = verification["ready"] is True
         if trained:
             self.training_registry.mark_trained(page_path)
         else:
@@ -87,28 +97,22 @@ class CollectorManager:
             {
                 "ok": True,
                 "page_path": page_path,
-                "result": collector_result,
+                "collector_message": collector_message,
                 "trained": trained,
-                "ready_payload": ready_payload,
+                "verification": verification,
             },
             ensure_ascii=False,
             sort_keys=True,
         )
 
-    def _build_agent(self, page_path: str, required_fields: str, output_schema: str) -> Any:
+    def _build_agent(self, toolbox: CollectorToolbox) -> Any:
         create_agent = self.create_agent_factory
         if create_agent is None:
             from langchain.agents import create_agent as create_agent  # noqa: PLC0415
 
         return create_agent(
             model=self.model,
-            tools=create_collector_tools(
-                mechanism=self.mechanism,
-                event_hub=self.event_hub,
-                page_path=page_path,
-                required_fields=required_fields,
-                output_schema=output_schema,
-            ),
+            tools=toolbox.create_tools(),
             system_prompt=COLLECTOR_PROMPT,
             name="collector",
         )
@@ -116,6 +120,8 @@ class CollectorManager:
 
 class CollectorToolbox:
     """Page-scoped tool implementations exposed only to collector."""
+
+    REQUIRED_VALIDATION_STATES = 2
 
     def __init__(
         self,
@@ -132,15 +138,27 @@ class CollectorToolbox:
         self.required_fields = required_fields
         self.output_schema = output_schema
         self._baseline: Any | None = None
+        self._baseline_state_fingerprint = ""
+        self._baseline_state_revision = -1
+        self._last_xml: str | None = None
+        self._state_revision = 0
+        self._passing_states: dict[str, dict[str, int]] = {}
+        self._last_evaluation: dict[str, Any] = {
+            "score": 0,
+            "errors": ["not_evaluated"],
+            "missing": ["result"],
+        }
+        self._last_sniff_script_fingerprint: str | None = None
+        self._last_sniff_state_fingerprint = ""
 
     def collector_uiautomate(self) -> Any:
-        return self.event_hub.uiautomate()
+        return self._capture_xml(self.event_hub.uiautomate())
 
     def collector_swipe_up(self, x: int, y: int) -> Any:
-        return self.event_hub.swipe_up(x, y)
+        return self._capture_xml(self.event_hub.swipe_up(x, y), after_swipe=True)
 
     def collector_swipe_down(self, x: int, y: int) -> Any:
-        return self.event_hub.swipe_down(x, y)
+        return self._capture_xml(self.event_hub.swipe_down(x, y), after_swipe=True)
 
     def read_run_py(self) -> str:
         return self.mechanism.read_run_py(self.page_path)
@@ -151,19 +169,19 @@ class CollectorToolbox:
     def sniff_run(self) -> str:
         xml = self.collector_uiautomate()
         if not isinstance(xml, str):
-            return json.dumps(
+            evaluation = {"score": 0, "errors": ["uiautomate_error"], "missing": ["result"]}
+            self._record_evaluation(evaluation, self._script_fingerprint(), "")
+            return _json_result(
                 {
                     "ok": False,
                     "run": xml,
-                    "evaluation": {
-                        "score": 0,
-                        "errors": ["uiautomate_error"],
-                        "missing": ["result"],
-                    },
-                },
-                ensure_ascii=False,
-                sort_keys=True,
+                    "evaluation": evaluation,
+                    "verification": self.training_result(),
+                }
             )
+
+        state_fingerprint = _fingerprint(xml)
+        script_fingerprint = self._script_fingerprint()
         run_result = json.loads(self.mechanism.sniff_run(self.page_path, xml))
         if self._baseline is None:
             evaluation = {
@@ -171,25 +189,166 @@ class CollectorToolbox:
                 "errors": ["missing_baseline"],
                 "missing": ["result"],
             }
+        elif self._baseline_state_revision != self._state_revision:
+            evaluation = {
+                "score": 0,
+                "errors": ["baseline_state_mismatch"],
+                "missing": ["result"],
+            }
         else:
             evaluation = eval_collection(self._baseline, run_result, self.required_fields, self.output_schema)
-        return json.dumps(
+        passed = run_result.get("ok") is True and evaluation["score"] == 100
+        if passed:
+            self._passing_states.setdefault(script_fingerprint, {})[state_fingerprint] = self._state_revision
+        self._record_evaluation(evaluation, script_fingerprint, state_fingerprint)
+        return _json_result(
             {
-                "ok": run_result.get("ok") is True and evaluation["score"] == 100,
+                "ok": passed,
                 "run": run_result,
                 "evaluation": evaluation,
+                "verification": self.training_result(),
             },
-            ensure_ascii=False,
-            sort_keys=True,
         )
 
     def save_baseline(self, r1: str) -> str:
-        self._baseline = _coerce_json(r1)
-        return json.dumps(
-            {"ok": True, "baseline_saved": True, "baseline": self._baseline},
-            ensure_ascii=False,
-            sort_keys=True,
+        if self._last_xml is None:
+            return _json_result(
+                {
+                    "ok": False,
+                    "baseline_saved": False,
+                    "error": "Read the current XML before saving a baseline.",
+                }
+            )
+        try:
+            baseline = _coerce_json(r1)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return _json_result(
+                {
+                    "ok": False,
+                    "baseline_saved": False,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+        if not isinstance(baseline, dict):
+            return _json_result(
+                {
+                    "ok": False,
+                    "baseline_saved": False,
+                    "error_type": "TypeError",
+                    "error": "Baseline r1 must be a JSON object.",
+                }
+            )
+        self._baseline = baseline
+        self._baseline_state_fingerprint = _fingerprint(self._last_xml)
+        self._baseline_state_revision = self._state_revision
+        return _json_result(
+            {
+                "ok": True,
+                "baseline_saved": True,
+                "baseline": self._baseline,
+                "state_fingerprint": self._baseline_state_fingerprint,
+                "state_revision": self._state_revision,
+            }
         )
+
+    def training_result(self) -> dict[str, Any]:
+        script_fingerprint = self._script_fingerprint()
+        passing_states = self._passing_states.get(script_fingerprint, {})
+        distinct_revisions = set(passing_states.values())
+        last_result_is_current = self._last_sniff_script_fingerprint == script_fingerprint
+        if self._last_sniff_script_fingerprint is None:
+            effective_evaluation = self._last_evaluation
+        elif last_result_is_current:
+            effective_evaluation = self._last_evaluation
+        else:
+            effective_evaluation = {
+                "score": 0,
+                "errors": ["script_changed_since_evaluation"],
+                "missing": [],
+            }
+        ready = bool(
+            last_result_is_current
+            and effective_evaluation.get("score") == 100
+            and len(passing_states) >= self.REQUIRED_VALIDATION_STATES
+            and len(distinct_revisions) >= self.REQUIRED_VALIDATION_STATES
+        )
+        return {
+            "ready": ready,
+            "score": effective_evaluation.get("score", 0),
+            "evaluation": effective_evaluation,
+            "validated_states": len(passing_states),
+            "required_states": self.REQUIRED_VALIDATION_STATES,
+            "validated_state_fingerprints": sorted(passing_states),
+            "validated_state_revisions": sorted(distinct_revisions),
+            "script_fingerprint": script_fingerprint,
+            "current_state_fingerprint": self._last_sniff_state_fingerprint,
+        }
+
+    def create_tools(self) -> list[StructuredTool]:
+        return [
+            StructuredTool.from_function(
+                func=self.collector_uiautomate,
+                name="collector_uiautomate",
+                description="Read the current UIAutomator XML.",
+            ),
+            StructuredTool.from_function(
+                func=self.collector_swipe_up,
+                name="collector_swipe_up",
+                description="Scroll to a different state on the current page; cannot navigate into another page.",
+            ),
+            StructuredTool.from_function(
+                func=self.collector_swipe_down,
+                name="collector_swipe_down",
+                description="Scroll to a different state on the current page; cannot navigate back.",
+            ),
+            StructuredTool.from_function(
+                func=self.read_run_py,
+                name="read_run_py",
+                description="Read the current page's run.py.",
+            ),
+            StructuredTool.from_function(
+                func=self.write_run_py,
+                name="write_run_py",
+                description="Replace the current page's run.py. Input: content.",
+            ),
+            StructuredTool.from_function(
+                func=self.sniff_run,
+                name="sniff_run",
+                description=(
+                    "Capture unchanged current XML, run run.py, compare against the baseline bound to that XML, "
+                    "and return deterministic evaluation plus multi-state verification status."
+                ),
+            ),
+            StructuredTool.from_function(
+                func=self.save_baseline,
+                name="save_baseline",
+                description=(
+                    "Store baseline r1 for the most recently read XML state. Replaces the prior baseline. "
+                    "Input: r1 JSON string."
+                ),
+            ),
+        ]
+
+    def _capture_xml(self, result: Any, *, after_swipe: bool = False) -> Any:
+        if isinstance(result, str):
+            if after_swipe:
+                self._state_revision += 1
+            self._last_xml = result
+        return result
+
+    def _script_fingerprint(self) -> str:
+        return _fingerprint(self.mechanism.read_run_py(self.page_path))
+
+    def _record_evaluation(
+        self,
+        evaluation: dict[str, Any],
+        script_fingerprint: str,
+        state_fingerprint: str,
+    ) -> None:
+        self._last_evaluation = evaluation
+        self._last_sniff_script_fingerprint = script_fingerprint
+        self._last_sniff_state_fingerprint = state_fingerprint
 
 
 def create_collector_tools(
@@ -200,56 +359,13 @@ def create_collector_tools(
     required_fields: str = "",
     output_schema: str = "",
 ) -> list[StructuredTool]:
-    toolbox = CollectorToolbox(
+    return CollectorToolbox(
         mechanism=mechanism,
         event_hub=event_hub,
         page_path=page_path,
         required_fields=required_fields,
         output_schema=output_schema,
-    )
-    return [
-        StructuredTool.from_function(
-            func=toolbox.collector_uiautomate,
-            name="collector_uiautomate",
-            description="Read the current UIAutomator XML.",
-        ),
-        StructuredTool.from_function(
-            func=toolbox.collector_swipe_up,
-            name="collector_swipe_up",
-            description="Scroll the current page upward. Collector may use this but cannot navigate into another page.",
-        ),
-        StructuredTool.from_function(
-            func=toolbox.collector_swipe_down,
-            name="collector_swipe_down",
-            description="Scroll the current page downward. Collector may use this but cannot navigate back or click through.",
-        ),
-        StructuredTool.from_function(
-            func=toolbox.read_run_py,
-            name="read_run_py",
-            description="Read the current page's run.py.",
-        ),
-        StructuredTool.from_function(
-            func=toolbox.write_run_py,
-            name="write_run_py",
-            description="Replace the current page's run.py. Input: content.",
-        ),
-        StructuredTool.from_function(
-            func=toolbox.sniff_run,
-            name="sniff_run",
-            description=(
-                "Capture current XML, run the current page's run.py without changing page state, "
-                "then internally compare r2 against the saved baseline r1. Returns run output and evaluation."
-            ),
-        ),
-        StructuredTool.from_function(
-            func=toolbox.save_baseline,
-            name="save_baseline",
-            description=(
-                "Store the collector-produced baseline r1 JSON for later evaluation. "
-                "Input: r1 JSON string. The baseline is unique; calling this again replaces the prior baseline."
-            ),
-        ),
-    ]
+    ).create_tools()
 
 
 def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredTool]:
@@ -285,20 +401,9 @@ def _coerce_json(value: Any) -> Any:
     return value
 
 
-def _parse_collector_ready_payload(value: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(value)
-    except json.JSONDecodeError:
-        parsed = _extract_first_json_object(value)
-    return parsed if isinstance(parsed, dict) else {}
+def _fingerprint(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _extract_first_json_object(value: str) -> Any:
-    start = value.find("{")
-    end = value.rfind("}")
-    if start < 0 or end <= start:
-        return {}
-    try:
-        return json.loads(value[start : end + 1])
-    except json.JSONDecodeError:
-        return {}
+def _json_result(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
