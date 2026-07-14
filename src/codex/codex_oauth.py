@@ -87,7 +87,7 @@ class OpenAICodexModel(BaseChatModel):
     max_connection_age_seconds: float = 55.0 * 60.0
     instructions: str = "You are a helpful assistant."
     reasoning_effort: str | None = "medium"
-    store_responses: bool = True
+    store_responses: bool = False
     prompt_cache_key: str = Field(default_factory=lambda: str(uuid4()))
     token_provider: CodexOAuthTokenProvider = Field(default_factory=CodexOAuthTokenProvider)
     _usage_records: list[dict[str, Any]] = PrivateAttr(default_factory=list)
