@@ -71,7 +71,11 @@ Options:
 
 The tool first connects to `UiAutomation` directly and serializes the current
 `AccessibilityNodeInfo` tree, so animated pages do not have to reach the idle
-state required by the platform `uiautomator dump` command. If direct
+state required by the platform `uiautomator dump` command. It waits for
+application windows and serializes all `TYPE_APPLICATION` roots in layer order;
+transient status-bar or navigation-bar focus is not accepted as a successful
+page capture. A full-screen SystemUI surface, such as the expanded notification
+shade, is accepted only when it contains page-sized descendants. If direct
 `UiAutomation` is unavailable, it falls back to file-based `uiautomator dump`
 and then `uiautomator dump /dev/tty`.
 

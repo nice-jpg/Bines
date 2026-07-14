@@ -17,6 +17,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 public final class Main {
@@ -79,7 +81,7 @@ public final class Main {
     private static String dumpUiXml(String tempPath, Options options) throws DumpException {
         List<String> errors = new ArrayList<String>();
         try {
-            return dumpViaUiAutomation(options.preferCompressed);
+            return dumpViaUiAutomation(options.preferCompressed, options.timeoutMs);
         } catch (Exception e) {
             errors.add("ui-automation: " + e.getMessage());
         }
@@ -119,31 +121,39 @@ public final class Main {
         }
     }
 
-    private static String dumpViaUiAutomation(boolean compressed) throws Exception {
+    private static String dumpViaUiAutomation(boolean compressed, long timeoutMs) throws Exception {
         ensureMainLooper();
         HandlerThread thread = new HandlerThread("nice-dumper-ui-automation");
         thread.start();
 
         UiAutomation automation = null;
-        AccessibilityNodeInfo root = null;
+        List<AccessibilityNodeInfo> roots = new ArrayList<AccessibilityNodeInfo>();
         try {
             automation = createUiAutomation(thread.getLooper());
             connectUiAutomation(automation);
             configureUiAutomation(automation);
-            root = findRootNode(automation, 2_000L);
-            if (root == null) {
-                throw new IllegalStateException("no accessibility root available");
+            roots = findContentRoots(automation, Math.min(timeoutMs, 5_000L));
+            if (roots.isEmpty()) {
+                throw new IllegalStateException("no complete accessibility content root available");
             }
 
             StringBuilder xml = new StringBuilder(64 * 1024);
             xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
             xml.append("<hierarchy rotation=\"0\" source=\"ui-automation\">\n");
-            appendNodeXml(xml, root, 0, compressed);
+            int nodeCount = 0;
+            for (int i = 0; i < roots.size(); i += 1) {
+                nodeCount += appendNodeXml(xml, roots.get(i), i, compressed);
+            }
             xml.append("</hierarchy>");
+            if (nodeCount <= 0) {
+                throw new IllegalStateException("application accessibility roots contained no visible nodes");
+            }
             return xml.toString();
         } finally {
-            if (root != null) {
-                root.recycle();
+            for (AccessibilityNodeInfo root : roots) {
+                if (root != null) {
+                    root.recycle();
+                }
             }
             if (automation != null) {
                 disconnectUiAutomation(automation);
@@ -166,68 +176,58 @@ public final class Main {
         }
     }
 
-    private static AccessibilityNodeInfo findRootNode(UiAutomation automation, long timeoutMs) {
+    private static List<AccessibilityNodeInfo> findContentRoots(
+            UiAutomation automation,
+            long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         while (System.currentTimeMillis() <= deadline) {
-            AccessibilityNodeInfo root = automation.getRootInActiveWindow();
-            if (root != null) {
-                return root;
+            List<AccessibilityNodeInfo> roots = applicationWindowRoots(automation);
+            if (!roots.isEmpty()) {
+                return roots;
             }
 
-            root = firstWindowRoot(automation);
-            if (root != null) {
-                return root;
+            AccessibilityNodeInfo activeRoot = activeContentRoot(automation);
+            if (activeRoot != null) {
+                roots.add(activeRoot);
+                return roots;
             }
 
             try {
                 Thread.sleep(100L);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                return null;
+                return new ArrayList<AccessibilityNodeInfo>();
             }
         }
-        return null;
+        return new ArrayList<AccessibilityNodeInfo>();
     }
 
-    private static AccessibilityNodeInfo firstWindowRoot(UiAutomation automation) {
+    private static List<AccessibilityNodeInfo> applicationWindowRoots(UiAutomation automation) {
+        List<WindowRoot> candidates = new ArrayList<WindowRoot>();
         List<AccessibilityWindowInfo> windows;
         try {
             windows = automation.getWindows();
         } catch (RuntimeException e) {
-            return null;
+            return new ArrayList<AccessibilityNodeInfo>();
         }
         if (windows == null) {
-            return null;
+            return new ArrayList<AccessibilityNodeInfo>();
         }
 
-        AccessibilityWindowInfo fallback = null;
         try {
             for (AccessibilityWindowInfo window : windows) {
-                if (window == null) {
+                if (window == null || window.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) {
                     continue;
                 }
-                if (window.isActive() || window.isFocused()) {
+                try {
                     AccessibilityNodeInfo root = window.getRoot();
                     if (root != null) {
-                        return root;
+                        candidates.add(new WindowRoot(root, window.getLayer()));
                     }
-                }
-                if (fallback == null && window.getType() == AccessibilityWindowInfo.TYPE_APPLICATION) {
-                    fallback = window;
-                }
-            }
-            if (fallback != null) {
-                return fallback.getRoot();
-            }
-            for (AccessibilityWindowInfo window : windows) {
-                if (window != null) {
-                    AccessibilityNodeInfo root = window.getRoot();
-                    if (root != null) {
-                        return root;
-                    }
+                } catch (RuntimeException ignored) {
+                    // A window can disappear between getWindows() and getRoot().
                 }
             }
-            return null;
         } finally {
             for (AccessibilityWindowInfo window : windows) {
                 if (window != null) {
@@ -235,6 +235,88 @@ public final class Main {
                 }
             }
         }
+
+        Collections.sort(candidates, new Comparator<WindowRoot>() {
+            @Override
+            public int compare(WindowRoot left, WindowRoot right) {
+                return left.layer < right.layer ? -1 : (left.layer == right.layer ? 0 : 1);
+            }
+        });
+        List<AccessibilityNodeInfo> roots = new ArrayList<AccessibilityNodeInfo>();
+        for (WindowRoot candidate : candidates) {
+            roots.add(candidate.root);
+        }
+        return roots;
+    }
+
+    private static AccessibilityNodeInfo activeContentRoot(UiAutomation automation) {
+        AccessibilityNodeInfo root;
+        try {
+            root = automation.getRootInActiveWindow();
+        } catch (RuntimeException e) {
+            return null;
+        }
+        if (root == null) {
+            return null;
+        }
+        if (isLikelyContentRoot(root)) {
+            return root;
+        }
+        root.recycle();
+        return null;
+    }
+
+    private static boolean isLikelyContentRoot(AccessibilityNodeInfo root) {
+        Rect bounds = new Rect();
+        root.getBoundsInScreen(bounds);
+        int width = bounds.right - bounds.left;
+        int height = bounds.bottom - bounds.top;
+        if (width <= 0 || height <= 0 || ((long) height * 3L) < width) {
+            return false;
+        }
+
+        CharSequence packageName = root.getPackageName();
+        if (packageName == null
+                || !String.valueOf(packageName).startsWith("com.android.systemui")) {
+            return true;
+        }
+        return hasLargeDescendant(root, width / 2, height / 3, 3);
+    }
+
+    private static boolean hasLargeDescendant(
+            AccessibilityNodeInfo node,
+            int minimumWidth,
+            int minimumHeight,
+            int remainingDepth) {
+        if (remainingDepth <= 0) {
+            return false;
+        }
+        int childCount = node.getChildCount();
+        for (int i = 0; i < childCount; i += 1) {
+            AccessibilityNodeInfo child = null;
+            try {
+                child = node.getChild(i);
+                if (child == null) {
+                    continue;
+                }
+                Rect bounds = new Rect();
+                child.getBoundsInScreen(bounds);
+                if (bounds.right - bounds.left >= minimumWidth
+                        && bounds.bottom - bounds.top >= minimumHeight) {
+                    return true;
+                }
+                if (hasLargeDescendant(child, minimumWidth, minimumHeight, remainingDepth - 1)) {
+                    return true;
+                }
+            } catch (RuntimeException ignored) {
+                // The focused system surface may change while it is inspected.
+            } finally {
+                if (child != null) {
+                    child.recycle();
+                }
+            }
+        }
+        return false;
     }
 
     private static void ensureMainLooper() {
@@ -311,13 +393,13 @@ public final class Main {
         }
     }
 
-    private static void appendNodeXml(
+    private static int appendNodeXml(
             StringBuilder xml,
             AccessibilityNodeInfo node,
             int index,
             boolean compressed) {
         if (compressed && !node.isVisibleToUser()) {
-            return;
+            return 0;
         }
 
         Rect bounds = new Rect();
@@ -345,16 +427,17 @@ public final class Main {
         int childCount = node.getChildCount();
         if (childCount <= 0) {
             xml.append(" />\n");
-            return;
+            return 1;
         }
 
         xml.append(">\n");
+        int nodeCount = 1;
         for (int i = 0; i < childCount; i += 1) {
             AccessibilityNodeInfo child = null;
             try {
                 child = node.getChild(i);
                 if (child != null) {
-                    appendNodeXml(xml, child, i, compressed);
+                    nodeCount += appendNodeXml(xml, child, i, compressed);
                 }
             } catch (RuntimeException ignored) {
                 // Accessibility nodes can disappear while the screen is changing.
@@ -365,6 +448,7 @@ public final class Main {
             }
         }
         xml.append("  </node>\n");
+        return nodeCount;
     }
 
     private static void appendAttr(StringBuilder xml, String name, boolean value) {
@@ -702,6 +786,16 @@ public final class Main {
                 throw new UsageException("-d/--dump is required");
             }
             return new Options(dumpPath, compressed, timeoutMs, help);
+        }
+    }
+
+    private static final class WindowRoot {
+        final AccessibilityNodeInfo root;
+        final int layer;
+
+        WindowRoot(AccessibilityNodeInfo root, int layer) {
+            this.root = root;
+            this.layer = layer;
         }
     }
 
