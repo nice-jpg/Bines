@@ -99,3 +99,13 @@ def test_page_run_hook_runs_current_page_script(tmp_path: Path) -> None:
 
     assert result["ok"] is True
     assert result["result"]["items"] == [{"xml": "<h></h>"}]
+
+
+def test_page_run_hook_rejects_empty_path_without_clearing_current_page(tmp_path: Path) -> None:
+    hook = PageRunHook(PageMechanism(tmp_path))
+    hook.set_current_path("meituan")
+
+    result = json.loads(hook.set_current_path("  "))
+
+    assert result == {"ok": False, "error": "current_path is required"}
+    assert hook.current_path == "meituan"

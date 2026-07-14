@@ -11,11 +11,12 @@ from langchain_core.messages import ToolMessage
 
 try:
     from src.page_mechanism import CollectorTrainingRegistry, PageRunHook
+    from src.tools.event_hub import XML_RESULT_TOOL_NAMES
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from page_mechanism import CollectorTrainingRegistry, PageRunHook
+    from tools.event_hub import XML_RESULT_TOOL_NAMES
 
 
-XML_DEVICE_TOOLS = {"tap", "swipe_up", "swipe_down", "swipe_back", "uiautomate"}
 ITEM_APPEND_TOOLS = {"swipe_up", "swipe_down"}
 
 
@@ -28,12 +29,10 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
         page_run_hook: PageRunHook,
         training_registry: CollectorTrainingRegistry,
         workbook_sink: Any | None = None,
-        xml_device_tools: set[str] | None = None,
     ) -> None:
         self.page_run_hook = page_run_hook
         self.training_registry = training_registry
         self.workbook_sink = workbook_sink
-        self.xml_device_tools = xml_device_tools or set(XML_DEVICE_TOOLS)
 
     def wrap_tool_call(
         self,
@@ -53,7 +52,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
 
     def _maybe_wrap_tool_result(self, request: Any, result: ToolMessage | Any) -> ToolMessage | Any:
         tool_name = _tool_name_from_request(request)
-        if tool_name not in self.xml_device_tools:
+        if tool_name not in XML_RESULT_TOOL_NAMES:
             return result
         if not isinstance(result, ToolMessage):
             return result
@@ -92,9 +91,8 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
             return {"ok": True, "skipped": True, "reason": "current_page_not_set"}
         try:
             return self.workbook_sink.persist_run_result(
-                page_path=current_path,
-                source_tool=tool_name,
                 run_result=collection,
+                append_items=tool_name in ITEM_APPEND_TOOLS,
             )
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort around device tools.
             return {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}

@@ -14,7 +14,6 @@ from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 
-from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
@@ -24,26 +23,26 @@ try:
     from src.middleware import (
         CollectionPersistenceMiddleware,
         DeviceContextCompressionMiddleware,
-        RuntimeContextCaptureMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
     from src.page_mechanism import PageMechanism, PageRunHook
     from src.tools import collect_conductor_tools
     from src.tools.content_provider import CollectionWorkbookSink
+    from src.tools.event_hub import EVENT_HUB_TOOL_NAMES, EventHub
     from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
         CollectionPersistenceMiddleware,
         DeviceContextCompressionMiddleware,
-        RuntimeContextCaptureMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
     from page_mechanism import PageMechanism, PageRunHook
     from tools import collect_conductor_tools
     from tools.content_provider import CollectionWorkbookSink
+    from tools.event_hub import EVENT_HUB_TOOL_NAMES, EventHub
     from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from tasks import build_app_probe_messages, messages_request_app_probe
 
@@ -175,35 +174,27 @@ def build_agent(
 ):
     """Create a standard LangChain agent with ``langchain.agents.create_agent``."""
 
-    runtime_messages: list[Any] = []
-
-    def set_runtime_messages(messages: Sequence[Any]) -> None:
-        runtime_messages.clear()
-        runtime_messages.extend(messages)
-
-    def parent_context_provider() -> list[Any]:
-        return list(runtime_messages)
-
     mechanism = PageMechanism()
-    workbook_sink = CollectionWorkbookSink()
     page_run_hook = PageRunHook(mechanism)
+    event_hub = EventHub()
     try:
         from src.collector import CollectorManager
     except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
         from collector import CollectorManager
 
-    collector_manager = CollectorManager(model=model, mechanism=mechanism)
+    collector_manager = CollectorManager(model=model, mechanism=mechanism, event_hub=event_hub)
     registered_tools = _with_collected_tools(
         tools,
         collect_conductor_tools(
             model=model,
             mechanism=mechanism,
             page_run_hook=page_run_hook,
+            event_hub=event_hub,
             collector_manager=collector_manager,
         ),
     )
+    workbook_sink = CollectionWorkbookSink()
     middlewares: list[AgentMiddleware] = []
-    # middlewares.append(TodoListMiddleware())
     middlewares.append(ToolErrorMiddleware())
     middlewares.append(
         CollectionPersistenceMiddleware(
@@ -213,7 +204,6 @@ def build_agent(
         )
     )
     middlewares.append(DeviceContextCompressionMiddleware())
-    middlewares.append(RuntimeContextCaptureMiddleware(set_runtime_messages))
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
     middlewares.append(SummarizationMiddleware(model=model))
 
@@ -273,12 +263,42 @@ def _extract_interrupts(state: Mapping[str, Any]) -> list[Any]:
 
 
 def _with_collected_tools(tools: Sequence[Any], collected_tools: Sequence[Any] | None = None) -> list[Any]:
+    if collected_tools is None:
+        raise ValueError("collected_tools is required for conductor runtime assembly.")
+
     registered_tools = list(tools)
+    _ensure_unique_tool_names(registered_tools, source="caller-provided")
+    _ensure_unique_tool_names(collected_tools, source="conductor")
     existing_names = {_tool_name(tool) for tool in registered_tools}
-    for tool in collected_tools if collected_tools is not None else collect_tools():
-        if _tool_name(tool) not in existing_names:
-            registered_tools.append(tool)
+    for tool in collected_tools:
+        name = _tool_name(tool)
+        if name in existing_names:
+            if name in RUNTIME_MANAGED_TOOL_NAMES:
+                raise ValueError(f"Tool {name!r} is managed by the conductor runtime and cannot be overridden.")
+            continue
+        registered_tools.append(tool)
+        existing_names.add(name)
     return registered_tools
+
+
+RUNTIME_MANAGED_TOOL_NAMES = {
+    *EVENT_HUB_TOOL_NAMES,
+    "set_current_page",
+    "query_page_doc",
+    "query_task_doc",
+    "prepare_collector",
+}
+
+
+def _ensure_unique_tool_names(tools: Sequence[Any], *, source: str) -> None:
+    seen: set[str] = set()
+    for tool in tools:
+        name = _tool_name(tool)
+        if not name:
+            continue
+        if name in seen:
+            raise ValueError(f"Duplicate {source} tool name: {name!r}")
+        seen.add(name)
 
 
 def _tool_name(tool: Any) -> str | None:

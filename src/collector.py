@@ -133,14 +133,14 @@ class CollectorToolbox:
         self.output_schema = output_schema
         self._baseline: Any | None = None
 
-    def collector_uiautomate(self) -> str:
-        return str(self.event_hub.uiautomate())
+    def collector_uiautomate(self) -> Any:
+        return self.event_hub.uiautomate()
 
-    def collector_swipe_up(self, x: int, y: int) -> str:
-        return str(self.event_hub.swipe_up(x, y))
+    def collector_swipe_up(self, x: int, y: int) -> Any:
+        return self.event_hub.swipe_up(x, y)
 
-    def collector_swipe_down(self, x: int, y: int) -> str:
-        return str(self.event_hub.swipe_down(x, y))
+    def collector_swipe_down(self, x: int, y: int) -> Any:
+        return self.event_hub.swipe_down(x, y)
 
     def read_run_py(self) -> str:
         return self.mechanism.read_run_py(self.page_path)
@@ -150,6 +150,20 @@ class CollectorToolbox:
 
     def sniff_run(self) -> str:
         xml = self.collector_uiautomate()
+        if not isinstance(xml, str):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "run": xml,
+                    "evaluation": {
+                        "score": 0,
+                        "errors": ["uiautomate_error"],
+                        "missing": ["result"],
+                    },
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         run_result = json.loads(self.mechanism.sniff_run(self.page_path, xml))
         if self._baseline is None:
             evaluation = {

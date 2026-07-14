@@ -6,7 +6,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tools import collect_tools
+from tools import collect_conductor_tools, collect_tools
+from page_mechanism import PageMechanism, PageRunHook
 
 
 class FakeSubagentManager:
@@ -25,6 +26,9 @@ class ToolsRegistryTests(unittest.TestCase):
         tool_names = [tool.name for tool in collect_tools()]
 
         self.assertNotIn("spawn_subagent", tool_names)
+        self.assertNotIn("call_subagent", tool_names)
+        self.assertNotIn("kill_subagent", tool_names)
+        self.assertNotIn("query_manual", tool_names)
         self.assertIn("notify_user", tool_names)
         self.assertNotIn("start_shadow_service", tool_names)
         self.assertNotIn("stop_shadow_service", tool_names)
@@ -37,8 +41,11 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("close_package", tool_names)
         self.assertIn("prepare_collector", tool_names)
         self.assertNotIn("create_excel_sheet", tool_names)
+        self.assertNotIn("create_excel_file", tool_names)
         self.assertNotIn("rename_excel_sheet", tool_names)
         self.assertNotIn("write_excel_sheet", tool_names)
+        self.assertNotIn("append_excel_rows", tool_names)
+        self.assertNotIn("update_excel_cell", tool_names)
         self.assertLess(tool_names.index("notify_user"), tool_names.index("tap"))
         self.assertLess(tool_names.index("authenticate_captcha"), tool_names.index("tap"))
         self.assertLess(tool_names.index("captcha_authenticated"), tool_names.index("tap"))
@@ -56,6 +63,13 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("kill_subagent", tool_names)
         self.assertIn("query_manual", tool_names)
         self.assertGreater(tool_names.index("spawn_subagent"), tool_names.index("append_excel_rows"))
+
+    def test_conductor_tool_assembly_rejects_mismatched_page_runtime(self) -> None:
+        mechanism = PageMechanism()
+        mismatched_hook = PageRunHook(PageMechanism())
+
+        with self.assertRaisesRegex(ValueError, "PageMechanism"):
+            collect_conductor_tools(mechanism=mechanism, page_run_hook=mismatched_hook)
 
 
 if __name__ == "__main__":

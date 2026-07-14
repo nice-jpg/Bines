@@ -184,8 +184,6 @@ class ContentProviderTests(unittest.TestCase):
             path = Path(tmp_dir) / "result.xlsx"
             self.assertTrue(path.is_file())
             sink.persist_run_result(
-                page_path="meituan/美食/商家",
-                source_tool="uiautomate",
                 run_result={
                     "ok": True,
                     "result": {
@@ -193,10 +191,9 @@ class ContentProviderTests(unittest.TestCase):
                         "items": [{"name": "cup", "price": 10}],
                     },
                 },
+                append_items=False,
             )
             result = sink.persist_run_result(
-                page_path="meituan/美食/商家",
-                source_tool="swipe_up",
                 run_result={
                     "ok": True,
                     "result": {
@@ -208,6 +205,7 @@ class ContentProviderTests(unittest.TestCase):
                         ],
                     },
                 },
+                append_items=True,
             )
 
             workbook = load_workbook(path, data_only=True)

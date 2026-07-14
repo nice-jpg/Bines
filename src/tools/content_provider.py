@@ -185,9 +185,8 @@ class CollectionWorkbookSink:
     def persist_run_result(
         self,
         *,
-        page_path: str,
-        source_tool: str,
         run_result: Mapping[str, Any],
+        append_items: bool,
     ) -> dict[str, Any]:
         if run_result.get("ok") is not True:
             return {"ok": True, "skipped": True, "reason": "collection_not_ok"}
@@ -204,7 +203,6 @@ class CollectionWorkbookSink:
 
         items = result.get("items")
         item_rows = [item for item in items if isinstance(item, Mapping)] if isinstance(items, list) else []
-        append_items = source_tool in {"swipe_up", "swipe_down"}
         path = self.provider._resolve_excel_path(self.relative_path)
 
         with _lock_workbook_path(path):
@@ -237,7 +235,6 @@ class CollectionWorkbookSink:
             "merchant_sheet": merchant_sheet_name,
             "appended_items": appended,
             "skipped_items": skipped_items,
-            "source_tool": source_tool,
         }
 
     def _ensure_merchant_sheet(self, workbook: OpenpyxlWorkbook, merchant_name: str) -> str:

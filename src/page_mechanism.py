@@ -204,6 +204,12 @@ class PageRunHook:
         parts, error = normalize_page_path(current_path)
         if error:
             return json.dumps({"ok": False, "error": error}, ensure_ascii=False, sort_keys=True)
+        if not parts:
+            return json.dumps(
+                {"ok": False, "error": "current_path is required"},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         self.current_path = "/".join(parts)
         return json.dumps({"ok": True, "current_path": self.current_path}, ensure_ascii=False, sort_keys=True)
 

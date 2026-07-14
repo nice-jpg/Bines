@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from collector import CollectorManager, create_collector_tools
+from device.results import make_error_result
 from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
@@ -105,6 +106,34 @@ def test_sniff_run_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
     assert matched["evaluation"]["score"] == 100
     assert replaced["evaluation"]["score"] < 100
     assert replaced["evaluation"]["errors"] == ["result.items[0].name"]
+
+
+def test_sniff_run_reports_device_error_without_running_page_script(tmp_path: Path) -> None:
+    class ErrorEventHub(FakeEventHub):
+        def uiautomate(self):
+            return make_error_result("command_error", "adb failed")
+
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.py").write_text("raise AssertionError('must not load')\n", encoding="utf-8")
+    tools = {
+        tool.name: tool
+        for tool in create_collector_tools(
+            mechanism=PageMechanism(tmp_path),
+            event_hub=ErrorEventHub(),
+            page_path="meituan",
+        )
+    }
+
+    result = json.loads(tools["sniff_run"].func())
+
+    assert result["ok"] is False
+    assert result["run"]["error_type"] == "command_error"
+    assert result["evaluation"] == {
+        "score": 0,
+        "errors": ["uiautomate_error"],
+        "missing": ["result"],
+    }
 
 
 def test_prepare_collector_invokes_isolated_collector_agent() -> None:

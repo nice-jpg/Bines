@@ -12,10 +12,10 @@ from langchain_core.tools import StructuredTool
 
 try:
     from src.tools.event_logger import WorkspaceEventLogger
-    from src.page_mechanism import PAGE_MECHANISM_DIR, PageMechanism, PageRunHook
+    from src.page_mechanism import PAGE_MECHANISM_DIR
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from tools.event_logger import WorkspaceEventLogger
-    from page_mechanism import PAGE_MECHANISM_DIR, PageMechanism, PageRunHook
+    from page_mechanism import PAGE_MECHANISM_DIR
 
 SHADOW_AUTH_URL = "http://139.224.44.6:9080"
 
@@ -338,56 +338,18 @@ class ManualTool:
         return sorted(child_paths)
 
 
-class PageDocTool:
-    """Read page mechanism docs and set the page used by run.py hooks."""
-
-    def __init__(
-        self,
-        mechanism: PageMechanism | None = None,
-        page_run_hook: PageRunHook | None = None,
-    ) -> None:
-        self.mechanism = mechanism or PageMechanism()
-        self.page_run_hook = page_run_hook
-
-    def set_current_page(self, current_path: str) -> str:
-        """Set the canonical page path for automatic run.py execution."""
-
-        if self.page_run_hook is not None:
-            return self.page_run_hook.set_current_path(current_path)
-        parts, error = _normalize_manual_path(current_path)
-        if error:
-            return _xml_block("current_page_error", {"operation": "set"}, {"error": error})
-        if not parts:
-            return _xml_block("current_page_error", {"operation": "set"}, {"error": "current_path is required"})
-        canonical_path = "/".join([_app_slug(parts[0]), *parts[1:]])
-        return _xml_block("current_page", {"operation": "set"}, {"current_path": canonical_path})
-
-    def query_page_doc(self, current_path: str) -> str:
-        """Return PAGE.md for the current canonical page path."""
-
-        return self.mechanism.query_page_doc(current_path)
-
-    def query_task_doc(self, current_path: str) -> str:
-        """Return task.md for the current canonical page path."""
-
-        return self.mechanism.query_task_doc(current_path)
-
-
 def create_common_tools(
     operation_notice_tool: OperationNoticeTool | None = None,
     captcha_authentication_tool: CaptchaAuthenticationTool | None = None,
     thinking_tool: ThinkingTool | None = None,
     manual_tool: ManualTool | None = None,
-    page_doc_tool: PageDocTool | None = None,
     include_legacy_manual: bool = False,
 ) -> list[StructuredTool]:
-    """Create shared reasoning tools for the LangChain agent."""
+    """Create agent-neutral notification, captcha, and reasoning tools."""
 
     operation_notice = operation_notice_tool or OperationNoticeTool()
     captcha_authentication = captcha_authentication_tool or CaptchaAuthenticationTool()
     thinking = thinking_tool or ThinkingTool()
-    manual = manual_tool or ManualTool()
-    page_doc = page_doc_tool or PageDocTool()
     tools = [
         StructuredTool.from_function(
             func=operation_notice.notify_user,
@@ -432,41 +394,20 @@ def create_common_tools(
                 "device or output action. Input: thought."
             ),
         ),
-        StructuredTool.from_function(
-            func=page_doc.set_current_page,
-            name="set_current_page",
-            description=(
-                "Set the canonical current page path used by automatic run.py execution. "
-                "Call this whenever entering or recognizing a new page. Input: current_path."
-            ),
-        ),
-        StructuredTool.from_function(
-            func=page_doc.query_page_doc,
-            name="query_page_doc",
-            description="Read PAGE.md for the current canonical page path. Input: current_path.",
-        ),
-        StructuredTool.from_function(
-            func=page_doc.query_task_doc,
-            name="query_task_doc",
-            description="Read task.md for the current canonical page path. Input: current_path.",
-        ),
-        StructuredTool.from_function(
-            func=manual.query_manual,
-            name="query_manual",
-            description=(
-                "Read app/page operation guidance. Input current_path must be a manual canonical "
-                "path, not a UI breadcrumb, display title, or merchant name. Use an application "
-                "path such as 'com.sankuai.meituan' or 'meituan' for the home manual; do not use "
-                "'美团/首页'. Use typed page paths such as 'meituan/外卖' or "
-                "'meituan/外卖/商家' for lower-level pages; do not use a concrete merchant name "
-                "such as 'meituan/外卖/老乡鸡'. The tool returns only the PAGE.md manual for "
-                "the current page path, or manual_error with available canonical paths."
-            ),
-        ),
     ]
     if include_legacy_manual:
-        return tools
-    return [tool for tool in tools if tool.name != "query_manual"]
+        manual = manual_tool or ManualTool()
+        tools.append(
+            StructuredTool.from_function(
+                func=manual.query_manual,
+                name="query_manual",
+                description=(
+                    "Read legacy app/page operation guidance for a canonical path. "
+                    "This compatibility tool is not part of the conductor/collector workflow."
+                ),
+            )
+        )
+    return tools
 
 
 def build_tools() -> list[StructuredTool]:

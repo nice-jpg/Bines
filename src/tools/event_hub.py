@@ -35,35 +35,46 @@ class ToolSpec:
     description: str
     operation_name: str
     parameters: tuple[str, ...]
+    returns_xml: bool = False
 
 
 TOOL_SPECS = (
     ToolSpec("run_package", "Open an Android application by package name.", "run_package", ("package_name",)),
     ToolSpec("close_package", "Force-stop an Android application by package name.", "close_package", ("package_name",)),
-    ToolSpec("tap", "tap (x, y). Provide x/y coordinates. Returns no operation data.", "tap", ("x", "y")),
+    ToolSpec(
+        "tap",
+        "Tap (x, y). Provide x/y coordinates. Returns the current UIAutomator XML hierarchy.",
+        "tap",
+        ("x", "y"),
+        True,
+    ),
     ToolSpec(
         "swipe_up",
         "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_up",
         ("x", "y"),
+        True,
     ),
     ToolSpec(
         "swipe_down",
         "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_down",
         ("x", "y"),
+        True,
     ),
     ToolSpec(
         "swipe_back",
         "return to the last page. Returns current UIAutomator XML hierarchy.",
         "swipe_back",
         (),
+        True,
     ),
-    ToolSpec("uiautomate", "Get the current UIAutomator XML hierarchy.", "uiautomate", ()),
+    ToolSpec("uiautomate", "Get the current UIAutomator XML hierarchy.", "uiautomate", (), True),
     ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot", ()),
 )
 
 EVENT_HUB_TOOL_NAMES = tuple(spec.name for spec in TOOL_SPECS)
+XML_RESULT_TOOL_NAMES = frozenset(spec.name for spec in TOOL_SPECS if spec.returns_xml)
 
 
 class EventHub:
