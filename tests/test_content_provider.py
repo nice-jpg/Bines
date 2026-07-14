@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openpyxl import load_workbook
 from openpyxl.workbook.workbook import Workbook as OpenpyxlWorkbook
-from tools.content_provider import ContentProvider, _read_xlsx, create_content_provider_tools
+from tools.content_provider import CollectionWorkbookSink, ContentProvider, _read_xlsx, create_content_provider_tools
 
 
 class ContentProviderTests(unittest.TestCase):
@@ -175,6 +175,67 @@ class ContentProviderTests(unittest.TestCase):
                 "corrupted.*recreate it with create_excel_file",
             ):
                 provider.append_excel_rows("result.xlsx", '[["商家A"]]')
+
+    def test_collection_workbook_sink_creates_index_sheet_and_dynamic_merchant_sheet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            provider = ContentProvider(tmp_dir)
+            sink = CollectionWorkbookSink(provider)
+
+            path = Path(tmp_dir) / "result.xlsx"
+            self.assertTrue(path.is_file())
+            sink.persist_run_result(
+                page_path="meituan/美食/商家",
+                source_tool="uiautomate",
+                run_result={
+                    "ok": True,
+                    "result": {
+                        "merchant": {"name": "商家/A*超长名称超长名称超长名称超长名称", "distance": "1km"},
+                        "items": [{"name": "cup", "price": 10}],
+                    },
+                },
+            )
+            result = sink.persist_run_result(
+                page_path="meituan/美食/商家",
+                source_tool="swipe_up",
+                run_result={
+                    "ok": True,
+                    "result": {
+                        "merchant": {"name": "商家/A*超长名称超长名称超长名称超长名称", "rating": "4.8"},
+                        "items": [
+                            {"name": "cup", "price": 10},
+                            {"name": "cup", "price": 10},
+                            {"name": "bowl", "sales": "100+"},
+                        ],
+                    },
+                },
+            )
+
+            workbook = load_workbook(path, data_only=True)
+            try:
+                merchant_sheet = result["merchant_sheet"]
+                self.assertIn(merchant_sheet, workbook.sheetnames)
+                self.assertLessEqual(len(merchant_sheet), 31)
+                self.assertNotRegex(merchant_sheet, r"[\[\]:*?/\\]")
+            finally:
+                workbook.close()
+
+            self.assertEqual(
+                _read_xlsx(path),
+                [
+                    ["name", "distance", "rating"],
+                    ["商家/A*超长名称超长名称超长名称超长名称", "1km", "4.8"],
+                ],
+            )
+            self.assertEqual(
+                _read_xlsx(path, result["merchant_sheet"]),
+                [
+                    ["name", "price", "sales"],
+                    ["cup", "10"],
+                    ["bowl", "", "100+"],
+                ],
+            )
+            self.assertEqual(result["appended_items"], 2)
+            self.assertEqual(result["skipped_items"], 1)
 
 
 if __name__ == "__main__":

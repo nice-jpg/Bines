@@ -6,10 +6,10 @@ from .event_hub import create_event_hub_tools
 from .subagents import create_subagent_tools
 try:
     from src.collector import CollectorManager, create_prepare_collector_tool
-    from src.page_mechanism import PageMechanism, PageRunHook
+    from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, PageRunHook
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from collector import CollectorManager, create_prepare_collector_tool
-    from page_mechanism import PageMechanism, PageRunHook
+    from page_mechanism import CollectorTrainingRegistry, PageMechanism, PageRunHook
 
 
 def collect_conductor_tools(
@@ -28,9 +28,12 @@ def collect_conductor_tools(
     if event_hub is None:
         from .event_hub import EventHub
 
-        event_hub = EventHub(page_run_hook=page_run_hook)
+        event_hub = EventHub()
     if collector_manager is None:
-        collector_manager = CollectorManager(model=model, mechanism=mechanism)
+        collector_manager = CollectorManager(
+            model=model,
+            mechanism=mechanism,
+        )
     return [
         *create_common_tools(page_doc_tool=page_doc_tool),
         *create_event_hub_tools(event_hub),

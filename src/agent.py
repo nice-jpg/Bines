@@ -22,22 +22,28 @@ from langgraph.types import Command
 
 try:
     from src.middleware import (
+        CollectionPersistenceMiddleware,
         DeviceContextCompressionMiddleware,
         RuntimeContextCaptureMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
+    from src.page_mechanism import PageMechanism, PageRunHook
     from src.tools import collect_conductor_tools
+    from src.tools.content_provider import CollectionWorkbookSink
     from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
+        CollectionPersistenceMiddleware,
         DeviceContextCompressionMiddleware,
         RuntimeContextCaptureMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
     )
+    from page_mechanism import PageMechanism, PageRunHook
     from tools import collect_conductor_tools
+    from tools.content_provider import CollectionWorkbookSink
     from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from tasks import build_app_probe_messages, messages_request_app_probe
 
@@ -178,13 +184,34 @@ def build_agent(
     def parent_context_provider() -> list[Any]:
         return list(runtime_messages)
 
+    mechanism = PageMechanism()
+    workbook_sink = CollectionWorkbookSink()
+    page_run_hook = PageRunHook(mechanism)
+    try:
+        from src.collector import CollectorManager
+    except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+        from collector import CollectorManager
+
+    collector_manager = CollectorManager(model=model, mechanism=mechanism)
     registered_tools = _with_collected_tools(
         tools,
-        collect_conductor_tools(model=model),
+        collect_conductor_tools(
+            model=model,
+            mechanism=mechanism,
+            page_run_hook=page_run_hook,
+            collector_manager=collector_manager,
+        ),
     )
     middlewares: list[AgentMiddleware] = []
     # middlewares.append(TodoListMiddleware())
     middlewares.append(ToolErrorMiddleware())
+    middlewares.append(
+        CollectionPersistenceMiddleware(
+            page_run_hook=page_run_hook,
+            training_registry=collector_manager.training_registry,
+            workbook_sink=workbook_sink,
+        )
+    )
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(RuntimeContextCaptureMiddleware(set_runtime_messages))
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))

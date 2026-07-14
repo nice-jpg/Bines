@@ -8,11 +8,11 @@ from typing import Any, Callable, Sequence
 from langchain_core.tools import StructuredTool
 
 try:
-    from src.page_mechanism import PageMechanism, eval_collection
+    from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from src.prompts import COLLECTOR_PROMPT
     from src.tools.event_hub import EventHub
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
-    from page_mechanism import PageMechanism, eval_collection
+    from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from prompts import COLLECTOR_PROMPT
     from tools.event_hub import EventHub
 
@@ -32,6 +32,7 @@ class CollectorManager:
         self.model = model
         self.mechanism = mechanism or PageMechanism()
         self.event_hub = event_hub or EventHub()
+        self.training_registry = CollectorTrainingRegistry()
         self.create_agent_factory = create_agent_factory
         self.max_iterations = max(1, int(max_iterations))
 
@@ -69,16 +70,26 @@ class CollectorManager:
                 config={"recursion_limit": self.max_iterations},
             )
         except Exception as exc:  # noqa: BLE001 - tool results should be structured.
+            self.training_registry.mark_untrained(page_path)
             return json.dumps(
-                {"ok": False, "error_type": type(exc).__name__, "error": str(exc)},
+                {"ok": False, "error_type": type(exc).__name__, "error": str(exc), "trained": False},
                 ensure_ascii=False,
                 sort_keys=True,
             )
+        collector_result = _latest_text(state)
+        ready_payload = _parse_collector_ready_payload(collector_result)
+        trained = bool(ready_payload.get("ready") is True and ready_payload.get("score") == 100)
+        if trained:
+            self.training_registry.mark_trained(page_path)
+        else:
+            self.training_registry.mark_untrained(page_path)
         return json.dumps(
             {
                 "ok": True,
                 "page_path": page_path,
-                "result": _latest_text(state),
+                "result": collector_result,
+                "trained": trained,
+                "ready_payload": ready_payload,
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -258,3 +269,22 @@ def _coerce_json(value: Any) -> Any:
     if isinstance(value, str):
         return json.loads(value)
     return value
+
+
+def _parse_collector_ready_payload(value: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        parsed = _extract_first_json_object(value)
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _extract_first_json_object(value: str) -> Any:
+    start = value.find("{")
+    end = value.rfind("}")
+    if start < 0 or end <= start:
+        return {}
+    try:
+        return json.loads(value[start : end + 1])
+    except json.JSONDecodeError:
+        return {}

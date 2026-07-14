@@ -17,9 +17,23 @@ PAGE_MECHANISM_DIR = Path(__file__).resolve().parent / "prompts" / "page_mechani
 class PageMechanism:
     """Resolve page mechanism files under ``prompts/page_mechanism``."""
 
-    def __init__(self, root: str | Path = PAGE_MECHANISM_DIR) -> None:
+    def __init__(
+        self,
+        root: str | Path = PAGE_MECHANISM_DIR,
+        merchant_page_paths: set[str] | None = None,
+    ) -> None:
         self.root = Path(root).resolve()
         self._states: dict[str, dict[str, Any]] = {}
+        configured_paths = merchant_page_paths or {
+            "meituan/美食/商家",
+            "meituan/外卖/美食/商家",
+        }
+        self._merchant_page_paths = {
+            "/".join(parts)
+            for path in configured_paths
+            for parts, error in [normalize_page_path(path)]
+            if not error and parts
+        }
 
     def query_page_doc(self, current_path: str) -> str:
         return self._query_doc(current_path, "PAGE.md", "page_doc")
@@ -89,6 +103,12 @@ class PageMechanism:
         state = self._states.get(canonical_path)
         return dict(state) if state is not None else None
 
+    def is_merchant_page(self, current_path: str) -> bool:
+        parts, error = normalize_page_path(current_path)
+        if error or not parts:
+            return False
+        return "/".join(parts) in self._merchant_page_paths
+
     def _query_doc(self, current_path: str, filename: str, block_name: str) -> str:
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
@@ -143,10 +163,40 @@ class PageMechanism:
         return path == self.root or self.root in path.parents
 
 
-class PageRunHook:
-    """Append page-local run.py output to XML-producing device tool results."""
+class CollectorTrainingRegistry:
+    """Track page paths whose collector has produced a passing run.py."""
 
-    def __init__(self, mechanism: PageMechanism | None = None) -> None:
+    def __init__(self) -> None:
+        self._trained_paths: set[str] = set()
+
+    def mark_trained(self, current_path: str) -> None:
+        canonical_path = self._canonical_path(current_path)
+        if canonical_path:
+            self._trained_paths.add(canonical_path)
+
+    def mark_untrained(self, current_path: str) -> None:
+        canonical_path = self._canonical_path(current_path)
+        if canonical_path:
+            self._trained_paths.discard(canonical_path)
+
+    def is_trained(self, current_path: str) -> bool:
+        canonical_path = self._canonical_path(current_path)
+        return bool(canonical_path and canonical_path in self._trained_paths)
+
+    def _canonical_path(self, current_path: str) -> str:
+        parts, error = normalize_page_path(current_path)
+        if error or not parts:
+            return ""
+        return "/".join(parts)
+
+
+class PageRunHook:
+    """Track current page and execute page-local run.py."""
+
+    def __init__(
+        self,
+        mechanism: PageMechanism | None = None,
+    ) -> None:
         self.mechanism = mechanism or PageMechanism()
         self.current_path = ""
 
@@ -157,19 +207,10 @@ class PageRunHook:
         self.current_path = "/".join(parts)
         return json.dumps({"ok": True, "current_path": self.current_path}, ensure_ascii=False, sort_keys=True)
 
-    def after_xml(self, xml: str) -> str:
+    def run_current_page(self, xml: str) -> dict[str, Any] | None:
         if not self.current_path:
-            return xml
-        run_result = self.mechanism.run_page_script(self.current_path, xml)
-        return json.dumps(
-            {
-                "xml": xml,
-                "page_path": self.current_path,
-                "collection": run_result,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+            return None
+        return self.mechanism.run_page_script(self.current_path, xml)
 
 
 def normalize_page_path(current_path: str) -> tuple[list[str], str | None]:

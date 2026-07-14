@@ -1,198 +1,107 @@
-from __future__ import annotations
-
 import re
-from typing import Any
-
-
-def parse_nodes(xml: str) -> list[dict[str, Any]]:
-    """Parse the UIAutomator XML into a list of node dicts."""
-    nodes = []
-    pattern = r'<n\s+([^>]*?)\s*/>'
-    for match in re.finditer(pattern, xml):
-        attrs_str = match.group(1)
-        attrs = {}
-        for k, v in re.findall(r'(\w+)\s*=\s*"([^"]*?)"', attrs_str):
-            attrs[k] = v
-        nodes.append(attrs)
-    return nodes
-
-
-def parse_bounds(bounds_str: str) -> tuple[int, int, int, int] | None:
-    m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', bounds_str)
-    if m:
-        return int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
-    return None
-
-
-def is_non_name(text: str) -> bool:
-    """Check if text is definitely NOT a merchant name."""
-    # Short strings
-    if len(text) <= 1:
-        return True
-    # Price patterns
-    if re.match(r'^¥', text):
-        return True
-    if re.match(r'^\d+\.\d+$', text) and len(text) <= 5:
-        return True
-    # Service/meta labels
-    non_names = [
-        r'^月售', r'^人均', r'^起送', r'^配送', r'^约',
-        r'^\[', r'^分$', r'^更多选择', r'^堂食店',
-        r'^免配送费', r'^10年老店', r'^商家自配', r'^美团专送',
-        r'^美团快送', r'^\d+分钟', r'^\d+\.\d+km',
-        r'^\d+m$', r'^去开启', r'^去使用', r'^搜索',
-        r'^附近商家', r'^秒选外卖', r'^一键下单',
-        r'^老朋友回归礼', r'^\d+月\d+日到期', r'^后失效',
-        r'^满\d+可用', r'^已减', r'^到手价',
-        r'^口味好评率', r'^近期', r'^都', r'^明厨亮灶',
-        r'^热销', r'^今日推荐', r'^第三代', r'^脆皮', r'^徐州地锅',
-        r'^最近24小时', r'^刚刚有用户看过', r'^全部',
-        r'^饺子馄饨', r'^汉堡薯条', r'^意面披萨', r'^包子粥店',
-        r'^快餐便当', r'^综合排序', r'^速度', r'^全部筛选',
-        r'^15分钟', r'^品质必点', r'^神券商家', r'^进店',
-        r'^四荤美味', r'^【',
-    ]
-    for p in non_names:
-        if re.match(p, text):
-            return True
-    # Single numbers
-    if re.match(r'^[45]\.\d$', text):
-        return True
-    return False
-
-
-def is_rating(text: str) -> bool:
-    return bool(re.match(r'^[45]\.\d$', text))
-
-
-def is_distance(text: str) -> bool:
-    return bool(re.match(r'^[\d.]+(?:km|m)$', text))
 
 
 def run(xml: str) -> dict:
-    nodes = parse_nodes(xml)
-    
-    # Collect all text nodes with positions
-    text_items = []
-    for n in nodes:
-        bounds = parse_bounds(n.get('b', ''))
-        if not bounds:
-            continue
-        text = n.get('t', '').strip()
-        if not text:
-            continue
-        text_items.append({
-            'text': text,
-            'x1': bounds[0], 'y1': bounds[1], 'x2': bounds[2], 'y2': bounds[3],
-            'cy': (bounds[1] + bounds[3]) // 2,
-        })
-    
-    # Find the filter/header area bottom boundary.
-    # After the filters (综合排序, 速度, 全部筛选) and sub-filters (15分钟, 品质必点, etc.),
-    # the merchant cards start. We identify merchant-relevant text nodes that are
-    # BELOW the filter section.
-    # The filter bar and sub-filter chips are at y < ~800 in the scrolled state.
-    # We can dynamically determine this by looking for the last filter-chip-like node.
-    
-    # Sort text items by y
-    text_items.sort(key=lambda t: (t['y1'], t['x1']))
-    
-    # Identify all candidate name nodes (right-side, Chinese text)
-    candidates = []
-    for item in text_items:
-        t = item['text']
-        x1 = item['x1']
-        
-        # Must be on the right side (merchant details area starts at x≈349)
-        if x1 < 300:
-            continue
-        
-        # Must contain Chinese characters
-        if not re.search(r'[\u4e00-\u9fff]', t):
-            continue
-        
-        # Must not be a non-name
-        if is_non_name(t):
-            continue
-        
-        # Must be reasonably long (merchant names are typically 5+ chars)
-        if len(t) < 4:
-            continue
-        
-        # Heuristic: merchant name text node is usually wide (spans most of the card width)
-        width = item['x2'] - item['x1']
-        if width < 200:
-            continue
-        
-        candidates.append(item)
-    
-    # Group candidates: if two candidates overlap vertically or are very close,
-    # they're likely the same merchant (e.g., name split across lines).
-    # Also, filter out candidates that are too close together (duplicates).
-    
-    # Sort candidates by y
-    candidates.sort(key=lambda c: c['y1'])
-    
-    # For each candidate name, find rating and distance in the same merchant card area.
-    # A merchant card typically spans from the name's top to about 200-300px below.
-    
+    """Extract merchant name, rating, distance from Meituan food listing page."""
     merchants = []
-    used_y_ranges = []  # Track y ranges already covered to avoid duplicates
+
+    # Parse all nodes with bounds and attributes
+    node_re = re.compile(
+        r'<n\s+b="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"([^>]*?)/?>'
+    )
+
+    nodes = []
+    for m in node_re.finditer(xml):
+        x1, y1, x2, y2 = int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))
+        attrs = m.group(5)
+        text = ''
+        t_match = re.search(r't="([^"]*)"', attrs)
+        if t_match:
+            text = t_match.group(1).strip()
+        cls = ''
+        c_match = re.search(r'c="([^"]*)"', attrs)
+        if c_match:
+            cls = c_match.group(1)
+        has_k1 = 'k="1"' in attrs
+        nodes.append({
+            'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2,
+            'text': text, 'cls': cls, 'k1': has_k1
+        })
+
+    # Debug
+    frame_k1_nodes = [n for n in nodes if n['cls'] == 'FrameLayout' and n['k1']]
+    right_frame_k1 = [n for n in frame_k1_nodes if 300 <= n['x1'] <= 400]
     
-    for cand in candidates:
-        name_y1 = cand['y1']
-        name_y2 = cand['y2']
-        name_text = cand['text']
-        
-        # Check if this candidate is already covered by a previous merchant
-        # (same merchant area)
-        already_covered = False
-        for y_start, y_end in used_y_ranges:
-            if name_y1 >= y_start and name_y2 <= y_end:
-                already_covered = True
-                break
-        if already_covered:
+    debug = {
+        'total_nodes': len(nodes),
+        'frame_k1_count': len(frame_k1_nodes),
+        'right_frame_k1_count': len(right_frame_k1),
+        'right_frame_k1_positions': [(n['x1'], n['y1'], n['x2'], n['y2']) for n in right_frame_k1],
+        'text_nodes_sample': [(n['text'], n['x1'], n['y1']) for n in nodes if n['text']][:20]
+    }
+
+    # Find card containers: FrameLayout with k="1" on the right side (x1 around 349)
+    card_containers = right_frame_k1
+    # Sort by y position
+    card_containers.sort(key=lambda n: n['y1'])
+
+    # Filter to find merchant cards (they have a name text node inside)
+    for card in card_containers:
+        cx1, cy1, cx2, cy2 = card['x1'], card['y1'], card['x2'], card['y2']
+
+        # Find text nodes within this card
+        card_texts = [
+            n for n in nodes
+            if n['text']
+            and n['x1'] >= cx1 - 10 and n['x2'] <= cx2 + 10
+            and n['y1'] >= cy1 - 5 and n['y2'] <= cy2 + 10
+        ]
+
+        if not card_texts:
             continue
-        
-        # Estimate the card height (typically ~250-350px from name top to bottom of card)
-        card_bottom = name_y1 + 320
-        
-        # Find rating in the same card area (between name bottom and card bottom,
-        # on the right side x >= 300)
-        rating = None
-        rating_y = None
-        for item in text_items:
-            if item['y1'] < name_y2 - 5:  # should be below or at same level as name
-                continue
-            if item['y1'] > card_bottom:
-                continue
-            if item['x1'] < 300:
-                continue
-            if is_rating(item['text']):
-                rating = item['text']
-                rating_y = item['y1']
-                break  # take the first rating below the name
-        
-        # Find distance in the same card area
-        distance = None
-        for item in text_items:
-            if item['y1'] < name_y2 - 10:
-                continue
-            if item['y1'] > card_bottom:
-                continue
-            if is_distance(item['text']):
-                # Distance should be roughly in the middle-right area (x between 700-1000)
-                # but let's not be too strict
-                distance = item['text']
-                break  # take the first distance below the name
-        
-        if rating is not None and distance is not None:
-            # Mark this y range as used
-            used_y_ranges.append((name_y1, card_bottom))
+
+        card_texts.sort(key=lambda n: (n['y1'], n['x1']))
+
+        name = ''
+        rating = ''
+        distance = ''
+
+        for t in card_texts:
+            txt = t['text']
+
+            # Name: first text node with Chinese characters at the top of card
+            if not name and re.search(r'[\u4e00-\u9fff]', txt):
+                # Check if it's near the top of the card (within first 80px)
+                if t['y1'] - cy1 <= 80:
+                    # Filter out known non-name texts
+                    skip_prefixes = ('月售', '人均', '起送', '约', '满', '免',
+                                     '接受', '10:', '15:', '20:', '堂食',
+                                     '分', '综合', '速度', '全部', '品质',
+                                     '神券', '15分钟', '配送')
+                    if not any(txt.startswith(p) for p in skip_prefixes):
+                        # Also filter out pure numbers/short texts
+                        if len(txt) >= 2:
+                            name = txt
+
+            # Rating: matches pattern like "4.6", "4.8", "5.0"
+            if not rating and re.match(r'^[0-5](\.\d)?$', txt):
+                # Verify there's a "分" node nearby (within 20px vertically)
+                for t2 in card_texts:
+                    if t2['text'] == '分' and abs(t2['y1'] - t['y1']) < 20:
+                        rating = txt
+                        break
+
+            # Distance: text ending with km, m
+            if not distance:
+                dist_match = re.match(r'^([\d.]+)(km|m)$', txt)
+                if dist_match:
+                    distance = txt
+
+        if name:
             merchants.append({
-                'name': name_text,
+                'name': name,
                 'rating': rating,
                 'distance': distance,
             })
-    
-    return {'merchants': merchants}
+
+    return {'merchants': merchants, 'debug': debug}

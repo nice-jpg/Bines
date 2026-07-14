@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from collector import CollectorManager, create_collector_tools
-from page_mechanism import PageMechanism
+from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
 class FakeEventHub:
@@ -114,13 +114,17 @@ def test_prepare_collector_invokes_isolated_collector_agent() -> None:
         def invoke(self, payload, config=None):
             captured["payload"] = payload
             captured["config"] = config
-            return {"messages": [{"role": "assistant", "content": "score=100"}]}
+            return {"messages": [{"role": "assistant", "content": '{"ready": true, "score": 100}'}]}
 
     def create_agent(**kwargs):
         captured["kwargs"] = kwargs
         return FakeAgent()
 
-    manager = CollectorManager(model="model", event_hub=FakeEventHub(), create_agent_factory=create_agent)
+    manager = CollectorManager(
+        model="model",
+        event_hub=FakeEventHub(),
+        create_agent_factory=create_agent,
+    )
     result = json.loads(
         manager.prepare_collector(
             page_path="meituan",
@@ -131,7 +135,39 @@ def test_prepare_collector_invokes_isolated_collector_agent() -> None:
     )
 
     assert result["ok"] is True
-    assert result["result"] == "score=100"
+    assert result["result"] == '{"ready": true, "score": 100}'
+    assert result["trained"] is True
+    assert manager.training_registry.is_trained("meituan") is True
     assert captured["kwargs"]["name"] == "collector"
     assert captured["config"]["recursion_limit"] == 80
     assert "home page" in captured["payload"]["messages"][0]["content"]
+
+
+def test_prepare_collector_does_not_mark_unready_or_invalid_result_as_trained() -> None:
+    class FakeAgent:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def invoke(self, payload, config=None):
+            return {"messages": [{"role": "assistant", "content": self.content}]}
+
+    for content in ['{"ready": false, "score": 100}', '{"ready": true, "score": 99}', "not json"]:
+        def create_agent(**kwargs):
+            return FakeAgent(content)
+
+        manager = CollectorManager(
+            model="model",
+            event_hub=FakeEventHub(),
+            create_agent_factory=create_agent,
+        )
+        result = json.loads(
+            manager.prepare_collector(
+                page_path="meituan/美食/商家",
+                page_description="merchant",
+                required_fields="name",
+                output_schema='{"merchant": {"name": ""}}',
+            )
+        )
+
+        assert result["trained"] is False
+        assert manager.training_registry.is_trained("meituan/美食/商家") is False

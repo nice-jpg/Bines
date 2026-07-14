@@ -17,14 +17,12 @@ try:
     from src.device.adapter import AndroidDevice
     from src.device.results import ErrorResult, is_error_result, make_error_result
     from src.device.translator import check_actions
-    from src.page_mechanism import PageRunHook
     from src.tools.event_logger import WorkspaceEventLogger
     from src.tools.optimize_xml import optimize
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from device.adapter import AndroidDevice
     from device.results import ErrorResult, is_error_result, make_error_result
     from device.translator import check_actions
-    from page_mechanism import PageRunHook
     from tools.event_logger import WorkspaceEventLogger
     from tools.optimize_xml import optimize
 
@@ -75,14 +73,12 @@ class EventHub:
         self,
         logger: WorkspaceEventLogger | None = None,
         sleep_func: Callable[[float], None] = time.sleep,
-        page_run_hook: PageRunHook | None = None,
     ) -> None:
         self.device = AndroidDevice()
         self._actions_checked = False
         self.logger = logger or WorkspaceEventLogger()
         self.post_action_ui_delay_seconds = DEFAULT_POST_ACTION_UI_DELAY_SECONDS
         self._sleep = sleep_func
-        self.page_run_hook = page_run_hook
 
     def tap(self, x: int, y: int) -> str | ErrorResult:
         """Replay the recorded tap action."""
@@ -110,10 +106,7 @@ class EventHub:
         if type(result) is ErrorResult:
             return result
         assert(isinstance(result, str))
-        optimized = optimize(result)
-        if self.page_run_hook is not None:
-            return self.page_run_hook.after_xml(optimized)
-        return optimized
+        return optimize(result)
 
     def screenshot(self) -> str | ErrorResult:
         """Capture a screenshot on the device and return the remote path."""

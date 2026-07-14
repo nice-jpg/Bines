@@ -88,15 +88,14 @@ def test_eval_collection_scores_exact_match_and_mismatch() -> None:
     assert mismatch["missing"] == ["result.items[1]", "result.items[2]"]
 
 
-def test_page_run_hook_appends_collection_json(tmp_path: Path) -> None:
+def test_page_run_hook_runs_current_page_script(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
     (page_dir / "run.py").write_text("def run(xml: str):\n    return {'items': [{'xml': xml}]}\n", encoding="utf-8")
     hook = PageRunHook(PageMechanism(tmp_path))
 
     hook.set_current_path("meituan")
-    result = json.loads(hook.after_xml("<h></h>"))
+    result = hook.run_current_page("<h></h>")
 
-    assert result["xml"] == "<h></h>"
-    assert result["collection"]["ok"] is True
-    assert result["collection"]["result"]["items"] == [{"xml": "<h></h>"}]
+    assert result["ok"] is True
+    assert result["result"]["items"] == [{"xml": "<h></h>"}]

@@ -10,7 +10,7 @@ import posixpath
 import re
 import tempfile
 import threading
-from typing import Iterator
+from typing import Any, Iterator, Mapping
 from zipfile import BadZipFile, ZipFile
 
 from langchain_core.tools import StructuredTool
@@ -159,6 +159,118 @@ class ContentProvider:
             raise ValueError("Excel path must end with .xlsx")
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+
+class CollectionWorkbookSink:
+    """Persist page-local collection JSON into ``result.xlsx``."""
+
+    def __init__(
+        self,
+        provider: ContentProvider | None = None,
+        *,
+        relative_path: str = "result.xlsx",
+        reset: bool = True,
+    ) -> None:
+        self.provider = provider or ContentProvider()
+        self.relative_path = relative_path
+        self._merchant_sheets: dict[str, str] = {}
+        self._item_signatures: dict[str, set[str]] = {}
+        if reset:
+            self.provider.create_excel_file(relative_path, sheet_name=SHEET_NAME)
+        else:
+            path = self.provider._resolve_excel_path(relative_path)
+            if not path.exists():
+                self.provider.create_excel_file(relative_path, sheet_name=SHEET_NAME)
+
+    def persist_run_result(
+        self,
+        *,
+        page_path: str,
+        source_tool: str,
+        run_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        if run_result.get("ok") is not True:
+            return {"ok": True, "skipped": True, "reason": "collection_not_ok"}
+
+        result = run_result.get("result")
+        if not isinstance(result, Mapping):
+            return {"ok": True, "skipped": True, "reason": "collection_result_not_object"}
+        merchant = result.get("merchant")
+        if not isinstance(merchant, Mapping):
+            return {"ok": True, "skipped": True, "reason": "missing_merchant"}
+        merchant_name = str(merchant.get("name") or "").strip()
+        if not merchant_name:
+            return {"ok": True, "skipped": True, "reason": "missing_merchant_name"}
+
+        items = result.get("items")
+        item_rows = [item for item in items if isinstance(item, Mapping)] if isinstance(items, list) else []
+        append_items = source_tool in {"swipe_up", "swipe_down"}
+        path = self.provider._resolve_excel_path(self.relative_path)
+
+        with _lock_workbook_path(path):
+            workbook = _load_existing_workbook(path) if path.exists() else Workbook()
+            try:
+                index_sheet = _ensure_sheet(workbook, SHEET_NAME)
+                merchant_headers = _ensure_headers(index_sheet, merchant.keys())
+                merchant_row = _upsert_row_by_key(index_sheet, merchant_headers, "name", merchant_name, merchant)
+
+                merchant_sheet_name = self._ensure_merchant_sheet(workbook, merchant_name)
+                item_headers = _ensure_headers_for_rows(workbook[merchant_sheet_name], item_rows)
+                appended = self._append_unique_items(
+                    workbook[merchant_sheet_name],
+                    merchant_sheet_name,
+                    item_headers,
+                    item_rows if append_items else [],
+                )
+                skipped_items = len(item_rows) - appended if append_items else len(item_rows)
+                _save_workbook(workbook, path)
+            except Exception:
+                workbook.close()
+                raise
+
+        return {
+            "ok": True,
+            "path": str(path),
+            "merchant": merchant_name,
+            "index_sheet": SHEET_NAME,
+            "index_row": merchant_row,
+            "merchant_sheet": merchant_sheet_name,
+            "appended_items": appended,
+            "skipped_items": skipped_items,
+            "source_tool": source_tool,
+        }
+
+    def _ensure_merchant_sheet(self, workbook: OpenpyxlWorkbook, merchant_name: str) -> str:
+        existing = self._merchant_sheets.get(merchant_name)
+        if existing:
+            if existing not in workbook.sheetnames:
+                workbook.create_sheet(existing)
+            return existing
+
+        sheet_name = _unique_sheet_name(workbook, _sanitize_sheet_name(merchant_name))
+        if sheet_name not in workbook.sheetnames:
+            workbook.create_sheet(sheet_name)
+        self._merchant_sheets[merchant_name] = sheet_name
+        self._item_signatures.setdefault(sheet_name, set())
+        return sheet_name
+
+    def _append_unique_items(
+        self,
+        worksheet: Worksheet,
+        sheet_name: str,
+        headers: list[str],
+        items: list[Mapping[str, Any]],
+    ) -> int:
+        signatures = self._item_signatures.setdefault(sheet_name, set())
+        appended = 0
+        for item in items:
+            signature = _json_signature(item)
+            if signature in signatures:
+                continue
+            signatures.add(signature)
+            worksheet.append([_cell_value(item.get(header, "")) for header in headers])
+            appended += 1
+        return appended
 
 
 def create_content_provider_tools(provider: ContentProvider | None = None) -> list[StructuredTool]:
@@ -317,6 +429,74 @@ def _get_sheet(workbook: OpenpyxlWorkbook, sheet_name: str) -> Worksheet:
     return workbook[validated_name]
 
 
+def _ensure_sheet(workbook: OpenpyxlWorkbook, sheet_name: str) -> Worksheet:
+    validated_name = _validate_sheet_name(sheet_name)
+    if validated_name in workbook.sheetnames:
+        return workbook[validated_name]
+    return workbook.create_sheet(validated_name)
+
+
+def _ensure_headers_for_rows(worksheet: Worksheet, rows: list[Mapping[str, Any]]) -> list[str]:
+    keys: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        for key in row:
+            normalized = str(key)
+            if normalized not in seen:
+                keys.append(normalized)
+                seen.add(normalized)
+    return _ensure_headers(worksheet, keys)
+
+
+def _ensure_headers(worksheet: Worksheet, keys: Iterator[Any] | list[Any]) -> list[str]:
+    headers = _current_headers(worksheet)
+    for key in keys:
+        normalized = str(key)
+        if normalized and normalized not in headers:
+            headers.append(normalized)
+    for column_index, header in enumerate(headers, start=1):
+        worksheet.cell(row=1, column=column_index, value=header)
+    return headers
+
+
+def _current_headers(worksheet: Worksheet) -> list[str]:
+    if worksheet.max_row < 1:
+        return []
+    values = [value for value in next(worksheet.iter_rows(min_row=1, max_row=1, values_only=True), ())]
+    headers = [str(value) if value is not None else "" for value in values]
+    while headers and headers[-1] == "":
+        headers.pop()
+    if not any(headers):
+        return []
+    return headers
+
+
+def _upsert_row_by_key(
+    worksheet: Worksheet,
+    headers: list[str],
+    key: str,
+    key_value: str,
+    row_data: Mapping[str, Any],
+) -> int:
+    if key not in headers:
+        headers = _ensure_headers(worksheet, [*headers, key])
+    key_column = headers.index(key) + 1
+    row_index = _find_row_by_value(worksheet, key_column, key_value)
+    if row_index is None:
+        row_index = max(worksheet.max_row + 1, 2)
+    for column_index, header in enumerate(headers, start=1):
+        if header in row_data or worksheet.cell(row=row_index, column=column_index).value is None:
+            worksheet.cell(row=row_index, column=column_index, value=_cell_value(row_data.get(header, "")))
+    return row_index
+
+
+def _find_row_by_value(worksheet: Worksheet, column_index: int, value: str) -> int | None:
+    for row_index in range(2, worksheet.max_row + 1):
+        if str(worksheet.cell(row=row_index, column=column_index).value or "") == value:
+            return row_index
+    return None
+
+
 def _validate_sheet_name(sheet_name: str) -> str:
     name = str(sheet_name or "")
     if not name.strip():
@@ -331,6 +511,38 @@ def _validate_sheet_name(sheet_name: str) -> str:
 def _ensure_unique_sheet_name(workbook: OpenpyxlWorkbook, sheet_name: str) -> None:
     if any(existing.casefold() == sheet_name.casefold() for existing in workbook.sheetnames):
         raise ValueError(f'Worksheet "{sheet_name}" already exists')
+
+
+def _unique_sheet_name(workbook: OpenpyxlWorkbook, sheet_name: str) -> str:
+    base = _sanitize_sheet_name(sheet_name)
+    if not any(existing.casefold() == base.casefold() for existing in workbook.sheetnames):
+        return base
+    suffix = 2
+    while True:
+        marker = f"_{suffix}"
+        candidate = f"{base[:31 - len(marker)]}{marker}"
+        if not any(existing.casefold() == candidate.casefold() for existing in workbook.sheetnames):
+            return candidate
+        suffix += 1
+
+
+def _sanitize_sheet_name(sheet_name: str) -> str:
+    name = INVALID_SHEET_NAME_RE.sub("_", str(sheet_name or "")).strip()
+    if not name:
+        name = "merchant"
+    return name[:31]
+
+
+def _json_signature(value: Mapping[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _cell_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return str(value)
 
 
 def _read_xlsx(path: Path, sheet_name: str = SHEET_NAME) -> list[list[object]]:

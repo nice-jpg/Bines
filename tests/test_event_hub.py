@@ -87,6 +87,18 @@ class EventHubTests(unittest.TestCase):
         self.assertEqual(sleeper.calls, [])
         self.assertEqual(hub.device.calls, [("dump_ui",)])
 
+    def test_touch_action_returns_plain_xml_without_collection_wrapper(self) -> None:
+        sleeper = FakeSleeper()
+        hub = EventHub(sleep_func=sleeper)
+        hub.device = FakeDevice(ui_result="<hierarchy></hierarchy>")
+        hub._actions_checked = True
+
+        direct = hub.uiautomate()
+        swiped = hub.swipe_up(10, 100)
+
+        self.assertEqual(direct, "<h></h>")
+        self.assertEqual(swiped, "<h></h>")
+
     def test_close_package_calls_device_without_ui_capture(self) -> None:
         hub = EventHub()
         hub.device = FakeDevice()
