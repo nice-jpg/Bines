@@ -24,7 +24,6 @@ def main() -> None:
     parser.add_argument("--max-rounds", type=int, default=10)
     parser.add_argument("--target-score", type=int)
     parser.add_argument("--stale-rounds", type=int, default=3)
-    parser.add_argument("--model", default="gpt-5.4")
     args = parser.parse_args()
 
     result = run_master(
@@ -33,7 +32,6 @@ def main() -> None:
             max_rounds=args.max_rounds,
             target_score=args.target_score,
             stale_rounds=args.stale_rounds,
-            model=args.model,
         ),
     )
     print(f"best_score={result.best_score}")
@@ -43,4 +41,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

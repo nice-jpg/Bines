@@ -7,7 +7,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
@@ -39,6 +39,7 @@ class ModelConfigTests(unittest.TestCase):
             env_path.write_text(
                 "\n".join(
                     [
+                        "MODEL_PROVIDER=deepseek",
                         "DEEPSEEK_BASE_URL=https://example.test/v1",
                         "DEEPSEEK_API_KEYs=test-key",
                         "DEEPSEEK_MODEL=test-model",
@@ -49,6 +50,7 @@ class ModelConfigTests(unittest.TestCase):
             with patch.dict(os.environ, {}, clear=True):
                 config = model.load_model_config(env_path)
 
+        self.assertEqual(config.provider, "deepseek")
         self.assertEqual(config.base_url, "https://example.test/v1")
         self.assertEqual(config.api_key, "test-key")
         self.assertEqual(config.model, "test-model")
@@ -58,6 +60,7 @@ class ModelConfigTests(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
+                "MODEL_PROVIDER": "deepseek",
                 "DEEPSEEK_BASE_URL": "https://example.test/v1",
                 "DEEPSEEK_API_KEY": "test-key",
                 "DEEPSEEK_MODEL": "test-model",
@@ -73,8 +76,37 @@ class ModelConfigTests(unittest.TestCase):
                 "api_key": "test-key",
                 "model": "test-model",
                 "streaming": False,
+                "use_responses_api": False,
             },
         )
+
+    def test_build_model_uses_codex_backend_selected_by_config(self) -> None:
+        model = importlib.import_module("model")
+        create_chat_model = Mock(return_value=object())
+        with patch.dict(
+            os.environ,
+            {
+                "MODEL_PROVIDER": "codex",
+                "CODEX_MODEL": "gpt-configured",
+                "CODEX_REASONING_EFFORT": "high",
+                "CODEX_PROMPT_CACHE_KEY": "cache-key",
+            },
+            clear=True,
+        ), patch.object(model, "create_chat_model", create_chat_model):
+            chat_model = model.build_model()
+
+        self.assertIs(chat_model, create_chat_model.return_value)
+        create_chat_model.assert_called_once_with(
+            model="gpt-configured",
+            reasoning_effort="high",
+            prompt_cache_key="cache-key",
+        )
+
+    def test_load_model_config_rejects_unknown_provider(self) -> None:
+        model = importlib.import_module("model")
+        with patch.dict(os.environ, {"MODEL_PROVIDER": "unknown"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "Unsupported MODEL_PROVIDER"):
+                model.load_model_config()
 
 
 if __name__ == "__main__":

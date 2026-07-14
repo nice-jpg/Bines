@@ -19,7 +19,6 @@ class MasterConfig:
     max_rounds: int = 10
     target_score: int | None = None
     stale_rounds: int = 3
-    model: str = "gpt-5.4"
     recursion_limit: int | None = None
 
 
@@ -42,7 +41,7 @@ def run_master(
         stale_rounds=selected.stale_rounds,
     )
     if model is None:
-        chat_model = _build_default_model(selected.model)
+        chat_model = _build_default_model()
     else:
         chat_model = model
     agent = build_master_agent(chat_model, controller)
@@ -108,16 +107,16 @@ def _supports_freeform_patch_tool(model: Any) -> bool:
     return True
 
 
-def _build_default_model(model_name: str) -> Any:
-    """Load Bines' Codex model without importing the broader ``src`` package."""
+def _build_default_model() -> Any:
+    """Load Bines' configured model without importing the broader ``src`` package."""
 
     src_dir = Path(__file__).resolve().parents[2] / "src"
     src_entry = str(src_dir)
     if src_entry not in sys.path:
         sys.path.insert(0, src_entry)
-    from model import build_codex_model
+    from model import build_model
 
-    return build_codex_model(model=model_name, reasoning_effort="high")
+    return build_model()
 
 
 def _resolve_debug_info(

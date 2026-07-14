@@ -7,7 +7,7 @@ from zipfile import BadZipFile
 
 from agent import AgentRunResult, AgentRuntime
 from langchain_core.messages import AIMessage, BaseMessage
-from model import build_codex_model, build_model
+from model import build_model
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 from tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
@@ -54,7 +54,7 @@ def run() -> None:
     operation_notice = OperationNoticeTool(notifier=notifier)
     captcha_authentication = CaptchaAuthenticationTool(notifier=notifier)
     runtime = AgentRuntime(
-        model=build_codex_model(),
+        model=build_model(),
         tools=create_common_tools(
             operation_notice_tool=operation_notice,
             captcha_authentication_tool=captcha_authentication,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -21,13 +22,29 @@ WORKSPACE_ENV_PATH = Path(__file__).resolve().parents[1] / "workspace" / ".env"
 
 @dataclass(frozen=True)
 class ModelConfig:
-    base_url: str
-    api_key: str
+    provider: str
     model: str
+    base_url: str | None = None
+    api_key: str | None = None
+    reasoning_effort: str | None = None
+    prompt_cache_key: str | None = None
 
 
-def build_model() -> ChatOpenAI:
-    config = load_model_config()
+def build_model(
+    *,
+    env_path: Path = WORKSPACE_ENV_PATH,
+) -> Any:
+    """Build the configured model backend from ``workspace/.env``."""
+
+    config = load_model_config(env_path)
+
+    if config.provider == "codex":
+        return create_chat_model(
+            model=config.model,
+            reasoning_effort=config.reasoning_effort,
+            prompt_cache_key=config.prompt_cache_key,
+        )
+
     return ChatOpenAI(
         base_url=config.base_url,
         api_key=config.api_key,
@@ -39,10 +56,32 @@ def build_model() -> ChatOpenAI:
 
 def load_model_config(env_path: Path = WORKSPACE_ENV_PATH) -> ModelConfig:
     load_dotenv(env_path, override=False)
-    return ModelConfig(
-        base_url=_required_env("DEEPSEEK_BASE_URL", "OPENAI_BASE_URL"),
-        api_key=_required_env("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEYs", "OPENAI_API_KEY"),
-        model=_required_env("DEEPSEEK_MODEL", "OPENAI_MODEL"),
+    provider = _required_env("MODEL_PROVIDER").strip().lower()
+
+    if provider == "codex":
+        return ModelConfig(
+            provider=provider,
+            model=_required_env("CODEX_MODEL"),
+            reasoning_effort=_optional_env("CODEX_REASONING_EFFORT") or "medium",
+            prompt_cache_key=_optional_env("CODEX_PROMPT_CACHE_KEY"),
+        )
+    if provider == "deepseek":
+        return ModelConfig(
+            provider=provider,
+            base_url=_required_env("DEEPSEEK_BASE_URL"),
+            api_key=_required_env("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEYs"),
+            model=_required_env("DEEPSEEK_MODEL"),
+        )
+    if provider == "openai":
+        return ModelConfig(
+            provider=provider,
+            base_url=_required_env("OPENAI_BASE_URL"),
+            api_key=_required_env("OPENAI_API_KEY"),
+            model=_required_env("OPENAI_MODEL"),
+        )
+    raise RuntimeError(
+        "Unsupported MODEL_PROVIDER in workspace/.env: "
+        f"{provider!r}. Expected one of: codex, deepseek, openai"
     )
 
 
@@ -55,14 +94,6 @@ def _required_env(*names: str) -> str:
     raise RuntimeError(f"Missing required model setting in workspace/.env: {joined_names}")
 
 
-def build_codex_model(
-    *,
-    model: str = "gpt-5.4",
-    reasoning_effort: str | None = "medium",
-    prompt_cache_key: str | None = None,
-):
-    return create_chat_model(
-        model=model,
-        reasoning_effort=reasoning_effort,
-        prompt_cache_key=prompt_cache_key,
-    )
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name)
+    return value if value else None
