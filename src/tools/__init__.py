@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .common import create_common_tools
-from .event_hub import EventHub, create_event_hub_tools
-from .page_docs import PageDocTool, create_page_doc_tools
+from .event_hub import EventHub, create_conductor_event_hub_tools, create_event_hub_tools
+from .navigation import create_navigation_tools
 try:
-    from src.page_mechanism import PageMechanism, PageRunHook
+    from src.page_mechanism import PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
-    from page_mechanism import PageMechanism, PageRunHook
+    from page_mechanism import PageMechanism
 
 if TYPE_CHECKING:
     try:
@@ -23,7 +23,6 @@ def collect_conductor_tools(
     *,
     model=None,
     mechanism: PageMechanism | None = None,
-    page_run_hook: PageRunHook | None = None,
     event_hub=None,
     collector_manager: CollectorManager | None = None,
 ) -> list:
@@ -39,15 +38,11 @@ def collect_conductor_tools(
         event_hub = event_hub or collector_manager.event_hub
     mechanism = mechanism or PageMechanism()
     event_hub = event_hub or EventHub()
-    page_run_hook = page_run_hook or PageRunHook(mechanism)
-    if page_run_hook.mechanism is not mechanism:
-        raise ValueError("page_run_hook must use the conductor PageMechanism instance.")
     if collector_manager is not None and collector_manager.mechanism is not mechanism:
         raise ValueError("collector_manager must use the conductor PageMechanism instance.")
     if collector_manager is not None and collector_manager.event_hub is not event_hub:
         raise ValueError("collector_manager must use the conductor EventHub instance.")
 
-    page_doc_tool = PageDocTool(mechanism=mechanism, page_run_hook=page_run_hook)
     if collector_manager is None:
         collector_manager = CollectorManager(
             model=model,
@@ -56,8 +51,8 @@ def collect_conductor_tools(
         )
     return [
         *create_common_tools(),
-        *create_page_doc_tools(page_doc_tool),
-        *create_event_hub_tools(event_hub),
+        *create_conductor_event_hub_tools(event_hub),
+        *create_navigation_tools(mechanism=mechanism, event_hub=event_hub),
         *create_prepare_collector_tool(collector_manager),
     ]
 

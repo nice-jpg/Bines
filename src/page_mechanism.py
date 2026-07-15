@@ -41,6 +41,40 @@ class PageMechanism:
     def query_task_doc(self, current_path: str) -> str:
         return self._query_doc(current_path, "task.md", "task_doc")
 
+    def load_manual_bundle(self, current_path: str) -> str:
+        """Strictly load PAGE.md followed by task.md for one canonical page."""
+
+        canonical_path = self.validate_page_manual(current_path)
+        return "\n".join(
+            [
+                f'<current_page_manual canonical_path="{_escape_attr(canonical_path)}">',
+                self.query_page_doc(canonical_path),
+                self.query_task_doc(canonical_path),
+                "</current_page_manual>",
+            ]
+        )
+
+    def home_path_for_package(self, package_name: str) -> str:
+        """Resolve and validate the page-mechanism root for an app package."""
+
+        parts, error = normalize_page_path(package_name)
+        if error or not parts:
+            raise ValueError(error or "package_name is required.")
+        return self.validate_page_manual(parts[0])
+
+    def validate_page_manual(self, current_path: str) -> str:
+        """Return the canonical path when both required page documents exist."""
+
+        page_dir, canonical_path, error = self._page_dir(current_path)
+        if error:
+            raise ValueError(error)
+        missing = [name for name in ("PAGE.md", "task.md") if not (page_dir / name).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"Page {canonical_path!r} is missing required manual files: {', '.join(missing)}"
+            )
+        return canonical_path
+
     def read_run_py(self, current_path: str) -> str:
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
@@ -109,13 +143,18 @@ class PageMechanism:
             return False
         return "/".join(parts) in self._merchant_page_paths
 
-    def _query_doc(self, current_path: str, filename: str, block_name: str) -> str:
+    def _query_doc(
+        self,
+        current_path: str,
+        filename: str,
+        block_name: str,
+    ) -> str:
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
-            return self._error_block(f"{block_name}_error", current_path, canonical_path, error)
+            raise ValueError(error)
         doc = page_dir / filename
         if not doc.is_file():
-            return self._error_block(f"{block_name}_error", current_path, canonical_path, f"{filename} was not found.")
+            raise FileNotFoundError(f"{filename} was not found for page {canonical_path!r}.")
         relative_path = doc.relative_to(self.root).as_posix()
         return "\n".join(
             [
@@ -188,35 +227,6 @@ class CollectorTrainingRegistry:
         if error or not parts:
             return ""
         return "/".join(parts)
-
-
-class PageRunHook:
-    """Track current page and execute page-local run.py."""
-
-    def __init__(
-        self,
-        mechanism: PageMechanism | None = None,
-    ) -> None:
-        self.mechanism = mechanism or PageMechanism()
-        self.current_path = ""
-
-    def set_current_path(self, current_path: str) -> str:
-        parts, error = normalize_page_path(current_path)
-        if error:
-            return json.dumps({"ok": False, "error": error}, ensure_ascii=False, sort_keys=True)
-        if not parts:
-            return json.dumps(
-                {"ok": False, "error": "current_path is required"},
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        self.current_path = "/".join(parts)
-        return json.dumps({"ok": True, "current_path": self.current_path}, ensure_ascii=False, sort_keys=True)
-
-    def run_current_page(self, xml: str) -> dict[str, Any] | None:
-        if not self.current_path:
-            return None
-        return self.mechanism.run_page_script(self.current_path, xml)
 
 
 def normalize_page_path(current_path: str) -> tuple[list[str], str | None]:

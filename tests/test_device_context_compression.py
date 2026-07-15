@@ -54,8 +54,8 @@ class DeviceContextCompressionTests(unittest.TestCase):
         messages = [
             assistant_tool_call("call_1", "uiautomate", {}),
             tool_message("call_1", "uiautomate", PRIOR_XML),
-            assistant_tool_call("call_2", "tap", {"x": 320, "y": 620}),
-            tool_message("call_2", "tap", AFTER_TAP_XML),
+            assistant_tool_call("call_2", "navigate_to", {"x": 320, "y": 620, "next_path": "meituan/美食"}),
+            tool_message("call_2", "navigate_to", AFTER_TAP_XML),
             assistant_tool_call("call_3", "uiautomate", {}),
             tool_message("call_3", "uiautomate", LATEST_XML),
         ]
@@ -72,10 +72,10 @@ class DeviceContextCompressionTests(unittest.TestCase):
                 "uiautomate",
                 json.dumps({"xml": PRIOR_XML, "collection": {"ok": True}}, ensure_ascii=False),
             ),
-            assistant_tool_call("call_2", "tap", {"x": 320, "y": 620}),
+            assistant_tool_call("call_2", "navigate_to", {"x": 320, "y": 620, "next_path": "meituan/美食"}),
             tool_message(
                 "call_2",
-                "tap",
+                "navigate_to",
                 json.dumps({"xml": AFTER_TAP_XML, "collection": {"ok": True}}, ensure_ascii=False),
             ),
             assistant_tool_call("call_3", "uiautomate", {}),
@@ -93,8 +93,8 @@ class DeviceContextCompressionTests(unittest.TestCase):
 
     def test_tap_summary_falls_back_when_target_is_unknown(self) -> None:
         messages = [
-            assistant_tool_call("call_1", "tap", {"x": 20, "y": 20}),
-            tool_message("call_1", "tap", AFTER_TAP_XML),
+            assistant_tool_call("call_1", "tap_in_page", {"x": 20, "y": 20}),
+            tool_message("call_1", "tap_in_page", AFTER_TAP_XML),
             assistant_tool_call("call_2", "uiautomate", {}),
             tool_message("call_2", "uiautomate", LATEST_XML),
         ]
@@ -108,8 +108,8 @@ class DeviceContextCompressionTests(unittest.TestCase):
         messages = [
             assistant_tool_call("call_1", "append_excel_rows", {"file_path": "stores.xlsx"}),
             tool_message("call_1", "append_excel_rows", "wrote 1 row"),
-            assistant_tool_call("call_2", "tap", {"x": 100, "y": 100}),
-            tool_message("call_2", "tap", error),
+            assistant_tool_call("call_2", "tap_in_page", {"x": 100, "y": 100}),
+            tool_message("call_2", "tap_in_page", error),
             assistant_tool_call("call_3", "uiautomate", {}),
             tool_message("call_3", "uiautomate", LATEST_XML),
         ]

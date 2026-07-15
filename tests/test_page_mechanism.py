@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from page_mechanism import PageMechanism, PageRunHook, eval_collection
+from page_mechanism import PageMechanism, eval_collection
 
 
 def test_query_page_and_task_docs_are_separate(tmp_path: Path) -> None:
@@ -88,24 +88,21 @@ def test_eval_collection_scores_exact_match_and_mismatch() -> None:
     assert mismatch["missing"] == ["result.items[1]", "result.items[2]"]
 
 
-def test_page_run_hook_runs_current_page_script(tmp_path: Path) -> None:
+def test_validate_page_manual_requires_both_documents(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text("def run(xml: str):\n    return {'items': [{'xml': xml}]}\n", encoding="utf-8")
-    hook = PageRunHook(PageMechanism(tmp_path))
+    (page_dir / "PAGE.md").write_text("page", encoding="utf-8")
+    mechanism = PageMechanism(tmp_path)
 
-    hook.set_current_path("meituan")
-    result = hook.run_current_page("<h></h>")
+    with pytest.raises(FileNotFoundError, match="task.md"):
+        mechanism.validate_page_manual("meituan")
 
-    assert result["ok"] is True
-    assert result["result"]["items"] == [{"xml": "<h></h>"}]
+    (page_dir / "task.md").write_text("task", encoding="utf-8")
+    assert mechanism.validate_page_manual("com.sankuai.meituan") == "meituan"
 
 
-def test_page_run_hook_rejects_empty_path_without_clearing_current_page(tmp_path: Path) -> None:
-    hook = PageRunHook(PageMechanism(tmp_path))
-    hook.set_current_path("meituan")
+def test_strict_document_queries_raise_for_invalid_page(tmp_path: Path) -> None:
+    mechanism = PageMechanism(tmp_path)
 
-    result = json.loads(hook.set_current_path("  "))
-
-    assert result == {"ok": False, "error": "current_path is required"}
-    assert hook.current_path == "meituan"
+    with pytest.raises(FileNotFoundError, match="PAGE.md"):
+        mechanism.query_page_doc("meituan/missing")

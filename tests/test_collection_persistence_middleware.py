@@ -10,12 +10,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from langchain_core.messages import ToolMessage
 
 from middleware.collection_persistence import CollectionPersistenceMiddleware
-from page_mechanism import CollectorTrainingRegistry, PageMechanism, PageRunHook
+from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH
+from page_mechanism import CollectorTrainingRegistry, PageMechanism
 from tools.content_provider import CollectionWorkbookSink, ContentProvider, _read_xlsx
 
 
-def _request(tool_name: str) -> SimpleNamespace:
-    return SimpleNamespace(tool_call={"name": tool_name, "id": f"{tool_name}-1", "args": {}})
+def _request(tool_name: str, *, overlay: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        tool_call={"name": tool_name, "id": f"{tool_name}-1", "args": {}},
+        state={PAGE_CONTEXT_PATH: "meituan/美食/商家", PAGE_CONTEXT_OVERLAY: overlay},
+    )
 
 
 def _tool_message(tool_name: str, content: str = "cup") -> ToolMessage:
@@ -35,11 +39,9 @@ def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, Collec
     )
     mechanism = PageMechanism(tmp_path / "pages")
     registry = CollectorTrainingRegistry()
-    hook = PageRunHook(mechanism)
-    hook.set_current_path("meituan/美食/商家")
     sink = CollectionWorkbookSink(ContentProvider(tmp_path / "workspace"))
     middleware = CollectionPersistenceMiddleware(
-        page_run_hook=hook,
+        mechanism=mechanism,
         training_registry=registry,
         workbook_sink=sink,
     )
@@ -73,17 +75,41 @@ def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) ->
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
 
 
-def test_wrap_tool_call_initializes_sheet_but_does_not_append_for_tap_uiautomate_or_back(tmp_path: Path) -> None:
+def test_wrap_tool_call_initializes_sheet_but_does_not_append_for_same_page_reads(tmp_path: Path) -> None:
     middleware, registry, workbook_path = _middleware(tmp_path)
     registry.mark_trained("meituan/美食/商家")
 
-    for tool_name in ("tap", "uiautomate", "swipe_back"):
+    for tool_name in ("tap_in_page", "uiautomate"):
         result = middleware.wrap_tool_call(_request(tool_name), lambda _request: _tool_message(tool_name, "cup"))
         payload = json.loads(result.content)
         assert payload["persistence"]["appended_items"] == 0
 
     assert _read_xlsx(workbook_path) == [["name", "distance"], ["商家A", "1km"]]
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"]]
+
+
+def test_navigation_xml_does_not_run_page_script(tmp_path: Path) -> None:
+    middleware, registry, workbook_path = _middleware(tmp_path)
+    registry.mark_trained("meituan/美食/商家")
+
+    for tool_name in ("navigate_to", "navigate_back"):
+        result = middleware.wrap_tool_call(_request(tool_name), lambda _request: _tool_message(tool_name, "cup"))
+        assert result.content == "cup"
+
+    assert _read_xlsx(workbook_path) == []
+
+
+def test_overlay_close_xml_does_not_run_old_page_script(tmp_path: Path) -> None:
+    middleware, registry, workbook_path = _middleware(tmp_path)
+    registry.mark_trained("meituan/美食/商家")
+
+    result = middleware.wrap_tool_call(
+        _request("tap_in_page", overlay=True),
+        lambda _request: _tool_message("tap_in_page", "new-page-xml"),
+    )
+
+    assert result.content == "new-page-xml"
+    assert _read_xlsx(workbook_path) == []
 
 
 def test_wrap_tool_call_uses_tool_call_name_not_result_content_to_trigger(tmp_path: Path) -> None:
@@ -106,10 +132,8 @@ def test_wrap_tool_call_returns_structured_collection_error_without_persisting(t
     mechanism = PageMechanism(tmp_path / "pages")
     registry = CollectorTrainingRegistry()
     registry.mark_trained("meituan/美食/商家")
-    hook = PageRunHook(mechanism)
-    hook.set_current_path("meituan/美食/商家")
     middleware = CollectionPersistenceMiddleware(
-        page_run_hook=hook,
+        mechanism=mechanism,
         training_registry=registry,
         workbook_sink=CollectionWorkbookSink(ContentProvider(tmp_path / "workspace")),
     )

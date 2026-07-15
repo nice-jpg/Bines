@@ -1,9 +1,7 @@
 import re
-import json
 
 
 def run(xml: str) -> dict:
-    """Extract merchant name, rating, distance from Meituan food page."""
     if not xml or not xml.strip():
         return {"merchants": []}
 
@@ -11,195 +9,176 @@ def run(xml: str) -> dict:
     if not nodes:
         return {"merchants": []}
 
-    # Build parent-child hierarchy
-    _assign_parents(nodes)
-
-    # Find the inner RecyclerView (the one containing merchant cards at y>=673)
-    recycler = None
-    for n in nodes:
-        if n.get('r') == 'pagecontainer_recyclerview' and n.get('s') == '1':
-            b = _parse_bounds(n.get('b', ''))
-            if b[1] >= 600:
-                recycler = n
-                break
-
-    if not recycler:
+    recycler_bounds = _find_list_recycler(nodes)
+    if not recycler_bounds:
         return {"merchants": []}
 
-    rb = _parse_bounds(recycler.get('b', ''))
-
-    # Find card candidates: direct children of recycler that are full-width
-    # LinearLayouts with height >= 300
-    # Deduplicate by bounds string
-    seen_bounds = set()
-    card_candidates = []
-    for n in nodes:
-        if n.get('_parent') is not recycler:
-            continue
-        if n.get('c') != 'LinearLayout':
-            continue
-        b = n.get('b', '')
-        if b in seen_bounds:
-            continue
-        bounds = _parse_bounds(b)
-        if bounds[0] != 0 or bounds[2] != 1080:
-            continue
-        h = bounds[3] - bounds[1]
-        if h < 300:
-            continue
-        seen_bounds.add(b)
-        card_candidates.append(n)
-
-    # Fallback: if no candidates via parent tree, scan by bounds
-    if not card_candidates:
-        seen_bounds = set()
-        for n in nodes:
-            if n.get('c') != 'LinearLayout':
-                continue
-            b = n.get('b', '')
-            if b in seen_bounds:
-                continue
-            bounds = _parse_bounds(b)
-            if bounds[0] != 0 or bounds[2] != 1080:
-                continue
-            h = bounds[3] - bounds[1]
-            if not (300 <= h <= 600):
-                continue
-            if not _is_inside(bounds, rb):
-                continue
-            seen_bounds.add(b)
-            card_candidates.append(n)
-
+    cards = _find_card_candidates(nodes, recycler_bounds)
     merchants = []
-    for card in card_candidates:
-        cb = _parse_bounds(card.get('b', ''))
-        texts = _collect_texts_in(card, nodes)
-
-        name = ''
-        rating = ''
-        distance = ''
-
-        for t in texts:
-            txt = t['text'].strip()
-            if not txt:
-                continue
-
-            # Rating: like "4.8"
-            if not rating and re.match(r'^[45]\.\d$', txt):
-                rating = txt
-
-            # Distance: starts with 距该地
-            elif not distance and txt.startswith('距该地'):
-                distance = txt
-
-            # Merchant name: Chinese text >= 4 chars, not price/promo/category
-            elif not name and _is_merchant_name(txt):
-                name = txt
-
-        merchants.append({
-            'name': name,
-            'rating': rating,
-            'distance': distance
-        })
+    for card in cards:
+        texts = _texts_in_bounds(nodes, card)
+        merchant = _extract_card(texts, card)
+        if merchant["name"] or merchant["rating"] or merchant["distance"]:
+            merchants.append(merchant)
 
     return {"merchants": merchants}
 
 
-def _is_merchant_name(txt: str) -> bool:
-    """Heuristic to filter out non-merchant-name text."""
-    if len(txt) < 4:
-        return False
-    if re.match(r'^[0-9a-zA-Z\s]+$', txt):
-        return False
-    if txt.startswith('¥') or txt.startswith('距'):
-        return False
-    if re.match(r'^\d+\.?\d*$', txt):
-        return False
-    # Common non-merchant suffixes/patterns
-    non_name_keywords = [
-        '条', '人', '折', '促销', '收录', '消费', '包厢', '服务',
-        '人气', '推荐', '毕业', '足球', '先核销', '实惠', '限量',
-        '锅香', '正宗', '单人', '双人', '3-4', '半只', '四分之一',
-        '养生', '佳品', '招牌', '营养', '八宝粥', '米饭', '烤鸭',
-        '卤汁', '小吃', '饮品', '特惠'
+def _extract_card(texts, card_bounds):
+    left, top, right, bottom = card_bounds
+
+    rating_node = None
+    for item in sorted(texts, key=lambda x: (x["bounds"][1], x["bounds"][0])):
+        txt = item["text"].strip()
+        if re.fullmatch(r"[0-5]\.\d", txt):
+            rating_node = item
+            break
+    rating = rating_node["text"] if rating_node else ""
+
+    distance_candidates = [
+        item for item in texts
+        if item["text"].strip().startswith("距该地")
     ]
-    # Check if text matches a promo/deal pattern
-    if any(kw in txt for kw in non_name_keywords):
-        # But it might still be a name if it's long enough and has 店/餐厅
-        if '店' in txt or '餐厅' in txt or '馆' in txt or '屋' in txt:
-            return True
-        return False
-    return True
+    distance = ""
+    if distance_candidates:
+        distance = sorted(distance_candidates, key=lambda x: (x["bounds"][1], -x["bounds"][0]))[0]["text"]
+
+    title_bottom = (rating_node["bounds"][1] - 8) if rating_node else min(top + 140, bottom)
+    title_nodes = []
+    for item in texts:
+        txt = item["text"].strip()
+        x1, y1, x2, y2 = item["bounds"]
+        if not txt:
+            continue
+        if x1 < left + 180:
+            continue
+        if y1 < top or y2 > title_bottom + 5:
+            continue
+        if _is_bad_title_text(txt):
+            continue
+        title_nodes.append(item)
+
+    name = _merge_title_nodes(title_nodes)
+
+    return {
+        "name": name,
+        "rating": rating,
+        "distance": distance,
+    }
 
 
-def _parse_nodes(xml: str) -> list:
-    """Parse flat XML into a list of node dicts."""
+def _merge_title_nodes(nodes):
+    if not nodes:
+        return ""
+    nodes = sorted(nodes, key=lambda x: (x["bounds"][1], x["bounds"][0]))
+    rows = []
+    for item in nodes:
+        x1, y1, x2, y2 = item["bounds"]
+        placed = False
+        for row in rows:
+            if abs(row["y"] - y1) <= 24:
+                row["items"].append(item)
+                row["y"] = min(row["y"], y1)
+                placed = True
+                break
+        if not placed:
+            rows.append({"y": y1, "items": [item]})
+
+    parts = []
+    for row in sorted(rows, key=lambda r: r["y"]):
+        row_items = sorted(row["items"], key=lambda x: x["bounds"][0])
+        parts.append("".join(item["text"].strip() for item in row_items if item["text"].strip()))
+    return "".join(parts)
+
+
+def _is_bad_title_text(txt):
+    if not txt:
+        return True
+    if txt.startswith("距该地") or txt.startswith("¥"):
+        return True
+    if re.fullmatch(r"[0-5]\.\d", txt):
+        return True
+    if re.search(r"\d+条$", txt):
+        return True
+    if re.search(r"\d+/人$", txt):
+        return True
+    if any(k in txt for k in ["营业", "广告", "会员价", "美团补贴", "收录", "消费人数", "人气榜", "夜宵榜", "第", "折"]):
+        return True
+    if len(txt) <= 1:
+        return True
+    return False
+
+
+def _find_list_recycler(nodes):
+    candidates = []
+    for n in nodes:
+        if n.get("c") == "RecyclerView" and n.get("r") == "pagecontainer_recyclerview":
+            b = _parse_bounds(n.get("b", ""))
+            if b[1] >= 600:
+                candidates.append(b)
+    if not candidates:
+        return None
+    candidates.sort(key=lambda b: (b[1], -(b[3] - b[1])))
+    return candidates[0]
+
+
+def _find_card_candidates(nodes, recycler_bounds):
+    results = []
+    seen = set()
+    rx1, ry1, rx2, ry2 = recycler_bounds
+    for n in nodes:
+        if n.get("c") != "ViewGroup":
+            continue
+        b = _parse_bounds(n.get("b", ""))
+        x1, y1, x2, y2 = b
+        if (x2 - x1) < 900:
+            continue
+        if x1 > 40 or x2 < 1040:
+            continue
+        if (y2 - y1) < 250:
+            continue
+        if y1 < ry1 or y2 > ry2:
+            continue
+        if b in seen:
+            continue
+        texts = _texts_in_bounds(nodes, b)
+        if not any(re.fullmatch(r"[0-5]\.\d", t["text"].strip()) for t in texts):
+            continue
+        if not any(t["text"].strip().startswith("距该地") for t in texts):
+            continue
+        seen.add(b)
+        results.append(b)
+    results.sort(key=lambda b: (b[1], b[0]))
+    return results
+
+
+def _texts_in_bounds(nodes, bounds):
+    results = []
+    for n in nodes:
+        txt = n.get("t", "")
+        if not txt:
+            continue
+        nb = _parse_bounds(n.get("b", ""))
+        if _inside(nb, bounds):
+            results.append({"text": txt, "bounds": nb})
+    return results
+
+
+def _parse_nodes(xml):
     nodes = []
-    for match in re.finditer(r'<n\s+(.*?)\s*/>', xml):
-        raw = match.group(1)
-        attrs = re.findall(r'(\w+)=["\'](.*?)["\']', raw)
-        node = {}
-        for k, v in attrs:
-            node[k] = v
-        node['_children'] = []
-        nodes.append(node)
+    for m in re.finditer(r'<n\s+(.*?)\/>', xml):
+        raw = m.group(1)
+        attrs = dict(re.findall(r'(\w+)=["\'](.*?)["\']', raw))
+        nodes.append(attrs)
     return nodes
 
 
-def _parse_bounds(b: str) -> tuple:
-    m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', b)
-    if m:
-        return (int(m.group(1)), int(m.group(2)),
-                int(m.group(3)), int(m.group(4)))
-    return (0, 0, 0, 0)
+def _parse_bounds(s):
+    m = re.match(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]', s or '')
+    if not m:
+        return (0, 0, 0, 0)
+    return tuple(int(m.group(i)) for i in range(1, 5))
 
 
-def _is_inside(inner: tuple, outer: tuple) -> bool:
-    return (outer[0] <= inner[0] and outer[1] <= inner[1]
-            and outer[2] >= inner[2] and outer[3] >= inner[3])
-
-
-def _area(b: tuple) -> int:
-    return (b[2] - b[0]) * (b[3] - b[1])
-
-
-def _assign_parents(nodes: list):
-    """Assign each node's direct parent based on strict bounds containment."""
-    for node in nodes:
-        nb = _parse_bounds(node.get('b', ''))
-        if nb == (0, 0, 0, 0):
-            node['_parent'] = None
-            continue
-        best = None
-        best_area = float('inf')
-        for other in nodes:
-            if other is node:
-                continue
-            ob = _parse_bounds(other.get('b', ''))
-            if ob == (0, 0, 0, 0):
-                continue
-            if nb == ob:
-                continue  # Skip nodes with identical bounds
-            if _is_inside(nb, ob):
-                a = _area(ob)
-                if a < best_area:
-                    best_area = a
-                    best = other
-        node['_parent'] = best
-        if best is not None:
-            best['_children'].append(node)
-
-
-def _collect_texts_in(container: dict, all_nodes: list) -> list:
-    """Get all leaf text nodes fully inside container bounds."""
-    cb = _parse_bounds(container.get('b', ''))
-    results = []
-    for n in all_nodes:
-        t = n.get('t', '')
-        if not t:
-            continue
-        nb = _parse_bounds(n.get('b', ''))
-        if _is_inside(nb, cb):
-            results.append({'text': t, 'bounds': nb})
-    results.sort(key=lambda x: x['bounds'][1])
-    return results
+def _inside(inner, outer):
+    return outer[0] <= inner[0] and outer[1] <= inner[1] and outer[2] >= inner[2] and outer[3] >= inner[3]

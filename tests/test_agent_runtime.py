@@ -120,6 +120,7 @@ class AgentRuntimeTests(unittest.TestCase):
                         ]
                     }
                 captured["invocations"].append(payload["messages"])
+                captured.setdefault("input_states", []).append(dict(payload))
                 if captured.get("interrupt_next"):
                     captured["interrupt_next"] = False
                     return {
@@ -188,6 +189,9 @@ class AgentRuntimeTests(unittest.TestCase):
         second_new_tail = captured["invocations"][1][-1]["content"]
         self.assertIn("<environment_context>probe</environment_context>", first_invocation)
         self.assertEqual(second_new_tail, "普通消息")
+        self.assertTrue(captured["input_states"][0]["page_context_active"])
+        self.assertEqual(captured["input_states"][0]["page_context_path"], "")
+        self.assertNotIn("page_context_active", captured["input_states"][1])
 
     def test_interrupted_state_marks_result_and_can_resume_same_session(self) -> None:
         captured = {"create_count": 0, "invocations": [], "interrupt_next": True}

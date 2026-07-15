@@ -11,7 +11,14 @@ from typing import Any, Mapping, Sequence
 
 from langchain.agents.middleware.types import AgentMiddleware
 
-XML_DEVICE_TOOLS = {"uiautomate", "tap", "swipe_up", "swipe_down", "swipe_back"}
+XML_DEVICE_TOOLS = {
+    "uiautomate",
+    "tap_in_page",
+    "navigate_to",
+    "navigate_back",
+    "swipe_up",
+    "swipe_down",
+}
 BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
 
 
@@ -177,14 +184,14 @@ def _xml_content(content: str | None) -> str | None:
 
 
 def _summarize_tool_result(result: XmlToolResult) -> str:
-    if result.tool_name == "tap":
+    if result.tool_name in {"tap_in_page", "navigate_to"}:
         return _summarize_tap(result)
     if result.tool_name == "swipe_up":
         return f"swipe up on {_format_xy(result.args)} to load more shops or content"
     if result.tool_name == "swipe_down":
         return f"swipe down on {_format_xy(result.args)} to reveal previous content or refresh"
-    if result.tool_name == "swipe_back":
-        return "go back from the current page"
+    if result.tool_name == "navigate_back":
+        return f"go back to {result.args.get('next_path') or 'the declared page'}"
     return "read current page XML"
 
 

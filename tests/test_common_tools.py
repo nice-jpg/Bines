@@ -14,8 +14,6 @@ from tools.common import (
     ThinkingTool,
     create_common_tools,
 )
-from page_mechanism import PageMechanism, PageRunHook
-from tools.page_docs import PageDocTool, create_page_doc_tools
 
 
 class FakeLogger:
@@ -205,27 +203,6 @@ class CommonToolTests(unittest.TestCase):
         self.assertIn("captcha has been completed", tools[2].description)
         self.assertIn("complex tool outputs", tools[3].description)
         self.assertIn("does not fetch new information", tools[3].description)
-
-    def test_page_doc_tools_share_the_runtime_page_hook(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            mechanism = PageMechanism(tmp_dir)
-            page_run_hook = PageRunHook(mechanism)
-            page_doc = PageDocTool(mechanism=mechanism, page_run_hook=page_run_hook)
-            tools = {tool.name: tool for tool in create_page_doc_tools(page_doc)}
-
-            result = tools["set_current_page"].func("com.sankuai.meituan/外卖")
-
-        self.assertIn('"ok": true', result)
-        self.assertEqual(page_run_hook.current_path, "meituan/外卖")
-        self.assertEqual(set(tools), {"set_current_page", "query_page_doc", "query_task_doc"})
-
-    def test_page_doc_tool_rejects_a_hook_from_another_mechanism(self) -> None:
-        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
-            mechanism = PageMechanism(first)
-            mismatched_hook = PageRunHook(PageMechanism(second))
-
-            with self.assertRaisesRegex(ValueError, "same instance"):
-                PageDocTool(mechanism=mechanism, page_run_hook=mismatched_hook)
 
     def test_query_manual_returns_only_current_page_doc_for_operation_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

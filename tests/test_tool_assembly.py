@@ -18,15 +18,15 @@ def _tool(name: str) -> SimpleNamespace:
 def test_custom_common_tool_can_override_default_common_tool() -> None:
     custom = _tool("notify_user")
 
-    result = _with_collected_tools([custom], [_tool("notify_user"), _tool("set_current_page")])
+    result = _with_collected_tools([custom], [_tool("notify_user"), _tool("think")])
 
     assert result[0] is custom
-    assert [tool.name for tool in result] == ["notify_user", "set_current_page"]
+    assert [tool.name for tool in result] == ["notify_user", "think"]
 
 
 def test_runtime_managed_tool_cannot_be_overridden() -> None:
     with pytest.raises(ValueError, match="managed by the conductor runtime"):
-        _with_collected_tools([_tool("set_current_page")], [_tool("set_current_page")])
+        _with_collected_tools([_tool("navigate_to")], [_tool("navigate_to")])
 
 
 def test_duplicate_caller_tool_names_are_rejected() -> None:

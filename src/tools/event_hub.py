@@ -75,6 +75,14 @@ TOOL_SPECS = (
 
 EVENT_HUB_TOOL_NAMES = tuple(spec.name for spec in TOOL_SPECS)
 XML_RESULT_TOOL_NAMES = frozenset(spec.name for spec in TOOL_SPECS if spec.returns_xml)
+CONDUCTOR_EVENT_HUB_TOOL_NAMES = (
+    "run_package",
+    "close_package",
+    "swipe_up",
+    "swipe_down",
+    "uiautomate",
+    "screenshot",
+)
 
 
 class EventHub:
@@ -203,11 +211,22 @@ class EventHub:
             self.logger.log("popup", "Detected popup signal in UI hierarchy", {"source": "uiautomate"})
 
 
-def create_event_hub_tools(event_hub: EventHub | None = None) -> list[StructuredTool]:
+def create_event_hub_tools(
+    event_hub: EventHub | None = None,
+    *,
+    tool_names: tuple[str, ...] | None = None,
+) -> list[StructuredTool]:
     """Create one input-only LangChain tool per recorded operation."""
 
     hub = event_hub or EventHub()
-    return [_build_tool(spec, hub) for spec in TOOL_SPECS]
+    selected_names = frozenset(tool_names or EVENT_HUB_TOOL_NAMES)
+    return [_build_tool(spec, hub) for spec in TOOL_SPECS if spec.name in selected_names]
+
+
+def create_conductor_event_hub_tools(event_hub: EventHub | None = None) -> list[StructuredTool]:
+    """Expose only non-ambiguous raw device operations to conductor."""
+
+    return create_event_hub_tools(event_hub, tool_names=CONDUCTOR_EVENT_HUB_TOOL_NAMES)
 
 
 def build_tools() -> list[StructuredTool]:

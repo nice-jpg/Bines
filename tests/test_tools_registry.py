@@ -7,7 +7,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tools import collect_conductor_tools, collect_tools
-from page_mechanism import PageMechanism, PageRunHook
 
 
 class FakeSubagentManager:
@@ -35,9 +34,14 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("authenticate_captcha", tool_names)
         self.assertIn("captcha_authenticated", tool_names)
         self.assertIn("think", tool_names)
-        self.assertIn("set_current_page", tool_names)
-        self.assertIn("query_page_doc", tool_names)
-        self.assertIn("query_task_doc", tool_names)
+        self.assertNotIn("set_current_page", tool_names)
+        self.assertNotIn("query_page_doc", tool_names)
+        self.assertNotIn("query_task_doc", tool_names)
+        self.assertNotIn("tap", tool_names)
+        self.assertNotIn("swipe_back", tool_names)
+        self.assertIn("tap_in_page", tool_names)
+        self.assertIn("navigate_to", tool_names)
+        self.assertIn("navigate_back", tool_names)
         self.assertIn("close_package", tool_names)
         self.assertIn("prepare_collector", tool_names)
         self.assertNotIn("create_excel_sheet", tool_names)
@@ -46,11 +50,15 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertNotIn("write_excel_sheet", tool_names)
         self.assertNotIn("append_excel_rows", tool_names)
         self.assertNotIn("update_excel_cell", tool_names)
-        self.assertLess(tool_names.index("notify_user"), tool_names.index("tap"))
-        self.assertLess(tool_names.index("authenticate_captcha"), tool_names.index("tap"))
-        self.assertLess(tool_names.index("captcha_authenticated"), tool_names.index("tap"))
-        self.assertLess(tool_names.index("think"), tool_names.index("tap"))
-        self.assertLess(tool_names.index("query_page_doc"), tool_names.index("tap"))
+        self.assertLess(tool_names.index("notify_user"), tool_names.index("tap_in_page"))
+        self.assertLess(tool_names.index("authenticate_captcha"), tool_names.index("tap_in_page"))
+        self.assertLess(tool_names.index("captcha_authenticated"), tool_names.index("tap_in_page"))
+        self.assertLess(tool_names.index("think"), tool_names.index("tap_in_page"))
+
+        schemas = {tool.name: tool.tool_call_schema.model_json_schema() for tool in collect_conductor_tools()}
+        self.assertEqual(set(schemas["navigate_to"]["properties"]), {"x", "y", "next_path"})
+        self.assertEqual(set(schemas["navigate_back"]["properties"]), {"next_path"})
+        self.assertNotIn("runtime", schemas["navigate_to"]["properties"])
 
     def test_collect_tools_can_include_subagent_tools_for_main_agent(self) -> None:
         tool_names = [
@@ -63,14 +71,6 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("kill_subagent", tool_names)
         self.assertIn("query_manual", tool_names)
         self.assertGreater(tool_names.index("spawn_subagent"), tool_names.index("append_excel_rows"))
-
-    def test_conductor_tool_assembly_rejects_mismatched_page_runtime(self) -> None:
-        mechanism = PageMechanism()
-        mismatched_hook = PageRunHook(PageMechanism())
-
-        with self.assertRaisesRegex(ValueError, "PageMechanism"):
-            collect_conductor_tools(mechanism=mechanism, page_run_hook=mismatched_hook)
-
 
 if __name__ == "__main__":
     unittest.main()

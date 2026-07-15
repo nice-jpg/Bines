@@ -12,19 +12,20 @@ from prompts import COLLECTOR_PROMPT, SYSTEM_PROMPT
 class SystemPromptTests(unittest.TestCase):
     def test_conductor_prompt_exposes_new_tool_contract(self) -> None:
         self.assertIn(
-            "Device: run_package, close_package, uiautomate, screenshot, tap, swipe_up, swipe_down, swipe_back",
+            "Device: run_package, close_package, uiautomate, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_down",
             SYSTEM_PROMPT,
         )
-        self.assertIn("Page docs: query_page_doc, query_task_doc, set_current_page", SYSTEM_PROMPT)
+        self.assertNotIn("Page docs:", SYSTEM_PROMPT)
         self.assertIn("Collector: prepare_collector", SYSTEM_PROMPT)
         self.assertNotIn("query_manual", SYSTEM_PROMPT)
         self.assertNotIn("Excel", SYSTEM_PROMPT)
         self.assertNotIn("spawn_subagent", SYSTEM_PROMPT)
 
-    def test_conductor_prompt_requires_page_entry_order(self) -> None:
-        self.assertIn("call set_current_page", SYSTEM_PROMPT)
-        self.assertIn("Call query_page_doc", SYSTEM_PROMPT)
-        self.assertIn("Call query_task_doc", SYSTEM_PROMPT)
+    def test_conductor_prompt_requires_explicit_navigation_and_runtime_manuals(self) -> None:
+        self.assertIn("runtime sets the app home path and injects", SYSTEM_PROMPT)
+        self.assertIn("Use tap_in_page only", SYSTEM_PROMPT)
+        self.assertIn("Use navigate_to", SYSTEM_PROMPT)
+        self.assertIn("Use navigate_back", SYSTEM_PROMPT)
         self.assertIn("Call prepare_collector before operating that page", SYSTEM_PROMPT)
         self.assertIn("Do not include task.md operation steps", SYSTEM_PROMPT)
 

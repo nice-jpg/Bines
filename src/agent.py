@@ -23,26 +23,32 @@ try:
     from src.middleware import (
         CollectionPersistenceMiddleware,
         DeviceContextCompressionMiddleware,
+        PageContextMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
+        initial_page_context_state,
     )
-    from src.page_mechanism import PageMechanism, PageRunHook
+    from src.page_mechanism import PageMechanism
     from src.tools import collect_conductor_tools
     from src.tools.content_provider import CollectionWorkbookSink
-    from src.tools.event_hub import EVENT_HUB_TOOL_NAMES, EventHub
+    from src.tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
+    from src.tools.navigation import NAVIGATION_TOOL_NAMES
     from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
         CollectionPersistenceMiddleware,
         DeviceContextCompressionMiddleware,
+        PageContextMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
+        initial_page_context_state,
     )
-    from page_mechanism import PageMechanism, PageRunHook
+    from page_mechanism import PageMechanism
     from tools import collect_conductor_tools
     from tools.content_provider import CollectionWorkbookSink
-    from tools.event_hub import EVENT_HUB_TOOL_NAMES, EventHub
+    from tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
+    from tools.navigation import NAVIGATION_TOOL_NAMES
     from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from tasks import build_app_probe_messages, messages_request_app_probe
 
@@ -92,10 +98,14 @@ class AgentRuntime:
             raise ValueError("AgentRuntime tools are fixed at initialization to avoid rebuilding the agent.")
 
         turn_messages = list(messages)
+        probe_requested = messages_request_app_probe(turn_messages)
         prepared_messages = self._prepare_messages(turn_messages, session_id=session_id)
         thread_id = self._thread_id_for_turn(session_id)
+        input_state: dict[str, Any] = {"messages": prepared_messages}
+        if probe_requested:
+            input_state.update(initial_page_context_state())
         state = self.agent.invoke(
-            {"messages": prepared_messages},
+            input_state,
             config=_invoke_config(max_iterations, thread_id),
         )
         interrupts = _extract_interrupts(state)
@@ -175,7 +185,6 @@ def build_agent(
     """Create a standard LangChain agent with ``langchain.agents.create_agent``."""
 
     mechanism = PageMechanism()
-    page_run_hook = PageRunHook(mechanism)
     event_hub = EventHub()
     try:
         from src.collector import CollectorManager
@@ -188,7 +197,6 @@ def build_agent(
         collect_conductor_tools(
             model=model,
             mechanism=mechanism,
-            page_run_hook=page_run_hook,
             event_hub=event_hub,
             collector_manager=collector_manager,
         ),
@@ -196,9 +204,10 @@ def build_agent(
     workbook_sink = CollectionWorkbookSink()
     middlewares: list[AgentMiddleware] = []
     middlewares.append(ToolErrorMiddleware())
+    middlewares.append(PageContextMiddleware(mechanism=mechanism))
     middlewares.append(
         CollectionPersistenceMiddleware(
-            page_run_hook=page_run_hook,
+            mechanism=mechanism,
             training_registry=collector_manager.training_registry,
             workbook_sink=workbook_sink,
         )
@@ -269,6 +278,10 @@ def _with_collected_tools(tools: Sequence[Any], collected_tools: Sequence[Any] |
     registered_tools = list(tools)
     _ensure_unique_tool_names(registered_tools, source="caller-provided")
     _ensure_unique_tool_names(collected_tools, source="conductor")
+    for tool in registered_tools:
+        name = _tool_name(tool)
+        if name in RUNTIME_MANAGED_TOOL_NAMES:
+            raise ValueError(f"Tool {name!r} is managed by the conductor runtime and cannot be overridden.")
     existing_names = {_tool_name(tool) for tool in registered_tools}
     for tool in collected_tools:
         name = _tool_name(tool)
@@ -282,7 +295,10 @@ def _with_collected_tools(tools: Sequence[Any], collected_tools: Sequence[Any] |
 
 
 RUNTIME_MANAGED_TOOL_NAMES = {
-    *EVENT_HUB_TOOL_NAMES,
+    *CONDUCTOR_EVENT_HUB_TOOL_NAMES,
+    *NAVIGATION_TOOL_NAMES,
+    "tap",
+    "swipe_back",
     "set_current_page",
     "query_page_doc",
     "query_task_doc",
