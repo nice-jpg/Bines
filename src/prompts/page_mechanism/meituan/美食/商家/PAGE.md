@@ -20,15 +20,21 @@
 - Product data may appear in `菜品`, `团购`, `优惠`, `推荐`, `套餐`, or similar product-relevant tabs.
 - Names, prices, and sales may be split across sibling XML nodes; extraction should group text by repeated product-card structure instead of one fixed coordinate.
 
-## Output Schema
+## Merchant Schema
 ```json
 {
-  "merchant": {
-    "name": "",
-    "distance": "",
-    "rating": "",
-    "review_count": ""
-  },
+  "name": "",
+  "distance": "",
+  "rating": "",
+  "review_count": ""
+}
+```
+
+The collector saves this profile from the initial top-of-page XML. It is not returned by `run.py` and is not part of item extraction scoring.
+
+## Collection Schema
+```json
+{
   "items": [
     {
       "name": "",

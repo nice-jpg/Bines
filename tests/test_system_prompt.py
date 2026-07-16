@@ -22,7 +22,8 @@ class SystemPromptTests(unittest.TestCase):
         self.assertNotIn("spawn_subagent", SYSTEM_PROMPT)
 
     def test_conductor_prompt_requires_explicit_navigation_and_runtime_manuals(self) -> None:
-        self.assertIn("runtime sets the app home path and injects", SYSTEM_PROMPT)
+        self.assertIn("runtime sets the app home path and appends", SYSTEM_PROMPT)
+        self.assertIn("latest `<current_page_manual>` system message is the authoritative manual", SYSTEM_PROMPT)
         self.assertIn("Use tap_in_page only", SYSTEM_PROMPT)
         self.assertIn("Use navigate_to", SYSTEM_PROMPT)
         self.assertIn("Use navigate_back", SYSTEM_PROMPT)

@@ -37,19 +37,24 @@ class PageMechanismDocTests(unittest.TestCase):
         self.assertIn("## Structure", takeout)
 
     def test_merchant_docs_keep_collection_schema_out_of_task_doc(self) -> None:
-        merchant_docs = sorted(PAGE_ROOT.glob("*/商家/PAGE.md"))
+        merchant_docs = sorted(PAGE_ROOT.rglob("商家/PAGE.md"))
         self.assertTrue(merchant_docs)
         for page_doc in merchant_docs:
             relative_path = page_doc.relative_to(PAGE_ROOT)
             with self.subTest(relative_path=relative_path):
                 content = page_doc.read_text(encoding="utf-8")
                 task = page_doc.with_name("task.md").read_text(encoding="utf-8")
+                run_text = page_doc.with_name("run.py").read_text(encoding="utf-8")
                 self.assertIn("## Structure", content)
                 self.assertIn("## Collection Target", content)
-                self.assertIn("## Output Schema", content)
+                self.assertIn("## Merchant Schema", content)
+                self.assertIn("## Collection Schema", content)
                 self.assertNotIn("run.py", task)
-                self.assertNotIn("Output Schema", task)
+                self.assertNotIn("Merchant Schema", task)
+                self.assertNotIn("Collection Schema", task)
                 self.assertNotIn("Collection Target", task)
+                self.assertNotIn('"merchant"', run_text)
+                self.assertIn('return {"items": items}', run_text)
 
 
 if __name__ == "__main__":

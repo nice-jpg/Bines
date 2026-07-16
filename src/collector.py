@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
+from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
 try:
@@ -41,69 +43,94 @@ class CollectorManager:
         self,
         page_path: str,
         page_description: str,
-        required_fields: str,
-        output_schema: str,
+        merchant_schema: str,
+        collection_schema: str,
+        runtime: ToolRuntime,
     ) -> str:
         """Delegate run.py preparation to an isolated collector."""
+
+        runtime_state = runtime.state if isinstance(runtime.state, Mapping) else {}
+        current_path = str(runtime_state.get("page_context_path") or "")
+        visit_id = str(runtime_state.get("page_visit_id") or "")
+        canonical_path = self.mechanism.validate_page_manual(page_path)
+        if canonical_path != current_path:
+            raise ValueError(
+                f"prepare_collector page_path {canonical_path!r} does not match current page {current_path!r}."
+            )
+        if not visit_id:
+            raise ValueError("prepare_collector requires the current page_visit_id.")
+        self.training_registry.register_visit(visit_id, canonical_path)
 
         toolbox = CollectorToolbox(
             mechanism=self.mechanism,
             event_hub=self.event_hub,
-            page_path=page_path,
-            required_fields=required_fields,
-            output_schema=output_schema,
+            page_path=canonical_path,
+            merchant_schema=merchant_schema,
+            collection_schema=collection_schema,
+            requires_merchant_profile=self.mechanism.page_policy(canonical_path).role == "merchant",
         )
         agent = self._build_agent(toolbox)
         message = "\n".join(
             [
                 "<collector_assignment>",
-                f"<page_path>{_escape_text(page_path)}</page_path>",
+                f"<page_path>{_escape_text(canonical_path)}</page_path>",
+                f"<page_visit_id>{_escape_text(visit_id)}</page_visit_id>",
                 f"<page_description>{_escape_text(page_description)}</page_description>",
-                f"<required_fields>{_escape_text(required_fields)}</required_fields>",
-                f"<output_schema>{_escape_text(output_schema)}</output_schema>",
+                f"<merchant_schema>{_escape_text(merchant_schema)}</merchant_schema>",
+                f"<collection_schema>{_escape_text(collection_schema)}</collection_schema>",
                 "<workflow>",
                 "1. Call collector_uiautomate to inspect the real page XML.",
-                "2. Scroll only if needed to find a suitable same-page collection region before baseline creation.",
-                "3. Produce r1 directly from the current XML as the baseline JSON.",
-                "4. Call save_baseline with r1. A later save_baseline replaces the stored baseline.",
-                "5. Call sniff_run without changing page state to get r2 and the internal evaluation result.",
-                "6. If sniff_run.evaluation.score is below 100, analyze sniff_run.evaluation.errors and sniff_run.evaluation.missing, improve run.py with a general same-class-page heuristic, and repeat sniff_run on the same XML/page state.",
-                "7. After the current state passes, swipe to a materially different state on the same page, inspect its XML, replace the baseline for that state, and call sniff_run again.",
-                "8. Continue until sniff_run.verification.ready is true. This requires the same run.py version to pass at least two distinct swiped page states.",
+                "2. Before any swipe, extract the merchant profile from the top XML and call save_merchant_profile.",
+                "3. Scroll only if needed to find a suitable same-page item collection region before baseline creation.",
+                "4. Produce r1 matching collection_schema directly from the current XML and call save_baseline.",
+                "5. Call sniff_run without changing page state to get r2 and deterministic evaluation.",
+                "6. If the score is below 100, repair run.py for the current XML before moving the page.",
+                "7. After the state passes, swipe to a materially different state, save its baseline, and verify again.",
+                "8. Continue until sniff_run.verification.ready is true for the same run.py version.",
                 "</workflow>",
                 "</collector_assignment>",
             ]
         )
+        state: Any = {"messages": []}
+        invoke_error: Exception | None = None
         try:
             state = agent.invoke(
                 {"messages": [{"role": "user", "content": message}]},
                 config={"recursion_limit": self.max_iterations},
             )
         except Exception as exc:  # noqa: BLE001 - tool results should be structured.
-            self.training_registry.mark_untrained(page_path)
-            return json.dumps(
-                {"ok": False, "error_type": type(exc).__name__, "error": str(exc), "trained": False},
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+            invoke_error = exc
+        finally:
+            restoration = toolbox.restore_to_top()
+
         collector_message = _latest_text(state)
         verification = toolbox.training_result()
-        trained = verification["ready"] is True
+        merchant_profile = toolbox.merchant_profile()
+        trained = bool(invoke_error is None and verification["ready"] is True and restoration["restored"] is True)
+        registry_args = {
+            "merchant_profile": merchant_profile,
+            "script_fingerprint": verification["script_fingerprint"],
+            "restoration": restoration,
+        }
         if trained:
-            self.training_registry.mark_trained(page_path)
+            self.training_registry.mark_trained(visit_id, canonical_path, **registry_args)
         else:
-            self.training_registry.mark_untrained(page_path)
-        return json.dumps(
-            {
-                "ok": True,
-                "page_path": page_path,
-                "collector_message": collector_message,
-                "trained": trained,
-                "verification": verification,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+            self.training_registry.mark_untrained(visit_id, canonical_path, **registry_args)
+        result = {
+            "ok": invoke_error is None,
+            "page_path": canonical_path,
+            "page_visit_id": visit_id,
+            "collector_message": collector_message,
+            "merchant_profile": merchant_profile,
+            "trained": trained,
+            "verification": verification,
+            "restoration": restoration,
+        }
+        if invoke_error is not None:
+            result.update(
+                {"error_type": type(invoke_error).__name__, "error": str(invoke_error)}
+            )
+        return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
     def _build_agent(self, toolbox: CollectorToolbox) -> Any:
         create_agent = self.create_agent_factory
@@ -129,14 +156,17 @@ class CollectorToolbox:
         mechanism: PageMechanism,
         event_hub: EventHub,
         page_path: str,
-        required_fields: str = "",
-        output_schema: str = "",
+        merchant_schema: str = "{}",
+        collection_schema: str = "{}",
+        requires_merchant_profile: bool = False,
     ) -> None:
         self.mechanism = mechanism
         self.event_hub = event_hub
         self.page_path = page_path
-        self.required_fields = required_fields
-        self.output_schema = output_schema
+        self.merchant_schema = _require_json_object(merchant_schema, "merchant_schema")
+        self.collection_schema = _require_json_object(collection_schema, "collection_schema")
+        self.requires_merchant_profile = requires_merchant_profile
+        self._merchant_profile: dict[str, Any] = {}
         self._baseline: Any | None = None
         self._baseline_state_fingerprint = ""
         self._baseline_state_revision = -1
@@ -150,15 +180,65 @@ class CollectorToolbox:
         }
         self._last_sniff_script_fingerprint: str | None = None
         self._last_sniff_state_fingerprint = ""
+        self._net_up_swipes = 0
+        self._has_swiped = False
 
     def collector_uiautomate(self) -> Any:
         return self._capture_xml(self.event_hub.uiautomate())
 
     def collector_swipe_up(self, x: int, y: int) -> Any:
-        return self._capture_xml(self.event_hub.swipe_up(x, y), after_swipe=True)
+        result = self._capture_xml(self.event_hub.swipe_up(x, y), after_swipe=True)
+        if isinstance(result, str):
+            self._net_up_swipes += 1
+            self._has_swiped = True
+        return result
 
     def collector_swipe_down(self, x: int, y: int) -> Any:
-        return self._capture_xml(self.event_hub.swipe_down(x, y), after_swipe=True)
+        result = self._capture_xml(self.event_hub.swipe_down(x, y), after_swipe=True)
+        if isinstance(result, str):
+            self._net_up_swipes = max(0, self._net_up_swipes - 1)
+            self._has_swiped = True
+        return result
+
+    def save_merchant_profile(self, merchant: str) -> str:
+        if self._last_xml is None:
+            return _json_result(
+                {
+                    "ok": False,
+                    "saved": False,
+                    "error_type": "MerchantProfileStateError",
+                    "error": "Read the initial top-state XML before saving the merchant profile.",
+                }
+            )
+        if self._has_swiped:
+            return _json_result(
+                {
+                    "ok": False,
+                    "saved": False,
+                    "error_type": "MerchantProfileStateError",
+                    "error": "Merchant profile must be saved from the initial top state before any swipe.",
+                }
+            )
+        try:
+            profile = _coerce_json(merchant)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            return _json_result(
+                {"ok": False, "saved": False, "error_type": type(exc).__name__, "error": str(exc)}
+            )
+        errors = _schema_shape_errors(self.merchant_schema, profile, "merchant")
+        if (
+            self.requires_merchant_profile
+            and isinstance(profile, Mapping)
+            and not str(profile.get("name") or "").strip()
+        ):
+            errors.append("merchant.name")
+        if errors:
+            return _json_result({"ok": False, "saved": False, "errors": sorted(set(errors))})
+        self._merchant_profile = dict(profile)
+        return _json_result({"ok": True, "saved": True, "merchant_profile": self._merchant_profile})
+
+    def merchant_profile(self) -> dict[str, Any]:
+        return dict(self._merchant_profile)
 
     def read_run_py(self) -> str:
         return self.mechanism.read_run_py(self.page_path)
@@ -196,7 +276,7 @@ class CollectorToolbox:
                 "missing": ["result"],
             }
         else:
-            evaluation = eval_collection(self._baseline, run_result, self.required_fields, self.output_schema)
+            evaluation = eval_collection(self._baseline, run_result)
         passed = run_result.get("ok") is True and evaluation["score"] == 100
         if passed:
             self._passing_states.setdefault(script_fingerprint, {})[state_fingerprint] = self._state_revision
@@ -239,6 +319,11 @@ class CollectorToolbox:
                     "error": "Baseline r1 must be a JSON object.",
                 }
             )
+        schema_errors = _schema_shape_errors(self.collection_schema, baseline, "result")
+        if schema_errors:
+            return _json_result(
+                {"ok": False, "baseline_saved": False, "error_type": "SchemaError", "errors": schema_errors}
+            )
         self._baseline = baseline
         self._baseline_state_fingerprint = _fingerprint(self._last_xml)
         self._baseline_state_revision = self._state_revision
@@ -272,6 +357,10 @@ class CollectorToolbox:
             and effective_evaluation.get("score") == 100
             and len(passing_states) >= self.REQUIRED_VALIDATION_STATES
             and len(distinct_revisions) >= self.REQUIRED_VALIDATION_STATES
+            and (
+                not self.requires_merchant_profile
+                or bool(str(self._merchant_profile.get("name") or "").strip())
+            )
         )
         return {
             "ready": ready,
@@ -283,6 +372,40 @@ class CollectorToolbox:
             "validated_state_revisions": sorted(distinct_revisions),
             "script_fingerprint": script_fingerprint,
             "current_state_fingerprint": self._last_sniff_state_fingerprint,
+            "merchant_profile_saved": bool(str(self._merchant_profile.get("name") or "").strip()),
+            "merchant_profile_required": self.requires_merchant_profile,
+        }
+
+    def restore_to_top(self) -> dict[str, Any]:
+        target_attempts = min(20, max(3, self._net_up_swipes + 2))
+        previous_fingerprint = ""
+        stable_repeats = 0
+        attempts = 0
+        last_error: Any = None
+        for _ in range(target_attempts):
+            attempts += 1
+            result = self.event_hub.swipe_down(540, 1200)
+            if not isinstance(result, str):
+                last_error = result
+                continue
+            fingerprint = _fingerprint(result)
+            if fingerprint == previous_fingerprint:
+                stable_repeats += 1
+            else:
+                stable_repeats = 0
+            previous_fingerprint = fingerprint
+            if attempts >= target_attempts and stable_repeats >= 1:
+                return {
+                    "restored": True,
+                    "attempts": attempts,
+                    "target_attempts": target_attempts,
+                    "top_state_fingerprint": fingerprint,
+                }
+        return {
+            "restored": False,
+            "attempts": attempts,
+            "target_attempts": target_attempts,
+            "error": "top_state_not_stable" if last_error is None else str(last_error),
         }
 
     def create_tools(self) -> list[StructuredTool]:
@@ -328,6 +451,14 @@ class CollectorToolbox:
                     "Input: r1 JSON string."
                 ),
             ),
+            StructuredTool.from_function(
+                func=self.save_merchant_profile,
+                name="save_merchant_profile",
+                description=(
+                    "Save the merchant profile from the initial top-of-page XML before any swipe. "
+                    "Input: merchant JSON string matching merchant_schema with a non-empty name."
+                ),
+            ),
         ]
 
     def _capture_xml(self, result: Any, *, after_swipe: bool = False) -> Any:
@@ -356,15 +487,17 @@ def create_collector_tools(
     mechanism: PageMechanism,
     event_hub: EventHub,
     page_path: str,
-    required_fields: str = "",
-    output_schema: str = "",
+    merchant_schema: str = "{}",
+    collection_schema: str = "{}",
+    requires_merchant_profile: bool = False,
 ) -> list[StructuredTool]:
     return CollectorToolbox(
         mechanism=mechanism,
         event_hub=event_hub,
         page_path=page_path,
-        required_fields=required_fields,
-        output_schema=output_schema,
+        merchant_schema=merchant_schema,
+        collection_schema=collection_schema,
+        requires_merchant_profile=requires_merchant_profile,
     ).create_tools()
 
 
@@ -375,7 +508,7 @@ def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredT
             name="prepare_collector",
             description=(
                 "Prepare the collector script for the current page before conductor operations. "
-                "Inputs: page_path, page_description, required_fields, output_schema. "
+                "Inputs: page_path, page_description, merchant_schema, collection_schema. "
                 "Do not include task.md operation steps in page_description."
             ),
         )
@@ -383,7 +516,9 @@ def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredT
 
 
 def _latest_text(state: Any) -> str:
-    messages: Sequence[Any] = state.get("messages") if isinstance(state, dict) else getattr(state, "messages", [])
+    messages: Sequence[Any] = (
+        state.get("messages") if isinstance(state, dict) else getattr(state, "messages", [])
+    )
     if not messages:
         return ""
     latest = messages[-1]
@@ -399,6 +534,37 @@ def _coerce_json(value: Any) -> Any:
     if isinstance(value, str):
         return json.loads(value)
     return value
+
+
+def _require_json_object(value: Any, field_name: str) -> dict[str, Any]:
+    parsed = _coerce_json(value)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{field_name} must be a JSON object.")
+    return parsed
+
+
+def _schema_shape_errors(schema: Any, value: Any, path: str) -> list[str]:
+    errors: list[str] = []
+    if isinstance(schema, Mapping):
+        if not isinstance(value, Mapping):
+            return [path]
+        if not schema:
+            return []
+        for key, child_schema in schema.items():
+            child_path = f"{path}.{key}"
+            if key not in value:
+                errors.append(child_path)
+            else:
+                errors.extend(_schema_shape_errors(child_schema, value[key], child_path))
+        for key in set(value) - set(schema):
+            errors.append(f"{path}.{key}")
+    elif isinstance(schema, list):
+        if not isinstance(value, list):
+            return [path]
+        if schema:
+            for index, item in enumerate(value):
+                errors.extend(_schema_shape_errors(schema[0], item, f"{path}[{index}]"))
+    return errors
 
 
 def _fingerprint(value: str) -> str:

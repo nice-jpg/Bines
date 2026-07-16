@@ -18,6 +18,9 @@ from middleware.page_context import (
     PAGE_CONTEXT_OVERLAY,
     PAGE_CONTEXT_PATH,
     PAGE_CONTEXT_PENDING_PATH,
+    PAGE_COLLECTION_STARTED,
+    PAGE_PRODUCT_ENTRY_TAPS,
+    PAGE_VISIT_ID,
     PageContextMiddleware,
     PageContextState,
     initial_page_context_state,
@@ -46,6 +49,7 @@ def _mechanism(tmp_path: Path) -> PageMechanism:
         ("meituan", "home page", "home task"),
         ("meituan/外卖", "takeout page", "takeout task"),
         ("meituan/外卖/美食", "food page", "food task"),
+        ("meituan/外卖/美食/商家", "merchant page", "merchant task"),
     ):
         directory = root / relative
         directory.mkdir(parents=True)
@@ -61,6 +65,9 @@ def _state(path: str = "meituan/外卖", **overrides) -> dict:
         PAGE_CONTEXT_PATH: path,
         PAGE_CONTEXT_PENDING_PATH: "",
         PAGE_CONTEXT_OVERLAY: False,
+        PAGE_VISIT_ID: "visit-current",
+        PAGE_PRODUCT_ENTRY_TAPS: 0,
+        PAGE_COLLECTION_STARTED: False,
     }
     state.update(overrides)
     return state
@@ -85,10 +92,13 @@ def test_initial_state_activates_context_without_manual_phase() -> None:
         PAGE_CONTEXT_PATH: "",
         PAGE_CONTEXT_PENDING_PATH: "",
         PAGE_CONTEXT_OVERLAY: False,
+        PAGE_VISIT_ID: "",
+        PAGE_PRODUCT_ENTRY_TAPS: 0,
+        PAGE_COLLECTION_STARTED: False,
     }
 
 
-def test_model_request_always_injects_page_then_task_manual(tmp_path: Path) -> None:
+def test_model_request_keeps_base_system_prompt_stable(tmp_path: Path) -> None:
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
     request = FakeModelRequest(
         state=_state(),
@@ -98,14 +108,9 @@ def test_model_request_always_injects_page_then_task_manual(tmp_path: Path) -> N
     )
 
     prepared = middleware._prepare_model_request(request)
-    content = str(prepared.system_message.content)
-
-    assert content.startswith("base")
-    assert "home" not in content
-    assert content.index("takeout page") < content.index("takeout task")
-    assert '<current_page_manual canonical_path="meituan/外卖">' in content
+    assert prepared.system_message is request.system_message
+    assert prepared.system_message.content == "base"
     assert prepared.model_settings["parallel_tool_calls"] is False
-    assert prepared.system_message is not request.system_message
 
 
 def test_run_package_sets_validated_home_path(tmp_path: Path) -> None:
@@ -118,6 +123,7 @@ def test_run_package_sets_validated_home_path(tmp_path: Path) -> None:
     assert isinstance(result, Command)
     assert result.update[PAGE_CONTEXT_PATH] == "meituan"
     assert result.update[PAGE_CONTEXT_APP_ROOT] == "meituan"
+    assert result.update[PAGE_VISIT_ID]
 
 
 def test_tap_in_page_keeps_current_path(tmp_path: Path) -> None:
@@ -148,6 +154,7 @@ def test_navigation_validates_before_device_and_commits_target(tmp_path: Path) -
     assert json.loads(invalid.content)["error_type"] == "invalid_navigation_target"
     assert calls == ["valid"]
     assert valid.update[PAGE_CONTEXT_PATH] == "meituan/外卖/美食"
+    assert valid.update[PAGE_VISIT_ID] != _state()[PAGE_VISIT_ID]
 
 
 def test_navigation_popup_defers_target_until_same_page_close(tmp_path: Path) -> None:
@@ -169,6 +176,7 @@ def test_navigation_popup_defers_target_until_same_page_close(tmp_path: Path) ->
     assert closed.update[PAGE_CONTEXT_PATH] == "meituan/外卖/美食"
     assert closed.update[PAGE_CONTEXT_PENDING_PATH] == ""
     assert closed.update[PAGE_CONTEXT_OVERLAY] is False
+    assert closed.update[PAGE_VISIT_ID] != state[PAGE_VISIT_ID]
 
 
 def test_navigate_back_commits_declared_absolute_path(tmp_path: Path) -> None:
@@ -184,6 +192,53 @@ def test_navigate_back_commits_declared_absolute_path(tmp_path: Path) -> None:
 
     assert result.update[PAGE_CONTEXT_PATH] == "meituan/外卖"
     assert result.update[PAGE_CONTEXT_PENDING_PATH] == ""
+    assert result.update[PAGE_VISIT_ID] != "visit-current"
+
+
+def test_merchant_allows_one_entry_tap_before_scrolling_then_blocks_taps(tmp_path: Path) -> None:
+    middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
+    merchant_state = _state(path="meituan/外卖/美食/商家")
+
+    first_tap = middleware.wrap_tool_call(
+        _request("tap_in_page", merchant_state, x=1, y=2),
+        lambda _: _message("tap_in_page"),
+    )
+    after_tap = {**merchant_state, **first_tap.update}
+    second_tap = middleware.wrap_tool_call(
+        _request("tap_in_page", after_tap, x=1, y=2),
+        lambda _: _message("tap_in_page"),
+    )
+
+    assert first_tap.update[PAGE_PRODUCT_ENTRY_TAPS] == 1
+    assert second_tap.status == "error"
+    assert json.loads(second_tap.content)["error_type"] == "merchant_entry_tap_limit"
+
+    scrolling = middleware.wrap_tool_call(
+        _request("swipe_up", merchant_state, x=500, y=1200),
+        lambda _: _message("swipe_up"),
+    )
+    after_scroll = {**merchant_state, **scrolling.update}
+    blocked = middleware.wrap_tool_call(
+        _request("tap_in_page", after_scroll, x=1, y=2),
+        lambda _: _message("tap_in_page"),
+    )
+    assert scrolling.update[PAGE_COLLECTION_STARTED] is True
+    assert json.loads(blocked.content)["error_type"] == "merchant_collection_already_started"
+
+
+def test_overlay_close_does_not_consume_merchant_entry_tap(tmp_path: Path) -> None:
+    middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
+    state = _state(
+        path="meituan/外卖/美食/商家",
+        **{PAGE_CONTEXT_OVERLAY: True},
+    )
+    result = middleware.wrap_tool_call(
+        _request("tap_in_page", state, x=1, y=2),
+        lambda _: _message("tap_in_page", FULL_XML),
+    )
+
+    assert result.update[PAGE_CONTEXT_OVERLAY] is False
+    assert PAGE_PRODUCT_ENTRY_TAPS not in result.update
 
 
 def test_overlay_exposes_only_same_page_close_and_context_tools(tmp_path: Path) -> None:
@@ -198,7 +253,7 @@ def test_overlay_exposes_only_same_page_close_and_context_tools(tmp_path: Path) 
     prepared = middleware._prepare_model_request(request)
 
     assert [tool.name for tool in prepared.tools] == ["tap_in_page", "notify_user"]
-    assert "overlay_instruction" in str(prepared.system_message.content)
+    assert prepared.system_message is request.system_message
 
 
 def test_only_first_device_action_from_one_ai_message_executes(tmp_path: Path) -> None:

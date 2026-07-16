@@ -22,8 +22,10 @@ from langgraph.types import Command
 try:
     from src.middleware import (
         CollectionPersistenceMiddleware,
+        CollectorReadinessMiddleware,
         DeviceContextCompressionMiddleware,
         PageContextMiddleware,
+        PageManualMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
         initial_page_context_state,
@@ -38,8 +40,10 @@ try:
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
         CollectionPersistenceMiddleware,
+        CollectorReadinessMiddleware,
         DeviceContextCompressionMiddleware,
         PageContextMiddleware,
+        PageManualMiddleware,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
         initial_page_context_state,
@@ -206,6 +210,12 @@ def build_agent(
     middlewares.append(ToolErrorMiddleware())
     middlewares.append(PageContextMiddleware(mechanism=mechanism))
     middlewares.append(
+        CollectorReadinessMiddleware(
+            mechanism=mechanism,
+            training_registry=collector_manager.training_registry,
+        )
+    )
+    middlewares.append(
         CollectionPersistenceMiddleware(
             mechanism=mechanism,
             training_registry=collector_manager.training_registry,
@@ -215,6 +225,7 @@ def build_agent(
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
     middlewares.append(SummarizationMiddleware(model=model))
+    middlewares.append(PageManualMiddleware(mechanism=mechanism))
 
     return create_agent(
         model=model,

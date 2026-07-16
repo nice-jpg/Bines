@@ -8,7 +8,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from page_mechanism import PageMechanism, eval_collection
+from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
 
 
 def test_query_page_and_task_docs_are_separate(tmp_path: Path) -> None:
@@ -106,3 +106,34 @@ def test_strict_document_queries_raise_for_invalid_page(tmp_path: Path) -> None:
 
     with pytest.raises(FileNotFoundError, match="PAGE.md"):
         mechanism.query_page_doc("meituan/missing")
+
+
+def test_merchant_policy_is_structured_and_not_inferred_from_path_suffix(tmp_path: Path) -> None:
+    mechanism = PageMechanism(tmp_path)
+
+    policy = mechanism.page_policy("meituan/外卖/美食/商家")
+    unknown = mechanism.page_policy("another/商家")
+
+    assert policy.role == "merchant"
+    assert policy.requires_collector is True
+    assert policy.max_product_entry_taps == 1
+    assert unknown.role == "page"
+    assert unknown.requires_collector is False
+
+
+def test_training_registry_isolates_same_path_by_visit_id() -> None:
+    registry = CollectorTrainingRegistry()
+    registry.mark_trained(
+        "visit-a",
+        "meituan/美食/商家",
+        merchant_profile={"name": "商家A"},
+        script_fingerprint="script-a",
+        restoration={"restored": True},
+    )
+
+    assert registry.is_trained("visit-a", "meituan/美食/商家") is True
+    assert registry.is_trained("visit-b", "meituan/美食/商家") is False
+    record = registry.record_for("visit-a")
+    assert record is not None
+    assert record.merchant_profile == {"name": "商家A"}
+    assert record.restoration == {"restored": True}

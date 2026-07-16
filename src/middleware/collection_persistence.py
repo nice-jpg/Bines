@@ -10,10 +10,20 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
 try:
-    from src.middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, is_compact_popup_result
+    from src.middleware.page_context import (
+        PAGE_CONTEXT_OVERLAY,
+        PAGE_CONTEXT_PATH,
+        PAGE_VISIT_ID,
+        is_compact_popup_result,
+    )
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
-    from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, is_compact_popup_result
+    from middleware.page_context import (
+        PAGE_CONTEXT_OVERLAY,
+        PAGE_CONTEXT_PATH,
+        PAGE_VISIT_ID,
+        is_compact_popup_result,
+    )
     from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
@@ -53,6 +63,8 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
 
     def _maybe_wrap_tool_result(self, request: Any, result: ToolMessage | Any) -> ToolMessage | Any:
         tool_name = _tool_name_from_request(request)
+        if tool_name == "prepare_collector":
+            return self._initialize_trained_merchant(request, result)
         if tool_name not in COLLECTION_XML_TOOL_NAMES:
             return result
         if not isinstance(result, ToolMessage):
@@ -67,11 +79,12 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
         if is_compact_popup_result(result):
             return result
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "") if isinstance(state, Mapping) else ""
+        visit_id = str(state.get(PAGE_VISIT_ID) or "") if isinstance(state, Mapping) else ""
         if not current_path:
             return result
 
         collection = self.mechanism.run_page_script(current_path, result.content)
-        persistence = self._persist(tool_name, current_path, collection)
+        persistence = self._persist(tool_name, current_path, visit_id, collection)
         return _replace_tool_message_content(
             result,
             json.dumps(
@@ -90,23 +103,64 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
         self,
         tool_name: str,
         current_path: str,
+        visit_id: str,
         collection: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         if self.workbook_sink is None:
             return {"ok": True, "skipped": True, "reason": "persistence_disabled"}
         if not self.mechanism.is_merchant_page(current_path):
             return {"ok": True, "skipped": True, "reason": "not_merchant_page"}
-        if not self.training_registry.is_trained(current_path):
+        if not self.training_registry.is_trained(visit_id, current_path):
             return {"ok": True, "skipped": True, "reason": "collector_not_trained"}
         if collection is None:
             return {"ok": True, "skipped": True, "reason": "current_page_not_set"}
+        record = self.training_registry.record_for(visit_id)
+        if record is None or not record.merchant_profile:
+            return {"ok": True, "skipped": True, "reason": "missing_merchant_profile"}
         try:
             return self.workbook_sink.persist_run_result(
-                run_result=collection,
+                run_result=_merge_merchant_profile(collection, record.merchant_profile),
                 append_items=tool_name in ITEM_APPEND_TOOLS,
             )
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort around device tools.
             return {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
+
+    def _initialize_trained_merchant(self, request: Any, result: ToolMessage | Any) -> ToolMessage | Any:
+        if not isinstance(result, ToolMessage) or getattr(result, "status", "success") == "error":
+            return result
+        state = getattr(request, "state", None)
+        state = state if isinstance(state, Mapping) else {}
+        current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
+        visit_id = str(state.get(PAGE_VISIT_ID) or "")
+        if self.workbook_sink is None:
+            persistence = {"ok": True, "skipped": True, "reason": "persistence_disabled"}
+        elif self.mechanism.page_policy(current_path).role != "merchant":
+            persistence = {"ok": True, "skipped": True, "reason": "not_merchant_page"}
+        elif not self.training_registry.is_trained(visit_id, current_path):
+            persistence = {"ok": True, "skipped": True, "reason": "collector_not_trained"}
+        else:
+            record = self.training_registry.record_for(visit_id)
+            try:
+                persistence = self.workbook_sink.persist_run_result(
+                    run_result={
+                        "ok": True,
+                        "result": {
+                            "merchant": dict(record.merchant_profile) if record is not None else {},
+                            "items": [],
+                        },
+                    },
+                    append_items=False,
+                )
+            except Exception as exc:  # noqa: BLE001 - persistence must not fail the collector tool.
+                persistence = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
+        try:
+            payload = json.loads(result.content) if isinstance(result.content, str) else {}
+        except json.JSONDecodeError:
+            payload = {"collector_result": result.content}
+        if not isinstance(payload, dict):
+            payload = {"collector_result": payload}
+        payload["persistence"] = persistence
+        return _replace_tool_message_content(result, json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
 def _tool_name_from_request(request: Any) -> str:
@@ -126,3 +180,17 @@ def _replace_tool_message_content(message: ToolMessage, content: str) -> ToolMes
         additional_kwargs=dict(getattr(message, "additional_kwargs", {}) or {}),
         response_metadata=dict(getattr(message, "response_metadata", {}) or {}),
     )
+
+
+def _merge_merchant_profile(
+    collection: Mapping[str, Any],
+    merchant_profile: Mapping[str, Any],
+) -> dict[str, Any]:
+    merged = dict(collection)
+    if collection.get("ok") is not True or not isinstance(collection.get("result"), Mapping):
+        return merged
+    result = dict(collection["result"])
+    result.pop("merchant", None)
+    result["merchant"] = dict(merchant_profile)
+    merged["result"] = result
+    return merged

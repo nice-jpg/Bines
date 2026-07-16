@@ -4,14 +4,37 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from dataclasses import dataclass, field
 from pathlib import Path
 import posixpath
+from threading import Lock
 import traceback
 from types import ModuleType
 from typing import Any, Mapping
 
 
 PAGE_MECHANISM_DIR = Path(__file__).resolve().parent / "prompts" / "page_mechanism"
+
+
+@dataclass(frozen=True)
+class PagePolicy:
+    """Deterministic runtime policy for one canonical page class."""
+
+    role: str = "page"
+    requires_collector: bool = False
+    max_product_entry_taps: int = 0
+
+
+@dataclass
+class CollectorTrainingRecord:
+    """Training and archival state for one concrete page visit."""
+
+    visit_id: str
+    page_path: str
+    trained: bool = False
+    merchant_profile: dict[str, Any] = field(default_factory=dict)
+    script_fingerprint: str = ""
+    restoration: dict[str, Any] = field(default_factory=dict)
 
 
 class PageMechanism:
@@ -21,19 +44,29 @@ class PageMechanism:
         self,
         root: str | Path = PAGE_MECHANISM_DIR,
         merchant_page_paths: set[str] | None = None,
+        page_policies: Mapping[str, PagePolicy] | None = None,
     ) -> None:
         self.root = Path(root).resolve()
         self._states: dict[str, dict[str, Any]] = {}
-        configured_paths = merchant_page_paths or {
+        configured_paths = merchant_page_paths if merchant_page_paths is not None else {
             "meituan/美食/商家",
             "meituan/外卖/美食/商家",
         }
-        self._merchant_page_paths = {
+        merchant_paths = {
             "/".join(parts)
             for path in configured_paths
             for parts, error in [normalize_page_path(path)]
             if not error and parts
         }
+        self._page_policies = {
+            path: PagePolicy(role="merchant", requires_collector=True, max_product_entry_taps=1)
+            for path in merchant_paths
+        }
+        for path, policy in (page_policies or {}).items():
+            parts, error = normalize_page_path(path)
+            if error or not parts:
+                raise ValueError(error or "Page policy path is required.")
+            self._page_policies["/".join(parts)] = policy
 
     def query_page_doc(self, current_path: str) -> str:
         return self._query_doc(current_path, "PAGE.md", "page_doc")
@@ -138,10 +171,13 @@ class PageMechanism:
         return dict(state) if state is not None else None
 
     def is_merchant_page(self, current_path: str) -> bool:
+        return self.page_policy(current_path).role == "merchant"
+
+    def page_policy(self, current_path: str) -> PagePolicy:
         parts, error = normalize_page_path(current_path)
         if error or not parts:
-            return False
-        return "/".join(parts) in self._merchant_page_paths
+            return PagePolicy()
+        return self._page_policies.get("/".join(parts), PagePolicy())
 
     def _query_doc(
         self,
@@ -203,30 +239,89 @@ class PageMechanism:
 
 
 class CollectorTrainingRegistry:
-    """Track page paths whose collector has produced a passing run.py."""
+    """Track collector results by concrete page visit, never by page class."""
 
     def __init__(self) -> None:
-        self._trained_paths: set[str] = set()
+        self._records: dict[str, CollectorTrainingRecord] = {}
+        self._lock = Lock()
 
-    def mark_trained(self, current_path: str) -> None:
+    def register_visit(self, visit_id: str, current_path: str) -> CollectorTrainingRecord:
+        visit_id = str(visit_id or "").strip()
         canonical_path = self._canonical_path(current_path)
-        if canonical_path:
-            self._trained_paths.add(canonical_path)
+        if not visit_id:
+            raise ValueError("visit_id is required.")
+        if not canonical_path:
+            raise ValueError("current_path is required.")
+        with self._lock:
+            record = self._records.get(visit_id)
+            if record is not None and record.page_path != canonical_path:
+                raise ValueError("visit_id is already registered for another page path.")
+            if record is None:
+                record = CollectorTrainingRecord(visit_id=visit_id, page_path=canonical_path)
+                self._records[visit_id] = record
+            return _copy_training_record(record)
 
-    def mark_untrained(self, current_path: str) -> None:
-        canonical_path = self._canonical_path(current_path)
-        if canonical_path:
-            self._trained_paths.discard(canonical_path)
+    def mark_trained(
+        self,
+        visit_id: str,
+        current_path: str,
+        *,
+        merchant_profile: Mapping[str, Any] | None = None,
+        script_fingerprint: str = "",
+        restoration: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.register_visit(visit_id, current_path)
+        with self._lock:
+            record = self._records[visit_id]
+            record.trained = True
+            record.merchant_profile = dict(merchant_profile or {})
+            record.script_fingerprint = str(script_fingerprint or "")
+            record.restoration = dict(restoration or {})
 
-    def is_trained(self, current_path: str) -> bool:
-        canonical_path = self._canonical_path(current_path)
-        return bool(canonical_path and canonical_path in self._trained_paths)
+    def mark_untrained(
+        self,
+        visit_id: str,
+        current_path: str,
+        *,
+        merchant_profile: Mapping[str, Any] | None = None,
+        script_fingerprint: str = "",
+        restoration: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.register_visit(visit_id, current_path)
+        with self._lock:
+            record = self._records[visit_id]
+            record.trained = False
+            record.merchant_profile = dict(merchant_profile or {})
+            record.script_fingerprint = str(script_fingerprint or "")
+            record.restoration = dict(restoration or {})
+
+    def is_trained(self, visit_id: str, current_path: str | None = None) -> bool:
+        record = self.record_for(visit_id)
+        if record is None or not record.trained:
+            return False
+        return current_path is None or record.page_path == self._canonical_path(current_path)
+
+    def record_for(self, visit_id: str) -> CollectorTrainingRecord | None:
+        with self._lock:
+            record = self._records.get(str(visit_id or ""))
+            return _copy_training_record(record) if record is not None else None
 
     def _canonical_path(self, current_path: str) -> str:
         parts, error = normalize_page_path(current_path)
         if error or not parts:
             return ""
         return "/".join(parts)
+
+
+def _copy_training_record(record: CollectorTrainingRecord) -> CollectorTrainingRecord:
+    return CollectorTrainingRecord(
+        visit_id=record.visit_id,
+        page_path=record.page_path,
+        trained=record.trained,
+        merchant_profile=dict(record.merchant_profile),
+        script_fingerprint=record.script_fingerprint,
+        restoration=dict(record.restoration),
+    )
 
 
 def normalize_page_path(current_path: str) -> tuple[list[str], str | None]:
@@ -245,7 +340,7 @@ def normalize_page_path(current_path: str) -> tuple[list[str], str | None]:
     return parts, None
 
 
-def eval_collection(r1: Any, r2: Any, required_fields: str = "", output_schema: str = "") -> dict[str, Any]:
+def eval_collection(r1: Any, r2: Any) -> dict[str, Any]:
     expected = _coerce_json(r1)
     actual = _coerce_json(r2)
     if isinstance(actual, Mapping) and actual.get("ok") is True and "result" in actual:

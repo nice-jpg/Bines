@@ -136,13 +136,15 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
             [
                 "ToolErrorMiddleware",
                 "PageContextMiddleware",
+                "CollectorReadinessMiddleware",
                 "CollectionPersistenceMiddleware",
                 "DeviceContextCompressionMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
                 "SummarizationMiddleware",
+                "PageManualMiddleware",
             ],
         )
-        hitl = captured["middleware"][4]
+        hitl = captured["middleware"][5]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
@@ -152,6 +154,8 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertIs(tool_runtime["collector_manager"].event_hub, tool_runtime["event_hub"])
         persistence = captured["middleware"][2]
         self.assertIs(persistence.mechanism, tool_runtime["mechanism"])
+        page_manual = captured["middleware"][-1]
+        self.assertIs(page_manual.mechanism, tool_runtime["mechanism"])
 
     def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:
         self.test_build_agent_registers_context_compression_before_summarization()

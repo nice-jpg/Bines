@@ -59,6 +59,11 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertEqual(set(schemas["navigate_to"]["properties"]), {"x", "y", "next_path"})
         self.assertEqual(set(schemas["navigate_back"]["properties"]), {"next_path"})
         self.assertNotIn("runtime", schemas["navigate_to"]["properties"])
+        self.assertEqual(
+            set(schemas["prepare_collector"]["properties"]),
+            {"page_path", "page_description", "merchant_schema", "collection_schema"},
+        )
+        self.assertNotIn("runtime", schemas["prepare_collector"]["properties"])
 
     def test_collect_tools_can_include_subagent_tools_for_main_agent(self) -> None:
         tool_names = [

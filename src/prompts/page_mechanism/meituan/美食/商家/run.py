@@ -13,49 +13,6 @@ def _get_all_nodes(parent) -> list[dict]:
     return nodes
 
 
-def _find_merchant(all_nodes: list[dict]) -> dict:
-    """Extract merchant name, distance, rating, review_count."""
-    merchant = {"name": "", "distance": "", "rating": "", "review_count": ""}
-
-    # ---- Find rating and review_count ----
-    for i, node in enumerate(all_nodes):
-        t = node.get("t", "")
-        if re.match(r"^\d\.\d$", t):
-            if i + 1 < len(all_nodes) and all_nodes[i + 1].get("t", "") == "分":
-                merchant["rating"] = t
-                for j in range(i + 2, min(i + 6, len(all_nodes))):
-                    nt = all_nodes[j].get("t", "")
-                    if nt.isdigit() and len(nt) >= 1:
-                        merchant["review_count"] = nt
-                        break
-                break
-
-    # ---- Find merchant name ----
-    for node in all_nodes:
-        t = node.get("t", "")
-        d = node.get("d", "")
-        if d:
-            continue
-        if len(t) >= 4 and re.search(r"[\u4e00-\u9fff]", t):
-            known_labels = {"人气榜", "营业中", "优惠", "菜品", "服务", "评价",
-                           "更多推荐", "相册", "商场", "打车", "电话",
-                           "直播中", "随时退", "过期自动退", "抢购",
-                           "回头客", "条评价", "分", "商家推荐",
-                           "可停车", "可预订", "有宝宝椅"}
-            if t.strip() in known_labels:
-                continue
-            if t.startswith("¥") or t.startswith("半年售") or t.startswith("平台券"):
-                continue
-            if t.startswith("已减"):
-                continue
-            clean = re.sub(r"[\d.]+$", "", t).strip()
-            if clean and len(clean) >= 3:
-                merchant["name"] = clean
-                break
-
-    return merchant
-
-
 def _extract_items(all_nodes: list[dict]) -> list[dict]:
     """Extract product items from 团购菜品区域 containers."""
     items = []
@@ -155,7 +112,6 @@ def run(xml: str) -> dict:
     root = ET.fromstring(xml)
     all_nodes = _get_all_nodes(root)
 
-    merchant = _find_merchant(all_nodes)
     items = _extract_items(all_nodes)
 
-    return {"merchant": merchant, "items": items}
+    return {"items": items}

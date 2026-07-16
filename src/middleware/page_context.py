@@ -1,4 +1,4 @@
-"""Thread-scoped page context, manual injection, and navigation transitions."""
+"""Thread-scoped page context and explicit navigation transitions."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 import re
 from threading import Lock
 from typing import Annotated, Any
+from uuid import uuid4
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -17,7 +18,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ToolCallRequest,
 )
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 from typing_extensions import NotRequired
 
@@ -32,6 +33,9 @@ PAGE_CONTEXT_APP_ROOT = "page_context_app_root"
 PAGE_CONTEXT_PATH = "page_context_path"
 PAGE_CONTEXT_PENDING_PATH = "page_context_pending_path"
 PAGE_CONTEXT_OVERLAY = "page_context_overlay"
+PAGE_VISIT_ID = "page_visit_id"
+PAGE_PRODUCT_ENTRY_TAPS = "page_product_entry_taps"
+PAGE_COLLECTION_STARTED = "page_collection_started"
 
 
 def _replace_state_value(_current: Any, new: Any) -> Any:
@@ -46,6 +50,9 @@ class PageContextState(AgentState):
     page_context_path: NotRequired[Annotated[str, _replace_state_value]]
     page_context_pending_path: NotRequired[Annotated[str, _replace_state_value]]
     page_context_overlay: NotRequired[Annotated[bool, _replace_state_value]]
+    page_visit_id: NotRequired[Annotated[str, _replace_state_value]]
+    page_product_entry_taps: NotRequired[Annotated[int, _replace_state_value]]
+    page_collection_started: NotRequired[Annotated[bool, _replace_state_value]]
 
 
 DEVICE_ACTION_TOOLS = frozenset(
@@ -87,7 +94,7 @@ DEFAULT_VIEWPORT_HEIGHT = 2400
 
 
 class PageContextMiddleware(AgentMiddleware[PageContextState]):
-    """Inject current manuals and apply explicit navigation state transitions."""
+    """Apply page-scoped tool visibility and explicit navigation transitions."""
 
     state_schema = PageContextState
 
@@ -144,19 +151,16 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
             tools = _tools_named(request.tools, PRE_LAUNCH_VISIBLE_TOOLS)
         else:
             tools = list(request.tools)
+            policy = self.mechanism.page_policy(current_path)
+            if policy.role == "merchant" and (
+                state.get(PAGE_COLLECTION_STARTED, False)
+                or int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0)) >= policy.max_product_entry_taps
+            ):
+                tools = [tool for tool in tools if _tool_name(tool) != "tap_in_page"]
 
         model_settings = dict(request.model_settings or {})
         model_settings["parallel_tool_calls"] = False
-        overrides: dict[str, Any] = {"tools": tools, "model_settings": model_settings}
-        if current_path:
-            manual = self.mechanism.load_manual_bundle(current_path)
-            if state.get(PAGE_CONTEXT_OVERLAY, False):
-                manual += (
-                    "\n<overlay_instruction>A compact blocking overlay is visible. Use tap_in_page "
-                    "to close it; do not navigate or inspect another page.</overlay_instruction>"
-                )
-            overrides["system_message"] = _append_system_message(request.system_message, manual)
-        return request.override(**overrides)
+        return request.override(tools=tools, model_settings=model_settings)
 
     def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
         state = _state(request)
@@ -180,6 +184,21 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
             error = self._navigation_error(state, str(args.get("next_path") or ""))
             if error:
                 return _context_error(request, "invalid_navigation_target", error)
+        if tool_name == "tap_in_page" and not state.get(PAGE_CONTEXT_OVERLAY, False):
+            policy = self.mechanism.page_policy(current_path)
+            taps_used = int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0))
+            if policy.role == "merchant" and state.get(PAGE_COLLECTION_STARTED, False):
+                return _context_error(
+                    request,
+                    "merchant_collection_already_started",
+                    "Merchant category taps are forbidden after product scrolling starts.",
+                )
+            if policy.role == "merchant" and taps_used >= policy.max_product_entry_taps:
+                return _context_error(
+                    request,
+                    "merchant_entry_tap_limit",
+                    "The merchant product-entry tap allowance has already been used.",
+                )
         return None
 
     def _navigation_error(self, state: Mapping[str, Any], next_path: str) -> str:
@@ -230,7 +249,7 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
 
         if tool_name == "run_package":
             home_path = self.mechanism.home_path_for_package(str(args.get("package_name") or ""))
-            update = _page_context_state(True, home_path, app_root=home_path)
+            update = _page_context_state(True, home_path, app_root=home_path, new_visit=True)
         elif tool_name == "close_package":
             update = _page_context_state(False, "")
         elif tool_name in {"navigate_to", "navigate_back"}:
@@ -238,21 +257,21 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
             if is_compact_popup_result(result):
                 update = {PAGE_CONTEXT_PENDING_PATH: target, PAGE_CONTEXT_OVERLAY: True}
             else:
-                update = {
-                    PAGE_CONTEXT_PATH: target,
-                    PAGE_CONTEXT_PENDING_PATH: "",
-                    PAGE_CONTEXT_OVERLAY: False,
-                }
+                update = _page_visit_update(target)
         elif tool_name == "tap_in_page":
             if is_compact_popup_result(result):
                 update = {PAGE_CONTEXT_OVERLAY: True}
             elif state.get(PAGE_CONTEXT_OVERLAY, False):
                 pending = str(state.get(PAGE_CONTEXT_PENDING_PATH) or "")
-                update = {
-                    PAGE_CONTEXT_PATH: pending or str(state.get(PAGE_CONTEXT_PATH) or ""),
+                update = _page_visit_update(pending) if pending else {
                     PAGE_CONTEXT_PENDING_PATH: "",
                     PAGE_CONTEXT_OVERLAY: False,
                 }
+            elif self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
+                update = {PAGE_PRODUCT_ENTRY_TAPS: int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0)) + 1}
+        elif tool_name in {"swipe_up", "swipe_down"}:
+            if self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
+                update = {PAGE_COLLECTION_STARTED: True}
         elif tool_name == "uiautomate" and is_compact_popup_result(result):
             update = {PAGE_CONTEXT_OVERLAY: True}
 
@@ -265,33 +284,35 @@ def initial_page_context_state() -> dict[str, Any]:
     return _page_context_state(True, "")
 
 
-def _page_context_state(active: bool, path: str, *, app_root: str = "") -> dict[str, Any]:
-    return {
+def _page_context_state(
+    active: bool,
+    path: str,
+    *,
+    app_root: str = "",
+    new_visit: bool = False,
+) -> dict[str, Any]:
+    state = {
         PAGE_CONTEXT_ACTIVE: active,
         PAGE_CONTEXT_APP_ROOT: app_root,
         PAGE_CONTEXT_PATH: path,
         PAGE_CONTEXT_PENDING_PATH: "",
         PAGE_CONTEXT_OVERLAY: False,
+        PAGE_VISIT_ID: uuid4().hex if new_visit and path else "",
+        PAGE_PRODUCT_ENTRY_TAPS: 0,
+        PAGE_COLLECTION_STARTED: False,
     }
+    return state
 
 
-def _append_system_message(existing: SystemMessage | None, addition: str) -> SystemMessage:
-    if existing is None:
-        return SystemMessage(content=addition)
-    content = existing.content
-    if isinstance(content, str):
-        combined: Any = f"{content}\n\n{addition}"
-    elif isinstance(content, list):
-        combined = [*content, {"type": "text", "text": addition}]
-    else:
-        combined = f"{content}\n\n{addition}"
-    return SystemMessage(
-        content=combined,
-        additional_kwargs=dict(existing.additional_kwargs or {}),
-        response_metadata=dict(existing.response_metadata or {}),
-        name=existing.name,
-        id=existing.id,
-    )
+def _page_visit_update(path: str) -> dict[str, Any]:
+    return {
+        PAGE_CONTEXT_PATH: path,
+        PAGE_CONTEXT_PENDING_PATH: "",
+        PAGE_CONTEXT_OVERLAY: False,
+        PAGE_VISIT_ID: uuid4().hex,
+        PAGE_PRODUCT_ENTRY_TAPS: 0,
+        PAGE_COLLECTION_STARTED: False,
+    }
 
 
 def is_compact_popup_result(result: Any) -> bool:
