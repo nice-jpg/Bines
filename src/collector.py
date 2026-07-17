@@ -180,6 +180,7 @@ class CollectorToolbox:
         }
         self._last_sniff_script_fingerprint: str | None = None
         self._last_sniff_state_fingerprint = ""
+        self._exposed_script_fingerprint: str | None = None
         self._net_up_swipes = 0
         self._has_swiped = False
 
@@ -241,10 +242,32 @@ class CollectorToolbox:
         return dict(self._merchant_profile)
 
     def read_run_py(self) -> str:
-        return self.mechanism.read_run_py(self.page_path)
+        snapshot = self.mechanism.read_run_py_snapshot(self.page_path)
+        if snapshot["ok"] is not True:
+            return _json_result(snapshot)
+        content = str(snapshot["content"])
+        fingerprint = _fingerprint(content)
+        content_omitted = fingerprint == self._exposed_script_fingerprint
+        result = {
+            "ok": True,
+            "canonical_path": snapshot["canonical_path"],
+            "path": snapshot["path"],
+            "script_fingerprint": fingerprint,
+            "content_omitted": content_omitted,
+            "bytes": len(content.encode("utf-8")),
+            "lines": len(content.splitlines()),
+        }
+        if not content_omitted:
+            result["content"] = content
+            self._exposed_script_fingerprint = fingerprint
+        return _json_result(result)
 
-    def write_run_py(self, content: str) -> str:
-        return self.mechanism.write_run_py(self.page_path, content)
+    def apply_run_py_patch(self, patch: str) -> str:
+        result = self.mechanism.apply_run_py_patch(self.page_path, patch)
+        payload = json.loads(result)
+        if payload.get("ok") is True:
+            self._exposed_script_fingerprint = str(payload["script_fingerprint"])
+        return result
 
     def sniff_run(self) -> str:
         xml = self.collector_uiautomate()
@@ -431,9 +454,12 @@ class CollectorToolbox:
                 description="Read the current page's run.py.",
             ),
             StructuredTool.from_function(
-                func=self.write_run_py,
-                name="write_run_py",
-                description="Replace the current page's run.py. Input: content.",
+                func=self.apply_run_py_patch,
+                name="apply_run_py_patch",
+                description=(
+                    "Incrementally update run.py with a patch matching the grammar in the collector system prompt. "
+                    "It must contain exactly one update_hunk named run.py and no add, delete, move, or other file."
+                ),
             ),
             StructuredTool.from_function(
                 func=self.sniff_run,

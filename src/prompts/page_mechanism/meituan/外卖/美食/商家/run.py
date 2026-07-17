@@ -87,7 +87,7 @@ def _item_containers(nodes: list, panel: tuple) -> list:
         texts = _texts_in_box(nodes, (l, t, r, b))
         has_name = any(_is_name_text(x['text']) and x['left'] >= l + 250 for x in texts)
         has_price_or_sales = any(x['text'] in {'¥', '￥'} or re.search(r'[月半]售\s*\d', x['text']) for x in texts)
-        if has_name and (has_price_or_sales or b >= pb - 5):
+        if has_name and has_price_or_sales:
             boxes.append((l, t, r, b))
     boxes.sort(key=lambda x: (x[1], x[0]))
     dedup = []
@@ -109,7 +109,7 @@ def _pick_name(texts: list, left_floor: int) -> str:
 
 def _pick_monthly_sales(texts: list) -> str:
     for x in texts:
-        m = re.search(r'([月半]售\s*[0-9]+\+?)', x['text'])
+        m = re.search(r'[月半]售\s*([0-9]+\+?)', x['text'])
         if m:
             return m.group(1).replace(' ', '')
     return ''
@@ -137,11 +137,15 @@ def _extract_items(nodes: list) -> list:
         name = _pick_name(texts, l + 250)
         if not name:
             continue
+        price = _pick_price(texts)
+        monthly_sales = _pick_monthly_sales(texts)
+        if not price:
+            continue
         items.append({
             'name': name,
-            'price': _pick_price(texts),
+            'price': price,
             'original_price': '',
             'discount_price': '',
-            'monthly_sales': _pick_monthly_sales(texts),
+            'monthly_sales': monthly_sales,
         })
     return items

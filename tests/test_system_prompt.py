@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prompts import COLLECTOR_PROMPT, SYSTEM_PROMPT
+from prompts import COLLECTOR_PROMPT, RUN_PY_PATCH_GRAMMAR, SYSTEM_PROMPT
 
 
 class SystemPromptTests(unittest.TestCase):
@@ -40,7 +40,14 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Keep your own context", COLLECTOR_PROMPT)
         self.assertIn("collector_uiautomate", COLLECTOR_PROMPT)
         self.assertIn("collector_swipe_up", COLLECTOR_PROMPT)
-        self.assertIn("Read and write only the current page's run.py", COLLECTOR_PROMPT)
+        self.assertIn("modify it only through apply_run_py_patch", COLLECTOR_PROMPT)
+        self.assertNotIn("write_run_py", COLLECTOR_PROMPT)
+        self.assertIn("Never replace the full run.py", COLLECTOR_PROMPT)
+        self.assertIn("Patch input grammar:", COLLECTOR_PROMPT)
+        self.assertIn(RUN_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)
+        self.assertIn("start: begin_patch update_hunk+ end_patch", COLLECTOR_PROMPT)
+        self.assertIn('change_line: ("+" | "-" | " ") /(.*)/ LF', COLLECTOR_PROMPT)
+        self.assertIn("exactly one update_hunk with filename `run.py`", COLLECTOR_PROMPT)
         self.assertIn("Call save_baseline immediately after producing baseline r1", COLLECTOR_PROMPT)
         self.assertIn("sniff_run.evaluation as the only per-state pass/fail signal", COLLECTOR_PROMPT)
         self.assertIn("sniff_run.verification.ready is true", COLLECTOR_PROMPT)

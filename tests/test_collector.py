@@ -47,7 +47,7 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
         "collector_swipe_up",
         "collector_swipe_down",
         "read_run_py",
-        "write_run_py",
+        "apply_run_py_patch",
         "sniff_run",
         "save_baseline",
         "save_merchant_profile",
@@ -55,6 +55,60 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
     assert "tap" not in names
     assert "swipe_back" not in names
     assert "eval_collection" not in names
+
+
+def test_run_py_reads_are_deduplicated_and_external_changes_refresh_content(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    run_path = page_dir / "run.py"
+    original = "def run(xml: str):\n    return {'items': []}\n"
+    run_path.write_text(original, encoding="utf-8")
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=FakeEventHub(),
+        page_path="meituan",
+    )
+
+    first = json.loads(toolbox.read_run_py())
+    repeated = json.loads(toolbox.read_run_py())
+    applied = json.loads(
+        toolbox.apply_run_py_patch(
+            (
+                "*** Begin Patch\n*** Update File: run.py\n@@\n"
+                "-    return {'items': []}\n+    return {'items': [xml]}\n*** End Patch"
+            )
+        )
+    )
+    after_patch = json.loads(toolbox.read_run_py())
+    external = "def run(xml: str):\n    return {'items': [{'external': xml}]}\n"
+    run_path.write_text(external, encoding="utf-8")
+    after_external_change = json.loads(toolbox.read_run_py())
+
+    assert first["content"] == original
+    assert first["content_omitted"] is False
+    assert repeated["content_omitted"] is True
+    assert "content" not in repeated
+    assert applied["ok"] is True
+    assert "content" not in applied
+    assert after_patch["content_omitted"] is True
+    assert "content" not in after_patch
+    assert after_external_change["content_omitted"] is False
+    assert after_external_change["content"] == external
+
+
+def test_read_run_py_reports_missing_script_without_fake_content(tmp_path: Path) -> None:
+    (tmp_path / "meituan").mkdir()
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=FakeEventHub(),
+        page_path="meituan",
+    )
+
+    result = json.loads(toolbox.read_run_py())
+
+    assert result["ok"] is False
+    assert result["error_type"] == "MissingRunPy"
+    assert "content" not in result
 
 
 def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> None:
@@ -181,8 +235,19 @@ def test_same_script_must_pass_two_distinct_swiped_states(tmp_path: Path) -> Non
     assert second["verification"]["ready"] is True
     assert second["verification"]["validated_states"] == 2
 
-    toolbox.write_run_py(toolbox.read_run_py() + "\n")
+    patched = json.loads(
+        toolbox.apply_run_py_patch(
+            (
+                "*** Begin Patch\n*** Update File: run.py\n@@\n"
+                " from xml.etree import ElementTree as ET\n"
+                "+# Script version changed without changing extraction behavior.\n"
+                " def run(xml: str):\n"
+                "*** End Patch"
+            )
+        )
+    )
     invalidated = toolbox.training_result()
+    assert patched["ok"] is True
     assert invalidated["ready"] is False
     assert invalidated["evaluation"]["errors"] == ["script_changed_since_evaluation"]
 

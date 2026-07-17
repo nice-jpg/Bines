@@ -2,18 +2,25 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 import posixpath
+import re
+from tempfile import NamedTemporaryFile
 from threading import Lock
 import traceback
 from types import ModuleType
 from typing import Any, Mapping
 
+from codex_apply_patch import apply_patch_in_memory, parse_patch
+
 
 PAGE_MECHANISM_DIR = Path(__file__).resolve().parent / "prompts" / "page_mechanism"
+RUN_PY_PATCH_DESCRIPTION_RE = re.compile(r"UpdateFile: run\.py \([1-9]\d* chunks\)")
 
 
 @dataclass(frozen=True)
@@ -48,6 +55,7 @@ class PageMechanism:
     ) -> None:
         self.root = Path(root).resolve()
         self._states: dict[str, dict[str, Any]] = {}
+        self._run_patch_lock = Lock()
         configured_paths = merchant_page_paths if merchant_page_paths is not None else {
             "meituan/美食/商家",
             "meituan/外卖/美食/商家",
@@ -109,13 +117,48 @@ class PageMechanism:
         return canonical_path
 
     def read_run_py(self, current_path: str) -> str:
+        snapshot = self.read_run_py_snapshot(current_path)
+        if snapshot["ok"] is True:
+            return str(snapshot["content"])
+        return self._error_block(
+            "run_py_error",
+            current_path,
+            str(snapshot["canonical_path"]),
+            str(snapshot["error"]),
+        )
+
+    def read_run_py_snapshot(self, current_path: str) -> dict[str, Any]:
+        """Read run.py with a structured error contract for internal tools."""
+
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
-            return self._error_block("run_py_error", current_path, canonical_path, error)
-        run_path = page_dir / "run.py"
+            return {
+                "ok": False,
+                "canonical_path": canonical_path,
+                "error_type": "RunPyPathError",
+                "error": error,
+            }
+        run_path = (page_dir / "run.py").resolve()
+        if not self._is_relative_to(run_path):
+            return {
+                "ok": False,
+                "canonical_path": canonical_path,
+                "error_type": "RunPyPathError",
+                "error": "run.py path escapes page root.",
+            }
         if not run_path.is_file():
-            return self._error_block("run_py_error", current_path, canonical_path, "run.py was not found.")
-        return run_path.read_text(encoding="utf-8")
+            return {
+                "ok": False,
+                "canonical_path": canonical_path,
+                "error_type": "MissingRunPy",
+                "error": "run.py was not found.",
+            }
+        return {
+            "ok": True,
+            "canonical_path": canonical_path,
+            "path": run_path.relative_to(self.root).as_posix(),
+            "content": run_path.read_text(encoding="utf-8"),
+        }
 
     def write_run_py(self, current_path: str, content: str) -> str:
         page_dir, canonical_path, error = self._page_dir(current_path)
@@ -131,6 +174,122 @@ class PageMechanism:
             ensure_ascii=False,
             sort_keys=True,
         )
+
+    def apply_run_py_patch(self, current_path: str, patch: str) -> str:
+        """Apply one context patch to run.py after in-memory validation."""
+
+        page_dir, canonical_path, error = self._page_dir(current_path)
+        if error:
+            return _patch_error("PatchScopeError", error, canonical_path)
+        run_path = (page_dir / "run.py").resolve()
+        if not self._is_relative_to(run_path) or not run_path.is_file():
+            return _patch_error(
+                "PatchScopeError",
+                "The current page must contain an existing run.py.",
+                canonical_path,
+            )
+
+        with self._run_patch_lock:
+            current_content = run_path.read_text(encoding="utf-8")
+            current_fingerprint = _fingerprint_text(current_content)
+            try:
+                descriptions = parse_patch(str(patch))
+            except Exception as exc:  # noqa: BLE001 - extension exposes parse failures as RuntimeError.
+                return _patch_error(
+                    "InvalidPatchFormat",
+                    str(exc).strip() or "The patch does not follow the Codex patch format.",
+                    canonical_path,
+                    script_fingerprint=current_fingerprint,
+                )
+            if (
+                len(descriptions) != 1
+                or RUN_PY_PATCH_DESCRIPTION_RE.fullmatch(descriptions[0]) is None
+            ):
+                return _patch_error(
+                    "PatchScopeError",
+                    "The patch must contain exactly one Update File operation for run.py without add, delete, or move.",
+                    canonical_path,
+                    script_fingerprint=current_fingerprint,
+                )
+
+            try:
+                result = apply_patch_in_memory(str(patch), {"run.py": current_content})
+            except Exception:  # noqa: BLE001 - 0.4.0 emits an empty RuntimeError for context conflicts.
+                return _patch_error(
+                    "PatchConflict",
+                    "Patch context does not match the current run.py.",
+                    canonical_path,
+                    script_fingerprint=current_fingerprint,
+                )
+            if (
+                result.added
+                or result.deleted
+                or result.modified != ["run.py"]
+                or set(result.files) != {"run.py"}
+            ):
+                return _patch_error(
+                    "PatchResultError",
+                    "The patch engine returned changes outside run.py.",
+                    canonical_path,
+                    script_fingerprint=current_fingerprint,
+                )
+
+            updated_content = result.files["run.py"]
+            try:
+                compile(updated_content, str(run_path), "exec")
+            except SyntaxError as exc:
+                return _patch_error(
+                    "InvalidPython",
+                    exc.msg,
+                    canonical_path,
+                    script_fingerprint=current_fingerprint,
+                    line=exc.lineno,
+                    offset=exc.offset,
+                )
+
+            temp_path: Path | None = None
+            try:
+                with NamedTemporaryFile(
+                    mode="w",
+                    encoding="utf-8",
+                    newline="",
+                    dir=page_dir,
+                    prefix=".run.py.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temp_file:
+                    temp_file.write(updated_content)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                    temp_path = Path(temp_file.name)
+                os.chmod(temp_path, run_path.stat().st_mode)
+                os.replace(temp_path, run_path)
+                temp_path = None
+            except OSError as exc:
+                return _patch_error(
+                    "PatchCommitError",
+                    str(exc),
+                    canonical_path,
+                    script_fingerprint=current_fingerprint,
+                )
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+
+            updated_fingerprint = _fingerprint_text(updated_content)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "applied": True,
+                    "canonical_path": canonical_path,
+                    "path": run_path.relative_to(self.root).as_posix(),
+                    "script_fingerprint": updated_fingerprint,
+                    "bytes_before": len(current_content.encode("utf-8")),
+                    "bytes_after": len(updated_content.encode("utf-8")),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
 
     def sniff_run(self, current_path: str, xml: str) -> str:
         result = self.run_page_script(current_path, xml)
@@ -374,6 +533,33 @@ def _assert_json_object(value: Any) -> None:
 
 def _script_error(error_type: str, error: str, *, canonical_path: str) -> dict[str, Any]:
     return {"ok": False, "canonical_path": canonical_path, "error_type": error_type, "error": error, "traceback": ""}
+
+
+def _patch_error(
+    error_type: str,
+    error: str,
+    canonical_path: str,
+    *,
+    script_fingerprint: str = "",
+    **details: Any,
+) -> str:
+    return json.dumps(
+        {
+            "ok": False,
+            "applied": False,
+            "canonical_path": canonical_path,
+            "error_type": error_type,
+            "error": error,
+            "script_fingerprint": script_fingerprint,
+            **details,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+
+
+def _fingerprint_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _coerce_json(value: Any) -> Any:

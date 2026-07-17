@@ -8,6 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import page_mechanism as page_mechanism_module
+from codex_apply_patch import __version__ as codex_apply_patch_version
 from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
 
 
@@ -39,6 +41,196 @@ def test_run_py_is_page_scoped_and_rejects_path_escape(tmp_path: Path) -> None:
     assert json.loads(result)["ok"] is True
     assert (page_dir / "run.py").is_file()
     assert "must not contain '..'" in rejected
+
+
+def test_codex_apply_patch_dependency_contract() -> None:
+    assert codex_apply_patch_version == "0.4.0"
+
+
+def test_apply_run_py_patch_updates_multiple_chunks_atomically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    run_path = page_dir / "run.py"
+    original = (
+        "PREFIX = 'old'\n"
+        "\n"
+        "def run(xml: str):\n"
+        "    return {'items': [], 'source': PREFIX}\n"
+    )
+    updated = (
+        "PREFIX = 'new'\n"
+        "\n"
+        "def run(xml: str):\n"
+        "    return {'items': [xml], 'source': PREFIX}\n"
+    )
+    run_path.write_text(original, encoding="utf-8")
+    real_replace = page_mechanism_module.os.replace
+    versions_seen_at_commit: list[tuple[str, str]] = []
+
+    def observed_replace(source, destination):
+        versions_seen_at_commit.append(
+            (
+                Path(destination).read_text(encoding="utf-8"),
+                Path(source).read_text(encoding="utf-8"),
+            )
+        )
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(page_mechanism_module.os, "replace", observed_replace)
+    patch = """*** Begin Patch
+*** Update File: run.py
+@@
+-PREFIX = 'old'
++PREFIX = 'new'
+@@
+-    return {'items': [], 'source': PREFIX}
++    return {'items': [xml], 'source': PREFIX}
+*** End Patch"""
+
+    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+
+    assert result["ok"] is True
+    assert result["applied"] is True
+    assert result["bytes_before"] == len(original.encode("utf-8"))
+    assert result["bytes_after"] == len(updated.encode("utf-8"))
+    assert len(result["script_fingerprint"]) == 64
+    assert versions_seen_at_commit == [(original, updated)]
+    assert run_path.read_text(encoding="utf-8") == updated
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        "*** Begin Patch\n*** Add File: run.py\n+bad\n*** End Patch",
+        "*** Begin Patch\n*** Delete File: run.py\n*** End Patch",
+        (
+            "*** Begin Patch\n*** Update File: run.py\n*** Move to: moved.py\n"
+            "@@\n-def run(xml):\n+def run(xml: str):\n*** End Patch"
+        ),
+        (
+            "*** Begin Patch\n*** Update File: other.py\n"
+            "@@\n-old\n+new\n*** End Patch"
+        ),
+        (
+            "*** Begin Patch\n*** Update File: ../run.py\n"
+            "@@\n-old\n+new\n*** End Patch"
+        ),
+        (
+            "*** Begin Patch\n*** Update File: run.py\n@@\n-def run(xml):\n+def run(xml: str):\n"
+            "*** Update File: other.py\n@@\n-old\n+new\n*** End Patch"
+        ),
+    ],
+)
+def test_apply_run_py_patch_rejects_operations_outside_single_run_py(
+    tmp_path: Path,
+    patch: str,
+) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    run_path = page_dir / "run.py"
+    original = "def run(xml):\n    return {'items': []}\n"
+    run_path.write_text(original, encoding="utf-8")
+
+    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+
+    assert result["ok"] is False
+    assert result["applied"] is False
+    assert result["error_type"] == "PatchScopeError"
+    assert run_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_run_py_patch_rejects_invalid_format_conflict_and_invalid_python(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    run_path = page_dir / "run.py"
+    original = "def run(xml):\n    return {'items': []}\n"
+    run_path.write_text(original, encoding="utf-8")
+    mechanism = PageMechanism(tmp_path)
+
+    malformed = json.loads(mechanism.apply_run_py_patch("meituan", "not a patch"))
+    conflict = json.loads(
+        mechanism.apply_run_py_patch(
+            "meituan",
+            "*** Begin Patch\n*** Update File: run.py\n@@\n-missing\n+new\n*** End Patch",
+        )
+    )
+    invalid_python = json.loads(
+        mechanism.apply_run_py_patch(
+            "meituan",
+            (
+                "*** Begin Patch\n*** Update File: run.py\n@@\n"
+                "-    return {'items': []}\n+    return {'items': [\n*** End Patch"
+            ),
+        )
+    )
+
+    assert malformed["error_type"] == "InvalidPatchFormat"
+    assert conflict["error_type"] == "PatchConflict"
+    assert conflict["error"] == "Patch context does not match the current run.py."
+    assert invalid_python["error_type"] == "InvalidPython"
+    assert invalid_python["line"] == 2
+    assert run_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_run_py_patch_rejects_invalid_engine_result_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    run_path = page_dir / "run.py"
+    original = "def run(xml):\n    return {'items': []}\n"
+    run_path.write_text(original, encoding="utf-8")
+
+    class InvalidResult:
+        added = ["other.py"]
+        deleted = []
+        modified = ["run.py"]
+        files = {"run.py": original, "other.py": "bad"}
+
+    monkeypatch.setattr(
+        page_mechanism_module,
+        "apply_patch_in_memory",
+        lambda patch, files: InvalidResult(),
+    )
+    patch = (
+        "*** Begin Patch\n*** Update File: run.py\n@@\n"
+        "-def run(xml):\n+def run(xml: str):\n*** End Patch"
+    )
+
+    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+
+    assert result["error_type"] == "PatchResultError"
+    assert run_path.read_text(encoding="utf-8") == original
+
+
+def test_apply_run_py_patch_commit_failure_preserves_file_and_removes_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    run_path = page_dir / "run.py"
+    original = "def run(xml):\n    return {'items': []}\n"
+    run_path.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(
+        page_mechanism_module.os,
+        "replace",
+        lambda source, destination: (_ for _ in ()).throw(OSError("commit failed")),
+    )
+    patch = (
+        "*** Begin Patch\n*** Update File: run.py\n@@\n"
+        "-def run(xml):\n+def run(xml: str):\n*** End Patch"
+    )
+
+    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+
+    assert result["error_type"] == "PatchCommitError"
+    assert run_path.read_text(encoding="utf-8") == original
+    assert list(page_dir.glob(".run.py.*.tmp")) == []
 
 
 def test_sniff_run_uses_only_current_xml_and_persists_latest_json_state(tmp_path: Path) -> None:
