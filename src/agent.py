@@ -196,16 +196,24 @@ def build_agent(
         from collector import CollectorManager
 
     collector_manager = CollectorManager(model=model, mechanism=mechanism, event_hub=event_hub)
+    workbook_sink = CollectionWorkbookSink()
+    collection_persistence = CollectionPersistenceMiddleware(
+        mechanism=mechanism,
+        training_registry=collector_manager.training_registry,
+        workbook_sink=workbook_sink,
+    )
     registered_tools = _with_collected_tools(
         tools,
-        collect_conductor_tools(
-            model=model,
-            mechanism=mechanism,
-            event_hub=event_hub,
-            collector_manager=collector_manager,
-        ),
+        [
+            *collect_conductor_tools(
+                model=model,
+                mechanism=mechanism,
+                event_hub=event_hub,
+                collector_manager=collector_manager,
+            ),
+            *collection_persistence.create_tools(),
+        ],
     )
-    workbook_sink = CollectionWorkbookSink()
     middlewares: list[AgentMiddleware] = []
     middlewares.append(ToolErrorMiddleware())
     middlewares.append(PageContextMiddleware(mechanism=mechanism))
@@ -215,13 +223,7 @@ def build_agent(
             training_registry=collector_manager.training_registry,
         )
     )
-    middlewares.append(
-        CollectionPersistenceMiddleware(
-            mechanism=mechanism,
-            training_registry=collector_manager.training_registry,
-            workbook_sink=workbook_sink,
-        )
-    )
+    middlewares.append(collection_persistence)
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
     middlewares.append(SummarizationMiddleware(model=model))

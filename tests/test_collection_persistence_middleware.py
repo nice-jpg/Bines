@@ -15,13 +15,19 @@ from page_mechanism import CollectorTrainingRegistry, PageMechanism
 from tools.content_provider import CollectionWorkbookSink, ContentProvider, _read_xlsx
 
 
-def _request(tool_name: str, *, overlay: bool = False) -> SimpleNamespace:
+def _request(
+    tool_name: str,
+    *,
+    overlay: bool = False,
+    page_path: str = "meituan/美食/商家",
+    page_visit_id: str = "visit-a",
+) -> SimpleNamespace:
     return SimpleNamespace(
         tool_call={"name": tool_name, "id": f"{tool_name}-1", "args": {}},
         state={
-            PAGE_CONTEXT_PATH: "meituan/美食/商家",
+            PAGE_CONTEXT_PATH: page_path,
             PAGE_CONTEXT_OVERLAY: overlay,
-            PAGE_VISIT_ID: "visit-a",
+            PAGE_VISIT_ID: page_visit_id,
         },
     )
 
@@ -51,10 +57,15 @@ def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, Collec
     return middleware, registry, tmp_path / "workspace" / "result.xlsx"
 
 
-def _mark_trained(registry: CollectorTrainingRegistry) -> None:
+def _mark_trained(
+    registry: CollectorTrainingRegistry,
+    *,
+    page_path: str = "meituan/美食/商家",
+    page_visit_id: str = "visit-a",
+) -> None:
     registry.mark_trained(
-        "visit-a",
-        "meituan/美食/商家",
+        page_visit_id,
+        page_path,
         merchant_profile={"name": "商家A", "distance": "1km"},
         script_fingerprint="script-a",
         restoration={"restored": True},
@@ -86,6 +97,96 @@ def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) ->
     assert second_payload["persistence"]["appended_items"] == 0
     assert _read_xlsx(workbook_path) == [["name", "distance"], ["商家A", "1km"]]
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
+
+
+def test_is_done_uses_latest_persisted_item_delta(tmp_path: Path) -> None:
+    middleware, registry, _workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    runtime = SimpleNamespace(state=_request("is_done").state)
+
+    initial = middleware.is_done(runtime)
+    middleware.wrap_tool_call(
+        _request("swipe_up"),
+        lambda _request: _tool_message("swipe_up", "cup"),
+    )
+    after_new_item = middleware.is_done(runtime)
+    middleware.wrap_tool_call(
+        _request("swipe_up"),
+        lambda _request: _tool_message("swipe_up", "cup"),
+    )
+    after_duplicate = middleware.is_done(runtime)
+
+    assert initial == {
+        "ok": True,
+        "done": False,
+        "initialized": False,
+        "latest_new_count": 0,
+        "page_path": "meituan/美食/商家",
+        "page_visit_id": "visit-a",
+    }
+    assert after_new_item["initialized"] is True
+    assert after_new_item["latest_new_count"] == 1
+    assert after_new_item["done"] is False
+    assert after_duplicate["latest_new_count"] == 0
+    assert after_duplicate["done"] is True
+
+
+def test_non_swipe_tools_do_not_overwrite_collection_progress(tmp_path: Path) -> None:
+    middleware, registry, _workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    runtime = SimpleNamespace(state=_request("is_done").state)
+    middleware.wrap_tool_call(
+        _request("swipe_up"),
+        lambda _request: _tool_message("swipe_up", "cup"),
+    )
+
+    for tool_name in ("uiautomate", "tap_in_page"):
+        middleware.wrap_tool_call(
+            _request(tool_name),
+            lambda _request, name=tool_name: _tool_message(name, "cup"),
+        )
+
+    assert middleware.is_done(runtime)["latest_new_count"] == 1
+    assert middleware.is_done(runtime)["done"] is False
+
+
+def test_is_done_is_isolated_by_page_visit_and_rejects_non_merchant_page(tmp_path: Path) -> None:
+    middleware, registry, _workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    _mark_trained(registry, page_visit_id="visit-b")
+    middleware.wrap_tool_call(
+        _request("swipe_up"),
+        lambda _request: _tool_message("swipe_up", "cup"),
+    )
+
+    visit_b = middleware.is_done(
+        SimpleNamespace(state=_request("is_done", page_visit_id="visit-b").state)
+    )
+    list_page = middleware.is_done(
+        SimpleNamespace(
+            state=_request(
+                "is_done",
+                page_path="meituan/美食",
+                page_visit_id="visit-list",
+            ).state
+        )
+    )
+
+    assert visit_b["ok"] is True
+    assert visit_b["initialized"] is False
+    assert visit_b["done"] is False
+    assert list_page["ok"] is False
+    assert list_page["error_type"] == "is_done_not_available"
+    assert list_page["done"] is False
+
+
+def test_is_done_tool_hides_tool_runtime_argument(tmp_path: Path) -> None:
+    middleware, _registry, _workbook_path = _middleware(tmp_path)
+    tools = middleware.create_tools()
+
+    assert [tool.name for tool in tools] == ["is_done"]
+    schema = tools[0].tool_call_schema.model_json_schema()
+    assert "runtime" not in schema.get("properties", {})
 
 
 def test_prepare_collector_initializes_merchant_sheet_from_registry(tmp_path: Path) -> None:

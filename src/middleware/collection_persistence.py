@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 import json
+from threading import Lock
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import StructuredTool
 
 try:
     from src.middleware.page_context import (
@@ -31,6 +35,40 @@ ITEM_APPEND_TOOLS = {"swipe_up", "swipe_down"}
 COLLECTION_XML_TOOL_NAMES = {"tap_in_page", "swipe_up", "swipe_down", "uiautomate"}
 
 
+@dataclass(frozen=True)
+class CollectionProgressRecord:
+    """Latest persisted item delta for one concrete page visit."""
+
+    page_visit_id: str
+    page_path: str
+    latest_new_count: int
+
+
+class CollectionProgressRegistry:
+    """Store collection progress independently for each page visit."""
+
+    def __init__(self) -> None:
+        self._records: dict[tuple[str, str], CollectionProgressRecord] = {}
+        self._lock = Lock()
+
+    def update(self, page_visit_id: str, page_path: str, latest_new_count: int) -> None:
+        key = (str(page_visit_id or ""), str(page_path or ""))
+        if not all(key):
+            return
+        record = CollectionProgressRecord(
+            page_visit_id=key[0],
+            page_path=key[1],
+            latest_new_count=max(0, int(latest_new_count)),
+        )
+        with self._lock:
+            self._records[key] = record
+
+    def get(self, page_visit_id: str, page_path: str) -> CollectionProgressRecord | None:
+        key = (str(page_visit_id or ""), str(page_path or ""))
+        with self._lock:
+            return self._records.get(key)
+
+
 class CollectionPersistenceMiddleware(AgentMiddleware):
     """Run page-local scripts and persist collection output after XML tools."""
 
@@ -44,6 +82,56 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
         self.mechanism = mechanism
         self.training_registry = training_registry
         self.workbook_sink = workbook_sink
+        self._progress = CollectionProgressRegistry()
+
+    def create_tools(self) -> list[StructuredTool]:
+        """Return conductor tools bound to this middleware's progress state."""
+
+        return [
+            StructuredTool.from_function(
+                func=self.is_done,
+                name="is_done",
+                description=(
+                    "Check whether collection is complete for the current merchant page visit. "
+                    "Call after every product-list swipe. Returns done=false while the latest "
+                    "valid swipe added items or before any valid collection swipe; returns "
+                    "done=true only when the latest valid swipe added zero new items."
+                ),
+            )
+        ]
+
+    def is_done(self, runtime: ToolRuntime) -> dict[str, Any]:
+        """Return deterministic completion state for the current merchant visit."""
+
+        state = runtime.state if isinstance(runtime.state, Mapping) else {}
+        current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
+        visit_id = str(state.get(PAGE_VISIT_ID) or "")
+        base = {
+            "done": False,
+            "initialized": False,
+            "latest_new_count": 0,
+            "page_path": current_path,
+            "page_visit_id": visit_id,
+        }
+        if not current_path:
+            return {**base, "ok": False, "error_type": "missing_page_context"}
+        if not visit_id:
+            return {**base, "ok": False, "error_type": "missing_page_visit_id"}
+        if not self.mechanism.is_merchant_page(current_path):
+            return {**base, "ok": False, "error_type": "is_done_not_available"}
+        if not self.training_registry.is_trained(visit_id, current_path):
+            return {**base, "ok": False, "error_type": "collector_not_trained"}
+
+        progress = self._progress.get(visit_id, current_path)
+        if progress is None:
+            return {**base, "ok": True}
+        return {
+            **base,
+            "ok": True,
+            "done": progress.latest_new_count == 0,
+            "initialized": True,
+            "latest_new_count": progress.latest_new_count,
+        }
 
     def wrap_tool_call(
         self,
@@ -85,6 +173,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
 
         collection = self.mechanism.run_page_script(current_path, result.content)
         persistence = self._persist(tool_name, current_path, visit_id, collection)
+        self._record_progress(tool_name, current_path, visit_id, persistence)
         return _replace_tool_message_content(
             result,
             json.dumps(
@@ -98,6 +187,22 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
                 sort_keys=True,
             ),
         )
+
+    def _record_progress(
+        self,
+        tool_name: str,
+        current_path: str,
+        visit_id: str,
+        persistence: Mapping[str, Any],
+    ) -> None:
+        if tool_name not in ITEM_APPEND_TOOLS:
+            return
+        if persistence.get("ok") is not True or persistence.get("skipped") is True:
+            return
+        appended_items = persistence.get("appended_items")
+        if isinstance(appended_items, bool) or not isinstance(appended_items, int):
+            return
+        self._progress.update(visit_id, current_path, appended_items)
 
     def _persist(
         self,

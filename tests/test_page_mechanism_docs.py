@@ -55,6 +55,10 @@ class PageMechanismDocTests(unittest.TestCase):
                 self.assertNotIn("Collection Target", task)
                 self.assertNotIn('"merchant"', run_text)
                 self.assertIn('return {"items":', run_text)
+                self.assertIn("call `is_done` after every swipe", task)
+                self.assertIn("only collection completion signal", task)
+                self.assertNotIn("two consecutive", task)
+                self.assertNotIn("terminal marker", task)
 
 
 if __name__ == "__main__":

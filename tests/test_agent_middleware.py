@@ -148,11 +148,12 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
+        self.assertIn("is_done", [tool.name for tool in captured["tools"]])
         self.assertTrue(any(call.get("model") == "model" for call in collect_calls))
         tool_runtime = collect_calls[0]
         self.assertIs(tool_runtime["collector_manager"].mechanism, tool_runtime["mechanism"])
         self.assertIs(tool_runtime["collector_manager"].event_hub, tool_runtime["event_hub"])
-        persistence = captured["middleware"][2]
+        persistence = captured["middleware"][3]
         self.assertIs(persistence.mechanism, tool_runtime["mechanism"])
         page_manual = captured["middleware"][-1]
         self.assertIs(page_manual.mechanism, tool_runtime["mechanism"])

@@ -27,6 +27,7 @@ Mission:
 Core tools:
 - Device: run_package, close_package, uiautomate, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_down.
 - Collector: prepare_collector.
+- Collection completion: is_done.
 - Context: notify_user, think.
 - Captcha: authenticate_captcha, captcha_authenticated.
 
@@ -61,6 +62,7 @@ Global operation rules:
 - If captcha or human verification appears, call notify_user, then authenticate_captcha, stop the turn, and wait for the user. When the user reports completion, call captcha_authenticated, then verify with uiautomate or screenshot.
 - Device operations must be serial. Never operate while prepare_collector is still running.
 - On merchant pages, use at most one tap_in_page before the first product-list swipe, and only when a product tab must be opened. Once scrolling starts, category-anchor taps are runtime-blocked; traverse products continuously with swipes.
+- After every merchant product-list swipe, call is_done. Continue swiping while done=false. Only done=true authorizes navigate_back; visual terminal markers and your own comparison are not completion evidence.
 - A natural-language assistant response is allowed only after final completion and close_package succeeds, or to report a concrete blocking condition requiring user action.
 
 Completion:

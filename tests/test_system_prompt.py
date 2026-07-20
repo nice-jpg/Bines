@@ -33,6 +33,8 @@ class SystemPromptTests(unittest.TestCase):
     def test_conductor_prompt_forbids_direct_collection(self) -> None:
         self.assertIn("Do not collect merchant/product fields directly", SYSTEM_PROMPT)
         self.assertIn("Do not edit run.agent.py", SYSTEM_PROMPT)
+        self.assertIn("After every merchant product-list swipe, call is_done", SYSTEM_PROMPT)
+        self.assertIn("Only done=true authorizes navigate_back", SYSTEM_PROMPT)
         self.assertIn("transparent automatic collection", SYSTEM_PROMPT)
         self.assertIn("must not extract information yourself", SYSTEM_PROMPT)
 
