@@ -19,12 +19,26 @@ try:
     from src.device.translator import check_actions
     from src.tools.event_logger import WorkspaceEventLogger
     from src.tools.optimize_xml import optimize
+    from src.tools.safety import DANGEROUS_TOOL_POLICY_METADATA_KEY
+    from src.tools.tool_decorators import (
+        dangerous_func,
+        dangerous_policy_for,
+        model_tool_callable,
+        xy_operation,
+    )
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from device.adapter import AndroidDevice
     from device.results import ErrorResult, is_error_result, make_error_result
     from device.translator import check_actions
     from tools.event_logger import WorkspaceEventLogger
     from tools.optimize_xml import optimize
+    from tools.safety import DANGEROUS_TOOL_POLICY_METADATA_KEY
+    from tools.tool_decorators import (
+        dangerous_func,
+        dangerous_policy_for,
+        model_tool_callable,
+        xy_operation,
+    )
 
 DEFAULT_POST_ACTION_UI_DELAY_SECONDS = 1.2
 
@@ -34,43 +48,46 @@ class ToolSpec:
     name: str
     description: str
     operation_name: str
-    parameters: tuple[str, ...]
     returns_xml: bool = False
 
 
 TOOL_SPECS = (
-    ToolSpec("run_package", "Open an Android application by package name.", "run_package", ("package_name",)),
-    ToolSpec("close_package", "Force-stop an Android application by package name.", "close_package", ("package_name",)),
+    ToolSpec(
+        "run_package",
+        "Open an Android application by package name. This dangerous action requires a structured justification.",
+        "run_package",
+    ),
+    ToolSpec(
+        "close_package",
+        "Force-stop an Android application by package name. This dangerous action requires a structured justification.",
+        "close_package",
+    ),
     ToolSpec(
         "tap",
         "Tap (x, y). Provide x/y coordinates. Returns the current UIAutomator XML hierarchy.",
         "tap",
-        ("x", "y"),
         True,
     ),
     ToolSpec(
         "swipe_up",
         "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_up",
-        ("x", "y"),
         True,
     ),
     ToolSpec(
         "swipe_down",
         "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_down",
-        ("x", "y"),
         True,
     ),
     ToolSpec(
         "swipe_back",
         "return to the last page. Returns current UIAutomator XML hierarchy.",
         "swipe_back",
-        (),
         True,
     ),
-    ToolSpec("uiautomate", "Get the current UIAutomator XML hierarchy.", "uiautomate", (), True),
-    ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot", ()),
+    ToolSpec("uiautomate", "Get the current UIAutomator XML hierarchy.", "uiautomate", True),
+    ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot"),
 )
 
 EVENT_HUB_TOOL_NAMES = tuple(spec.name for spec in TOOL_SPECS)
@@ -99,16 +116,19 @@ class EventHub:
         self.post_action_ui_delay_seconds = DEFAULT_POST_ACTION_UI_DELAY_SECONDS
         self._sleep = sleep_func
 
+    @xy_operation
     def tap(self, x: int, y: int) -> str | ErrorResult:
         """Replay the recorded tap action."""
 
         return self._replay_recorded_action("tap", x, y)
 
+    @xy_operation
     def swipe_up(self, x: int, y: int) -> str | ErrorResult:
         """Replay the recorded upward swipe action."""
 
         return self._replay_recorded_action("swipe_up", x, y)
 
+    @xy_operation
     def swipe_down(self, x: int, y: int) -> str | ErrorResult:
         """Replay the recorded downward swipe action."""
 
@@ -132,11 +152,13 @@ class EventHub:
 
         return self._run_device_operation("screenshot", self.device.screenshot)
 
+    @dangerous_func
     def run_package(self, package_name: str) -> str | ErrorResult:
         """Open the specified Android application package."""
 
         return self._run_device_operation("run_package", lambda: self.device.run_package(package_name))
 
+    @dangerous_func
     def close_package(self, package_name: str) -> str | ErrorResult:
         """Force-stop the specified Android application package."""
 
@@ -237,58 +259,16 @@ def build_tools() -> list[StructuredTool]:
 
 def _build_tool(spec: ToolSpec, hub: EventHub) -> StructuredTool:
     operation = getattr(hub, spec.operation_name)
-    tool_func = _wrap_operation(spec.name, spec.parameters, operation)
+    tool_func = model_tool_callable(operation)
+    safety_policy = dangerous_policy_for(operation)
+    metadata = (
+        {DANGEROUS_TOOL_POLICY_METADATA_KEY: safety_policy}
+        if safety_policy is not None
+        else None
+    )
     return StructuredTool.from_function(
         func=tool_func,
         name=spec.name,
         description=spec.description,
+        metadata=metadata,
     )
-
-
-def _wrap_operation(name: str, parameters: tuple[str, ...], operation: Callable) -> Callable:
-    if parameters == ("x", "y"):
-        return _named(name, _xy_operation(operation))
-    if parameters == ("package_name",):
-        return _named(name, _package_operation(operation))
-    if parameters == ():
-        return _named(name, _zero_arg_operation(operation))
-    return _named(name, _unsupported_operation(name, parameters))
-
-
-def _xy_operation(operation: Callable[[int, int], str | ErrorResult]) -> Callable[[int, int], str | ErrorResult]:
-    def tool_func(x: int, y: int) -> str | ErrorResult:
-        return operation(x, y)
-
-    return tool_func
-
-
-def _package_operation(
-    operation: Callable[[str], str | ErrorResult],
-) -> Callable[[str], str | ErrorResult]:
-    def tool_func(package_name: str) -> str | ErrorResult:
-        return operation(package_name)
-
-    return tool_func
-
-
-def _zero_arg_operation(operation: Callable[[], str]) -> Callable[[], str]:
-    def tool_func() -> str:
-        return operation()
-
-    return tool_func
-
-
-def _unsupported_operation(name: str, parameters: tuple[str, ...]) -> Callable[[], ErrorResult]:
-    def tool_func() -> ErrorResult:
-        return make_error_result(
-            "configuration_error",
-            f"Unsupported tool parameter shape for {name}: {parameters}",
-            details={"tool_name": name, "parameters": parameters},
-        )
-
-    return tool_func
-
-
-def _named(name: str, func: Callable) -> Callable:
-    func.__name__ = name
-    return func

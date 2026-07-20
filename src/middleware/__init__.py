@@ -6,6 +6,7 @@ from .captcha_human_in_loop import (
 )
 from .collection_persistence import CollectionPersistenceMiddleware
 from .collector_readiness import CollectorReadinessMiddleware
+from .dangerous_tool import DangerousToolMiddleware
 from .device_context_compression import DeviceContextCompressionMiddleware, compact_device_messages
 from .page_context import (
     PAGE_CONTEXT_ACTIVE,
@@ -26,6 +27,7 @@ __all__ = [
     "CAPTCHA_AUTHENTICATION_TOOL_NAME",
     "CollectionPersistenceMiddleware",
     "CollectorReadinessMiddleware",
+    "DangerousToolMiddleware",
     "DeviceContextCompressionMiddleware",
     "PAGE_CONTEXT_ACTIVE",
     "PAGE_CONTEXT_APP_ROOT",

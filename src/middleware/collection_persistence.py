@@ -93,9 +93,12 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
                 name="is_done",
                 description=(
                     "Check whether collection is complete for the current merchant page visit. "
-                    "Call after every product-list swipe. Returns done=false while the latest "
-                    "valid swipe added items or before any valid collection swipe; returns "
-                    "done=true only when the latest valid swipe added zero new items."
+                    "Call only when visible page evidence suggests the product region may be "
+                    "exhausted, such as a bottom marker, no obvious movement after a swipe, or "
+                    "sustained repeated content. Do not call after ordinary swipes. Returns "
+                    "done=false while the latest valid swipe added items or before any valid "
+                    "collection swipe; returns done=true only when the latest valid swipe added "
+                    "zero new items."
                 ),
             )
         ]

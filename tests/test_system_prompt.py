@@ -33,10 +33,17 @@ class SystemPromptTests(unittest.TestCase):
     def test_conductor_prompt_forbids_direct_collection(self) -> None:
         self.assertIn("Do not collect merchant/product fields directly", SYSTEM_PROMPT)
         self.assertIn("Do not edit run.agent.py", SYSTEM_PROMPT)
-        self.assertIn("After every merchant product-list swipe, call is_done", SYSTEM_PROMPT)
+        self.assertIn("Do not call is_done after ordinary merchant product-list swipes", SYSTEM_PROMPT)
+        self.assertIn("wait for new possible-end evidence before checking again", SYSTEM_PROMPT)
         self.assertIn("Only done=true authorizes navigate_back", SYSTEM_PROMPT)
         self.assertIn("transparent automatic collection", SYSTEM_PROMPT)
         self.assertIn("must not extract information yourself", SYSTEM_PROMPT)
+
+    def test_conductor_prompt_requires_dangerous_tool_justification(self) -> None:
+        self.assertIn("run_package and close_package are dangerous operations", SYSTEM_PROMPT)
+        self.assertIn("risk_acknowledged=true", SYSTEM_PROMPT)
+        self.assertIn("page tasks, collection, and archival are complete", SYSTEM_PROMPT)
+        self.assertIn("Never use an operation-only or templated placeholder", SYSTEM_PROMPT)
 
     def test_collector_prompt_has_isolated_fixed_loop(self) -> None:
         self.assertIn("Keep your own context", COLLECTOR_PROMPT)
@@ -56,11 +63,14 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Do not decide pass/fail yourself", COLLECTOR_PROMPT)
         self.assertIn("only training-completion signal", COLLECTOR_PROMPT)
         self.assertIn("same run.agent.py fingerprint passed at least two different swiped XML states", COLLECTOR_PROMPT)
+        self.assertIn("collector_tap is locked until sniff_run.verification.ready is true", COLLECTOR_PROMPT)
+        self.assertIn("commonly labeled `点菜`, `商品`, or `全部商品`", COLLECTOR_PROMPT)
+        self.assertIn("does not compare page XML fingerprints", COLLECTOR_PROMPT)
         self.assertIn("Do not evade a bad score by scrolling away", COLLECTOR_PROMPT)
         self.assertIn("general extraction heuristic for same-class pages", COLLECTOR_PROMPT)
         self.assertIn("Define run(xml: str) -> dict", COLLECTOR_PROMPT)
         self.assertNotIn("Call eval_collection", COLLECTOR_PROMPT)
-        self.assertIn("Do not tap", COLLECTOR_PROMPT)
+        self.assertIn("Never use it to enter another page", COLLECTOR_PROMPT)
         self.assertIn("Do not enter a lower-level page", COLLECTOR_PROMPT)
 
 

@@ -23,6 +23,7 @@ try:
     from src.middleware import (
         CollectionPersistenceMiddleware,
         CollectorReadinessMiddleware,
+        DangerousToolMiddleware,
         DeviceContextCompressionMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
         CollectionPersistenceMiddleware,
         CollectorReadinessMiddleware,
+        DangerousToolMiddleware,
         DeviceContextCompressionMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
@@ -216,6 +218,7 @@ def build_agent(
     )
     middlewares: list[AgentMiddleware] = []
     middlewares.append(ToolErrorMiddleware())
+    middlewares.append(DangerousToolMiddleware())
     middlewares.append(PageContextMiddleware(mechanism=mechanism))
     middlewares.append(
         CollectorReadinessMiddleware(

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Mapping
 from typing import Any, Callable, Sequence
 
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
@@ -87,6 +88,8 @@ class CollectorManager:
                 "6. If the score is below 100, repair run.agent.py for the current XML before moving the page.",
                 "7. After the state passes, swipe to a materially different state, save its baseline, and verify again.",
                 "8. Continue until sniff_run.verification.ready is true for the same run.agent.py version.",
+                "9. After verification is ready, inspect the current XML and use collector_tap on a visible "
+                "same-page product-tab reset control when available.",
                 "</workflow>",
                 "</collector_assignment>",
             ]
@@ -142,6 +145,35 @@ class CollectorManager:
             tools=toolbox.create_tools(),
             system_prompt=COLLECTOR_PROMPT,
             name="collector",
+            middleware=[CollectorTapAvailabilityMiddleware(toolbox)],
+        )
+
+
+class CollectorTapAvailabilityMiddleware(AgentMiddleware):
+    """Expose the reset tap only after merchant script verification is ready."""
+
+    def __init__(self, toolbox: CollectorToolbox) -> None:
+        self.toolbox = toolbox
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        return handler(self._prepare_model_request(request))
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+    ) -> ModelResponse:
+        return await handler(self._prepare_model_request(request))
+
+    def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
+        if self.toolbox.reset_tap_available():
+            return request
+        return request.override(
+            tools=[tool for tool in request.tools if _tool_name(tool) != "collector_tap"]
         )
 
 
@@ -181,8 +213,10 @@ class CollectorToolbox:
         self._last_sniff_script_fingerprint: str | None = None
         self._last_sniff_state_fingerprint = ""
         self._exposed_script_fingerprint: str | None = None
-        self._net_up_swipes = 0
         self._has_swiped = False
+        self._reset_tap_attempted = False
+        self._reset_tap_succeeded = False
+        self._reset_tap_error: Any = None
 
     def collector_uiautomate(self) -> Any:
         return self._capture_xml(self.event_hub.uiautomate())
@@ -190,16 +224,61 @@ class CollectorToolbox:
     def collector_swipe_up(self, x: int, y: int) -> Any:
         result = self._capture_xml(self.event_hub.swipe_up(x, y), after_swipe=True)
         if isinstance(result, str):
-            self._net_up_swipes += 1
             self._has_swiped = True
         return result
 
     def collector_swipe_down(self, x: int, y: int) -> Any:
         result = self._capture_xml(self.event_hub.swipe_down(x, y), after_swipe=True)
         if isinstance(result, str):
-            self._net_up_swipes = max(0, self._net_up_swipes - 1)
             self._has_swiped = True
         return result
+
+    def collector_tap(self, x: int, y: int) -> Any:
+        """Tap a same-page reset control only after final verification passes."""
+
+        if not self.requires_merchant_profile:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorTapNotApplicable",
+                    "error": "collector_tap is available only for merchant page restoration.",
+                }
+            )
+        if self._reset_tap_attempted:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorTapAlreadyUsed",
+                    "error": "collector_tap can be called at most once per collector run.",
+                }
+            )
+        verification = self.training_result()
+        if verification["ready"] is not True:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorTapLocked",
+                    "error": "collector_tap is available only after verification.ready is true.",
+                    "verification": verification,
+                }
+            )
+        self._reset_tap_attempted = True
+        result = self.event_hub.tap(x, y)
+        if isinstance(result, str):
+            self._reset_tap_succeeded = True
+            self._reset_tap_error = None
+            self._last_xml = result
+        else:
+            self._reset_tap_succeeded = False
+            self._reset_tap_error = result
+        return result
+
+    def reset_tap_available(self) -> bool:
+        return bool(
+            self.requires_merchant_profile
+            and not self._reset_tap_attempted
+            and self.training_result()["ready"] is True
+        )
 
     def save_merchant_profile(self, merchant: str) -> str:
         if self._last_xml is None:
@@ -400,36 +479,19 @@ class CollectorToolbox:
         }
 
     def restore_to_top(self) -> dict[str, Any]:
-        target_attempts = min(20, max(3, self._net_up_swipes + 2))
-        previous_fingerprint = ""
-        stable_repeats = 0
-        attempts = 0
-        last_error: Any = None
-        for _ in range(target_attempts):
-            attempts += 1
-            result = self.event_hub.swipe_down(540, 1200)
-            if not isinstance(result, str):
-                last_error = result
-                continue
-            fingerprint = _fingerprint(result)
-            if fingerprint == previous_fingerprint:
-                stable_repeats += 1
-            else:
-                stable_repeats = 0
-            previous_fingerprint = fingerprint
-            if attempts >= target_attempts and stable_repeats >= 1:
-                return {
-                    "restored": True,
-                    "attempts": attempts,
-                    "target_attempts": target_attempts,
-                    "top_state_fingerprint": fingerprint,
-                }
-        return {
-            "restored": False,
-            "attempts": attempts,
-            "target_attempts": target_attempts,
-            "error": "top_state_not_stable" if last_error is None else str(last_error),
+        result = {
+            "restored": self._reset_tap_succeeded,
+            "strategy": "reset_tap",
+            "tap_attempted": self._reset_tap_attempted,
+            "tap_succeeded": self._reset_tap_succeeded,
         }
+        if not self._reset_tap_succeeded:
+            result["error"] = (
+                "reset_tap_not_executed"
+                if not self._reset_tap_attempted
+                else str(self._reset_tap_error)
+            )
+        return result
 
     def create_tools(self) -> list[StructuredTool]:
         return [
@@ -447,6 +509,15 @@ class CollectorToolbox:
                 func=self.collector_swipe_down,
                 name="collector_swipe_down",
                 description="Scroll to a different state on the current page; cannot navigate back.",
+            ),
+            StructuredTool.from_function(
+                func=self.collector_tap,
+                name="collector_tap",
+                description=(
+                    "On a merchant page after verification.ready is true, tap one visible same-page product-tab reset "
+                    "control such as 点菜, 商品, or 全部商品 to return the merchant page to its top "
+                    "product state. Locked before final verification; never use it for navigation."
+                ),
             ),
             StructuredTool.from_function(
                 func=self.read_run_agent_py,
@@ -550,6 +621,12 @@ def _latest_text(state: Any) -> str:
     latest = messages[-1]
     content = latest.get("content") if isinstance(latest, dict) else getattr(latest, "content", None)
     return content if isinstance(content, str) else str(content or "")
+
+
+def _tool_name(tool: Any) -> str:
+    if isinstance(tool, Mapping):
+        return str(tool.get("name") or tool.get("function", {}).get("name") or "")
+    return str(getattr(tool, "name", "") or "")
 
 
 def _escape_text(value: Any) -> str:

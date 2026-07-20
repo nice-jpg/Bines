@@ -56,6 +56,16 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertLess(tool_names.index("think"), tool_names.index("tap_in_page"))
 
         schemas = {tool.name: tool.tool_call_schema.model_json_schema() for tool in collect_conductor_tools()}
+        for tool_name in ("run_package", "close_package"):
+            schema = schemas[tool_name]
+            self.assertEqual(set(schema["properties"]), {"package_name", "justification"})
+            self.assertEqual(set(schema["required"]), {"package_name", "justification"})
+            justification = schema["$defs"]["DangerousActionJustification"]
+            self.assertEqual(
+                set(justification["required"]),
+                {"reason", "evidence", "expected_outcome", "risk_acknowledged"},
+            )
+            self.assertTrue(justification["properties"]["risk_acknowledged"]["const"])
         self.assertEqual(set(schemas["navigate_to"]["properties"]), {"x", "y", "next_path"})
         self.assertEqual(set(schemas["navigate_back"]["properties"]), {"next_path"})
         self.assertNotIn("runtime", schemas["navigate_to"]["properties"])

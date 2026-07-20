@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sys
 import unittest
 from pathlib import Path
@@ -7,7 +8,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from device.results import make_error_result
-from tools.event_hub import EventHub
+from tools.event_hub import EventHub, create_event_hub_tools
+from tools.tool_decorators import dangerous_policy_for, is_xy_operation
 
 
 class FakeLogger:
@@ -46,6 +48,14 @@ class FakeDevice:
 
 
 class EventHubTests(unittest.TestCase):
+    def test_event_hub_methods_declare_tool_behavior_with_decorators(self) -> None:
+        self.assertTrue(is_xy_operation(EventHub.tap))
+        self.assertTrue(is_xy_operation(EventHub.swipe_up))
+        self.assertTrue(is_xy_operation(EventHub.swipe_down))
+        self.assertIsNotNone(dangerous_policy_for(EventHub.run_package))
+        self.assertIsNotNone(dangerous_policy_for(EventHub.close_package))
+        self.assertIsNone(dangerous_policy_for(EventHub.uiautomate))
+
     def test_touch_action_returns_uiautomate_result_after_success(self) -> None:
         logger = FakeLogger()
         sleeper = FakeSleeper()
@@ -107,6 +117,34 @@ class EventHubTests(unittest.TestCase):
 
         self.assertEqual(result, "")
         self.assertEqual(hub.device.calls, [("close_package", "com.sankuai.meituan")])
+
+    def test_dangerous_tool_wrapper_consumes_justification_before_event_hub(self) -> None:
+        calls = []
+        fake_hub = type(
+            "FakeHub",
+            (),
+            {"run_package": lambda _self, package_name: calls.append(package_name) or "started"},
+        )()
+        tool = create_event_hub_tools(fake_hub, tool_names=("run_package",))[0]
+
+        result = tool.invoke(
+            {
+                "package_name": "com.sankuai.meituan",
+                "justification": {
+                    "reason": "Run the configured probe.",
+                    "evidence": "The requested application is not running.",
+                    "expected_outcome": "The home page opens.",
+                    "risk_acknowledged": True,
+                },
+            }
+        )
+
+        self.assertEqual(result, "started")
+        self.assertEqual(calls, ["com.sankuai.meituan"])
+        self.assertEqual(
+            list(inspect.signature(EventHub.run_package).parameters),
+            ["self", "package_name"],
+        )
 
 
 if __name__ == "__main__":

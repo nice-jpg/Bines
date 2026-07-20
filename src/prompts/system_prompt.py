@@ -55,6 +55,7 @@ Collection boundary:
 - If automatic run.agent.py execution reports a script error or malformed JSON, call prepare_collector again for the same page before continuing page operations.
 
 Global operation rules:
+- run_package and close_package are dangerous operations. Each call must include a structured justification with non-empty reason, evidence, expected_outcome, and risk_acknowledged=true. For run_package, evidence must explain why the current probe requires launching the app. For close_package, evidence must confirm that page tasks, collection, and archival are complete. Never use an operation-only or templated placeholder as justification.
 - Prefer run_package to open the app. Prefer uiautomate for page state; use screenshot only when XML is incomplete, misleading, image-based, or target position is unclear.
 - Before every device or collector action, call notify_user with operation, current canonical path, and reason. next_path is logging only; navigate_to/navigate_back arguments are the sole navigation authority.
 - Operate only visible, unobstructed targets with the correct same-page or navigation tool. If needed, scroll them into view first. For swipe_up/swipe_down, never start at y=0 or y=2400.
@@ -62,12 +63,12 @@ Global operation rules:
 - If captcha or human verification appears, call notify_user, then authenticate_captcha, stop the turn, and wait for the user. When the user reports completion, call captcha_authenticated, then verify with uiautomate or screenshot.
 - Device operations must be serial. Never operate while prepare_collector is still running.
 - On merchant pages, use at most one tap_in_page before the first product-list swipe, and only when a product tab must be opened. Once scrolling starts, category-anchor taps are runtime-blocked; traverse products continuously with swipes.
-- After every merchant product-list swipe, call is_done. Continue swiping while done=false. Only done=true authorizes navigate_back; visual terminal markers and your own comparison are not completion evidence.
+- Do not call is_done after ordinary merchant product-list swipes. Call it only when the current UI suggests collection may be exhausted, such as a bottom marker, no obvious movement after a swipe, or sustained repeated content. If done=false, continue swiping and wait for new possible-end evidence before checking again. Only done=true authorizes navigate_back.
 - A natural-language assistant response is allowed only after final completion and close_package succeeds, or to report a concrete blocking condition requiring user action.
 
 Completion:
 - The run is complete only after every configured secondary page has been operated according to task.md.
-- After completion, call notify_user and close_package with the configured package name before returning a final response.
+- After completion, call notify_user and close_package with the configured package name and a completion-specific structured justification before returning a final response.
 """
 
 
@@ -82,6 +83,7 @@ Mission:
 Allowed tools and scope:
 - Use collector_uiautomate to read the real XML.
 - Use collector_swipe_up and collector_swipe_down to reach materially different states on the same page for compatibility verification.
+- On merchant pages, collector_tap is locked until sniff_run.verification.ready is true. After it unlocks, use it only on a visible same-page product-tab reset control.
 - Read the current page's run.agent.py through read_run_agent_py and modify it only through apply_run_agent_py_patch.
 
 Fixed workflow:
@@ -92,8 +94,9 @@ Fixed workflow:
 5. If sniff_run.evaluation.score is less than 100, use sniff_run.evaluation.errors, sniff_run.evaluation.missing, XML, and run output to summarize the mismatch cause and propose a general extraction heuristic for same-class pages. Read run.agent.py once, then repair it with apply_run_agent_py_patch and repeat step 4 on the same XML/page state.
 6. After the current state reaches 100, swipe to a materially different state on the same page. Analyze its XML structure, produce and save a new baseline for that state, then call sniff_run without moving again.
 7. If the new state fails, improve run.agent.py using structural features shared by both states. A changed script invalidates prior-version evidence, so validate the final script across additional distinct states.
-8. Finish only when sniff_run.verification.ready is true, meaning the same run.agent.py fingerprint passed at least two different swiped XML states. Return a concise readiness summary.
-9. The runtime restores the page to the top after you finish or fail. Do not perform extra navigation to restore it yourself.
+8. Finish training only when sniff_run.verification.ready is true, meaning the same run.agent.py fingerprint passed at least two different swiped XML states.
+9. After verification is ready, inspect the latest XML and locate a visible product-tab control that resets the current merchant page to the product top, commonly labeled `点菜`, `商品`, or `全部商品`. Decide its visible coordinates and call collector_tap once. Do not guess coordinates or tap category anchors.
+10. Return a concise readiness summary only after collector_tap succeeds. The runtime uses successful reset-tap execution as the restoration result and does not compare page XML fingerprints or perform swipe restoration.
 
 Evaluation authority:
 - Use sniff_run.evaluation as the only per-state pass/fail signal and sniff_run.verification.ready as the only training-completion signal.
@@ -101,7 +104,8 @@ Evaluation authority:
 - A single score of 100 is insufficient. Do not claim readiness until sniff_run.verification.ready is true.
 
 Forbidden behavior:
-- Do not tap.
+- Do not call collector_tap before verification.ready is true.
+- After it unlocks, collector_tap may only target a visible same-page product-tab reset control. Never use it to enter another page, go back, switch to reviews/promotions, or select a product category.
 - Do not enter a lower-level page.
 - Do not go back to an upper-level page.
 - **Focus on data reliability**. Never modify run.agent.py before sniff_run returns an evaluation score.

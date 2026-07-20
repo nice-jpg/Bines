@@ -7,7 +7,12 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from collector import CollectorManager, CollectorToolbox, create_collector_tools
+from collector import (
+    CollectorManager,
+    CollectorTapAvailabilityMiddleware,
+    CollectorToolbox,
+    create_collector_tools,
+)
 from device.results import make_error_result
 from page_mechanism import PageMechanism
 
@@ -29,6 +34,10 @@ class FakeEventHub:
         self.calls.append(("swipe_down", x, y))
         return self.xml
 
+    def tap(self, x, y):
+        self.calls.append(("tap", x, y))
+        return self.xml
+
 
 def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
@@ -46,6 +55,7 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
         "collector_uiautomate",
         "collector_swipe_up",
         "collector_swipe_down",
+        "collector_tap",
         "read_run_agent_py",
         "apply_run_agent_py_patch",
         "sniff_run",
@@ -327,19 +337,21 @@ def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Pa
             captured["payload"] = payload
             captured["config"] = config
             self.tools["collector_uiautomate"].func()
+            self.tools["save_merchant_profile"].func('{"name": "商家A"}')
             self.tools["save_baseline"].func('{"items": [{"name": "cup"}]}')
             self.tools["sniff_run"].func()
             self.tools["collector_swipe_up"].func(100, 1000)
             self.tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
             self.tools["sniff_run"].func()
+            self.tools["collector_tap"].func(500, 300)
             return {"messages": [{"role": "assistant", "content": "Ready. Score 100."}]}
 
     def create_agent(**kwargs):
         captured["kwargs"] = kwargs
         return FakeAgent(kwargs["tools"])
 
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
+    page_dir = tmp_path / "meituan" / "美食" / "商家"
+    page_dir.mkdir(parents=True)
     (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
     (page_dir / "task.md").write_text("task", encoding="utf-8")
     (page_dir / "run.agent.py").write_text(
@@ -358,12 +370,15 @@ def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Pa
     )
     result = json.loads(
         manager.prepare_collector(
-            page_path="meituan",
-            page_description="home page",
-            merchant_schema="{}",
+            page_path="meituan/美食/商家",
+            page_description="merchant page",
+            merchant_schema='{"name": ""}',
             collection_schema='{"items": [{"name": ""}]}',
             runtime=SimpleNamespace(
-                state={"page_context_path": "meituan", "page_visit_id": "visit-home"}
+                state={
+                    "page_context_path": "meituan/美食/商家",
+                    "page_visit_id": "visit-merchant",
+                }
             ),
         )
     )
@@ -373,11 +388,11 @@ def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Pa
     assert result["trained"] is True
     assert result["verification"]["ready"] is True
     assert result["verification"]["validated_states"] == 2
-    assert manager.training_registry.is_trained("visit-home", "meituan") is True
+    assert manager.training_registry.is_trained("visit-merchant", "meituan/美食/商家") is True
     assert result["restoration"]["restored"] is True
     assert captured["kwargs"]["name"] == "collector"
     assert captured["config"]["recursion_limit"] == 80
-    assert "home page" in captured["payload"]["messages"][0]["content"]
+    assert "merchant page" in captured["payload"]["messages"][0]["content"]
 
 
 def test_prepare_collector_final_ai_claim_cannot_mark_script_trained() -> None:
@@ -457,7 +472,7 @@ def test_merchant_profile_is_required_but_not_part_of_item_scoring(tmp_path: Pat
     assert second["verification"]["ready"] is True
 
 
-def test_restore_to_top_uses_down_swipes_without_changing_verification(tmp_path: Path) -> None:
+def test_restore_to_top_requires_successful_reset_tap_without_device_checks(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
     (page_dir / "run.agent.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
@@ -471,10 +486,129 @@ def test_restore_to_top_uses_down_swipes_without_changing_verification(tmp_path:
 
     restoration = toolbox.restore_to_top()
 
-    assert restoration["restored"] is True
-    assert restoration["attempts"] >= 3
-    assert [call[0] for call in event_hub.calls] == ["swipe_down"] * restoration["attempts"]
+    assert restoration == {
+        "restored": False,
+        "strategy": "reset_tap",
+        "tap_attempted": False,
+        "tap_succeeded": False,
+        "error": "reset_tap_not_executed",
+    }
+    assert event_hub.calls == []
     assert toolbox.training_result() == before
+
+
+def test_collector_tap_is_locked_until_multi_state_verification_is_ready(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan" / "美食" / "商家"
+    page_dir.mkdir(parents=True)
+    (page_dir / "run.agent.py").write_text(
+        "from xml.etree import ElementTree as ET\n"
+        "def run(xml: str):\n"
+        "    name = ET.fromstring(xml).find('n').attrib['t']\n"
+        "    return {'items': [{'name': name}]}\n",
+        encoding="utf-8",
+    )
+    event_hub = FakeEventHub()
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=event_hub,
+        page_path="meituan/美食/商家",
+        merchant_schema='{"name": ""}',
+        collection_schema='{"items": [{"name": ""}]}',
+        requires_merchant_profile=True,
+    )
+
+    locked = json.loads(toolbox.collector_tap(500, 300))
+    toolbox.collector_uiautomate()
+    toolbox.save_merchant_profile('{"name": "商家A"}')
+    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
+    toolbox.sniff_run()
+    toolbox.collector_swipe_up(100, 1000)
+    event_hub.xml = '<h><n t="bowl"/></h>'
+    toolbox.collector_uiautomate()
+    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
+    toolbox.sniff_run()
+    tapped = toolbox.collector_tap(500, 300)
+    repeated = json.loads(toolbox.collector_tap(500, 300))
+    restoration = toolbox.restore_to_top()
+
+    assert locked["ok"] is False
+    assert locked["error_type"] == "CollectorTapLocked"
+    assert event_hub.calls[-1][0] == "tap"
+    assert isinstance(tapped, str)
+    assert repeated["error_type"] == "CollectorTapAlreadyUsed"
+    assert restoration["restored"] is True
+    assert restoration["strategy"] == "reset_tap"
+    assert restoration["tap_succeeded"] is True
+    assert "top_state_fingerprint" not in restoration
+
+
+def test_collector_tap_becomes_model_visible_only_after_verification_ready(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan" / "美食" / "商家"
+    page_dir.mkdir(parents=True)
+    (page_dir / "run.agent.py").write_text(
+        "from xml.etree import ElementTree as ET\n"
+        "def run(xml: str):\n"
+        "    name = ET.fromstring(xml).find('n').attrib['t']\n"
+        "    return {'items': [{'name': name}]}\n",
+        encoding="utf-8",
+    )
+    event_hub = FakeEventHub()
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=event_hub,
+        page_path="meituan/美食/商家",
+        merchant_schema='{"name": ""}',
+        collection_schema='{"items": [{"name": ""}]}',
+        requires_merchant_profile=True,
+    )
+    middleware = CollectorTapAvailabilityMiddleware(toolbox)
+
+    class Request:
+        def __init__(self, tools):
+            self.tools = tools
+
+        def override(self, **changes):
+            return Request(changes.get("tools", self.tools))
+
+    request = Request(toolbox.create_tools())
+    before = middleware._prepare_model_request(request)
+    toolbox.collector_uiautomate()
+    toolbox.save_merchant_profile('{"name": "商家A"}')
+    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
+    toolbox.sniff_run()
+    toolbox.collector_swipe_up(100, 1000)
+    event_hub.xml = '<h><n t="bowl"/></h>'
+    toolbox.collector_uiautomate()
+    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
+    toolbox.sniff_run()
+    after = middleware._prepare_model_request(request)
+    toolbox.collector_tap(500, 300)
+    after_tap = middleware._prepare_model_request(request)
+
+    assert "collector_tap" not in [tool.name for tool in before.tools]
+    assert "collector_tap" in [tool.name for tool in after.tools]
+    assert "collector_tap" not in [tool.name for tool in after_tap.tools]
+
+
+def test_collector_tap_is_not_available_on_non_merchant_pages(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml: str):\n    return {'items': []}\n",
+        encoding="utf-8",
+    )
+    event_hub = FakeEventHub()
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=event_hub,
+        page_path="meituan",
+    )
+
+    result = json.loads(toolbox.collector_tap(500, 300))
+
+    assert result["ok"] is False
+    assert result["error_type"] == "CollectorTapNotApplicable"
+    assert event_hub.calls == []
 
 
 def test_merchant_profile_cannot_be_saved_after_scrolling(tmp_path: Path) -> None:
@@ -527,8 +661,8 @@ def test_restore_failure_prevents_training_completion(tmp_path: Path) -> None:
             self.xml = '<h><n t="bowl"/></h>'
             return super().swipe_up(x, y)
 
-        def swipe_down(self, x, y):
-            self.calls.append(("swipe_down", x, y))
+        def tap(self, x, y):
+            self.calls.append(("tap", x, y))
             return make_error_result("command_error", "cannot restore")
 
     class FakeAgent:
@@ -537,15 +671,17 @@ def test_restore_failure_prevents_training_completion(tmp_path: Path) -> None:
 
         def invoke(self, payload, config=None):
             self.tools["collector_uiautomate"].func()
+            self.tools["save_merchant_profile"].func('{"name": "商家A"}')
             self.tools["save_baseline"].func('{"items": [{"name": "cup"}]}')
             self.tools["sniff_run"].func()
             self.tools["collector_swipe_up"].func(100, 1000)
             self.tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
             self.tools["sniff_run"].func()
+            self.tools["collector_tap"].func(500, 300)
             return {"messages": [{"role": "assistant", "content": "ready"}]}
 
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
+    page_dir = tmp_path / "meituan" / "美食" / "商家"
+    page_dir.mkdir(parents=True)
     (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
     (page_dir / "task.md").write_text("task", encoding="utf-8")
     (page_dir / "run.agent.py").write_text(
@@ -563,17 +699,24 @@ def test_restore_failure_prevents_training_completion(tmp_path: Path) -> None:
 
     result = json.loads(
         manager.prepare_collector(
-            page_path="meituan",
-            page_description="home",
-            merchant_schema="{}",
+            page_path="meituan/美食/商家",
+            page_description="merchant",
+            merchant_schema='{"name": ""}',
             collection_schema='{"items": [{"name": ""}]}',
             runtime=SimpleNamespace(
-                state={"page_context_path": "meituan", "page_visit_id": "visit-restore-error"}
+                state={
+                    "page_context_path": "meituan/美食/商家",
+                    "page_visit_id": "visit-restore-error",
+                }
             ),
         )
     )
 
     assert result["verification"]["ready"] is True
     assert result["restoration"]["restored"] is False
+    assert result["restoration"]["tap_attempted"] is True
+    assert result["restoration"]["tap_succeeded"] is False
     assert result["trained"] is False
-    assert manager.training_registry.is_trained("visit-restore-error", "meituan") is False
+    assert manager.training_registry.is_trained(
+        "visit-restore-error", "meituan/美食/商家"
+    ) is False
