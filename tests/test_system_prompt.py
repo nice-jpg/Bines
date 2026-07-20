@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prompts import COLLECTOR_PROMPT, RUN_PY_PATCH_GRAMMAR, SYSTEM_PROMPT
+from prompts import COLLECTOR_PROMPT, RUN_AGENT_PY_PATCH_GRAMMAR, SYSTEM_PROMPT
 
 
 class SystemPromptTests(unittest.TestCase):
@@ -32,7 +32,7 @@ class SystemPromptTests(unittest.TestCase):
 
     def test_conductor_prompt_forbids_direct_collection(self) -> None:
         self.assertIn("Do not collect merchant/product fields directly", SYSTEM_PROMPT)
-        self.assertIn("Do not edit run.py", SYSTEM_PROMPT)
+        self.assertIn("Do not edit run.agent.py", SYSTEM_PROMPT)
         self.assertIn("transparent automatic collection", SYSTEM_PROMPT)
         self.assertIn("must not extract information yourself", SYSTEM_PROMPT)
 
@@ -40,20 +40,20 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Keep your own context", COLLECTOR_PROMPT)
         self.assertIn("collector_uiautomate", COLLECTOR_PROMPT)
         self.assertIn("collector_swipe_up", COLLECTOR_PROMPT)
-        self.assertIn("modify it only through apply_run_py_patch", COLLECTOR_PROMPT)
-        self.assertNotIn("write_run_py", COLLECTOR_PROMPT)
-        self.assertIn("Never replace the full run.py", COLLECTOR_PROMPT)
+        self.assertIn("modify it only through apply_run_agent_py_patch", COLLECTOR_PROMPT)
+        self.assertNotIn("write_run_agent_py", COLLECTOR_PROMPT)
+        self.assertIn("Never replace the full run.agent.py", COLLECTOR_PROMPT)
         self.assertIn("Patch input grammar:", COLLECTOR_PROMPT)
-        self.assertIn(RUN_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)
+        self.assertIn(RUN_AGENT_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)
         self.assertIn("start: begin_patch update_hunk+ end_patch", COLLECTOR_PROMPT)
         self.assertIn('change_line: ("+" | "-" | " ") /(.*)/ LF', COLLECTOR_PROMPT)
-        self.assertIn("exactly one update_hunk with filename `run.py`", COLLECTOR_PROMPT)
+        self.assertIn("exactly one update_hunk with filename `run.agent.py`", COLLECTOR_PROMPT)
         self.assertIn("Call save_baseline immediately after producing baseline r1", COLLECTOR_PROMPT)
         self.assertIn("sniff_run.evaluation as the only per-state pass/fail signal", COLLECTOR_PROMPT)
         self.assertIn("sniff_run.verification.ready is true", COLLECTOR_PROMPT)
         self.assertIn("Do not decide pass/fail yourself", COLLECTOR_PROMPT)
         self.assertIn("only training-completion signal", COLLECTOR_PROMPT)
-        self.assertIn("same run.py fingerprint passed at least two different swiped XML states", COLLECTOR_PROMPT)
+        self.assertIn("same run.agent.py fingerprint passed at least two different swiped XML states", COLLECTOR_PROMPT)
         self.assertIn("Do not evade a bad score by scrolling away", COLLECTOR_PROMPT)
         self.assertIn("general extraction heuristic for same-class pages", COLLECTOR_PROMPT)
         self.assertIn("Define run(xml: str) -> dict", COLLECTOR_PROMPT)

@@ -1,4 +1,4 @@
-"""Page mechanism loading, page-local run.py execution, and evaluation."""
+"""Page mechanism loading, page-local run.agent.py execution, and evaluation."""
 
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ from codex_apply_patch import apply_patch_in_memory, parse_patch
 
 
 PAGE_MECHANISM_DIR = Path(__file__).resolve().parent / "prompts" / "page_mechanism"
-RUN_PY_PATCH_DESCRIPTION_RE = re.compile(r"UpdateFile: run\.py \([1-9]\d* chunks\)")
+RUN_AGENT_PY_PATCH_DESCRIPTION_RE = re.compile(
+    r"UpdateFile: run\.agent\.py \([1-9]\d* chunks\)"
+)
 
 
 @dataclass(frozen=True)
@@ -116,42 +118,42 @@ class PageMechanism:
             )
         return canonical_path
 
-    def read_run_py(self, current_path: str) -> str:
-        snapshot = self.read_run_py_snapshot(current_path)
+    def read_run_agent_py(self, current_path: str) -> str:
+        snapshot = self.read_run_agent_py_snapshot(current_path)
         if snapshot["ok"] is True:
             return str(snapshot["content"])
         return self._error_block(
-            "run_py_error",
+            "run_agent_py_error",
             current_path,
             str(snapshot["canonical_path"]),
             str(snapshot["error"]),
         )
 
-    def read_run_py_snapshot(self, current_path: str) -> dict[str, Any]:
-        """Read run.py with a structured error contract for internal tools."""
+    def read_run_agent_py_snapshot(self, current_path: str) -> dict[str, Any]:
+        """Read run.agent.py with a structured error contract for internal tools."""
 
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
             return {
                 "ok": False,
                 "canonical_path": canonical_path,
-                "error_type": "RunPyPathError",
+                "error_type": "RunAgentPyPathError",
                 "error": error,
             }
-        run_path = (page_dir / "run.py").resolve()
+        run_path = (page_dir / "run.agent.py").resolve()
         if not self._is_relative_to(run_path):
             return {
                 "ok": False,
                 "canonical_path": canonical_path,
-                "error_type": "RunPyPathError",
-                "error": "run.py path escapes page root.",
+                "error_type": "RunAgentPyPathError",
+                "error": "run.agent.py path escapes page root.",
             }
         if not run_path.is_file():
             return {
                 "ok": False,
                 "canonical_path": canonical_path,
-                "error_type": "MissingRunPy",
-                "error": "run.py was not found.",
+                "error_type": "MissingRunAgentPy",
+                "error": "run.agent.py was not found.",
             }
         return {
             "ok": True,
@@ -160,14 +162,19 @@ class PageMechanism:
             "content": run_path.read_text(encoding="utf-8"),
         }
 
-    def write_run_py(self, current_path: str, content: str) -> str:
+    def write_run_agent_py(self, current_path: str, content: str) -> str:
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
-            return self._error_block("run_py_error", current_path, canonical_path, error)
+            return self._error_block("run_agent_py_error", current_path, canonical_path, error)
         page_dir.mkdir(parents=True, exist_ok=True)
-        run_path = (page_dir / "run.py").resolve()
+        run_path = (page_dir / "run.agent.py").resolve()
         if not self._is_relative_to(run_path):
-            return self._error_block("run_py_error", current_path, canonical_path, "run.py path escapes page root.")
+            return self._error_block(
+                "run_agent_py_error",
+                current_path,
+                canonical_path,
+                "run.agent.py path escapes page root.",
+            )
         run_path.write_text(str(content), encoding="utf-8")
         return json.dumps(
             {"ok": True, "canonical_path": canonical_path, "path": run_path.relative_to(self.root).as_posix()},
@@ -175,17 +182,17 @@ class PageMechanism:
             sort_keys=True,
         )
 
-    def apply_run_py_patch(self, current_path: str, patch: str) -> str:
-        """Apply one context patch to run.py after in-memory validation."""
+    def apply_run_agent_py_patch(self, current_path: str, patch: str) -> str:
+        """Apply one context patch to run.agent.py after in-memory validation."""
 
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
             return _patch_error("PatchScopeError", error, canonical_path)
-        run_path = (page_dir / "run.py").resolve()
+        run_path = (page_dir / "run.agent.py").resolve()
         if not self._is_relative_to(run_path) or not run_path.is_file():
             return _patch_error(
                 "PatchScopeError",
-                "The current page must contain an existing run.py.",
+                "The current page must contain an existing run.agent.py.",
                 canonical_path,
             )
 
@@ -203,38 +210,38 @@ class PageMechanism:
                 )
             if (
                 len(descriptions) != 1
-                or RUN_PY_PATCH_DESCRIPTION_RE.fullmatch(descriptions[0]) is None
+                or RUN_AGENT_PY_PATCH_DESCRIPTION_RE.fullmatch(descriptions[0]) is None
             ):
                 return _patch_error(
                     "PatchScopeError",
-                    "The patch must contain exactly one Update File operation for run.py without add, delete, or move.",
+                    "The patch must contain exactly one Update File operation for run.agent.py without add, delete, or move.",
                     canonical_path,
                     script_fingerprint=current_fingerprint,
                 )
 
             try:
-                result = apply_patch_in_memory(str(patch), {"run.py": current_content})
+                result = apply_patch_in_memory(str(patch), {"run.agent.py": current_content})
             except Exception:  # noqa: BLE001 - 0.4.0 emits an empty RuntimeError for context conflicts.
                 return _patch_error(
                     "PatchConflict",
-                    "Patch context does not match the current run.py.",
+                    "Patch context does not match the current run.agent.py.",
                     canonical_path,
                     script_fingerprint=current_fingerprint,
                 )
             if (
                 result.added
                 or result.deleted
-                or result.modified != ["run.py"]
-                or set(result.files) != {"run.py"}
+                or result.modified != ["run.agent.py"]
+                or set(result.files) != {"run.agent.py"}
             ):
                 return _patch_error(
                     "PatchResultError",
-                    "The patch engine returned changes outside run.py.",
+                    "The patch engine returned changes outside run.agent.py.",
                     canonical_path,
                     script_fingerprint=current_fingerprint,
                 )
 
-            updated_content = result.files["run.py"]
+            updated_content = result.files["run.agent.py"]
             try:
                 compile(updated_content, str(run_path), "exec")
             except SyntaxError as exc:
@@ -254,7 +261,7 @@ class PageMechanism:
                     encoding="utf-8",
                     newline="",
                     dir=page_dir,
-                    prefix=".run.py.",
+                    prefix=".run.agent.py.",
                     suffix=".tmp",
                     delete=False,
                 ) as temp_file:
@@ -299,15 +306,15 @@ class PageMechanism:
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
             return _script_error("page_path_error", error, canonical_path=canonical_path)
-        run_path = page_dir / "run.py"
+        run_path = page_dir / "run.agent.py"
         if not run_path.is_file():
-            return _script_error("missing_run_py", "run.py was not found.", canonical_path=canonical_path)
+            return _script_error("missing_run_agent_py", "run.agent.py was not found.", canonical_path=canonical_path)
 
         try:
             module = _load_run_module(run_path)
             run = getattr(module, "run", None)
             if not callable(run):
-                return _script_error("missing_run_function", "run.py must define run(xml).", canonical_path=canonical_path)
+                return _script_error("missing_run_function", "run.agent.py must define run(xml).", canonical_path=canonical_path)
             output = run(xml)
             _assert_json_object(output)
         except Exception as exc:  # noqa: BLE001 - script failures are repair signals for collector.
@@ -519,7 +526,7 @@ def eval_collection(r1: Any, r2: Any) -> dict[str, Any]:
 def _load_run_module(path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location(f"_page_run_{abs(hash(path))}", path)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Unable to load run.py: {path}")
+        raise RuntimeError(f"Unable to load run.agent.py: {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -527,7 +534,7 @@ def _load_run_module(path: Path) -> ModuleType:
 
 def _assert_json_object(value: Any) -> None:
     if not isinstance(value, dict):
-        raise TypeError("run.py must return a dict.")
+        raise TypeError("run.agent.py must return a dict.")
     json.dumps(value, ensure_ascii=False)
 
 

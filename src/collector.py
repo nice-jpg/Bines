@@ -47,7 +47,7 @@ class CollectorManager:
         collection_schema: str,
         runtime: ToolRuntime,
     ) -> str:
-        """Delegate run.py preparation to an isolated collector."""
+        """Delegate run.agent.py preparation to an isolated collector."""
 
         runtime_state = runtime.state if isinstance(runtime.state, Mapping) else {}
         current_path = str(runtime_state.get("page_context_path") or "")
@@ -84,9 +84,9 @@ class CollectorManager:
                 "3. Scroll only if needed to find a suitable same-page item collection region before baseline creation.",
                 "4. Produce r1 matching collection_schema directly from the current XML and call save_baseline.",
                 "5. Call sniff_run without changing page state to get r2 and deterministic evaluation.",
-                "6. If the score is below 100, repair run.py for the current XML before moving the page.",
+                "6. If the score is below 100, repair run.agent.py for the current XML before moving the page.",
                 "7. After the state passes, swipe to a materially different state, save its baseline, and verify again.",
-                "8. Continue until sniff_run.verification.ready is true for the same run.py version.",
+                "8. Continue until sniff_run.verification.ready is true for the same run.agent.py version.",
                 "</workflow>",
                 "</collector_assignment>",
             ]
@@ -241,8 +241,8 @@ class CollectorToolbox:
     def merchant_profile(self) -> dict[str, Any]:
         return dict(self._merchant_profile)
 
-    def read_run_py(self) -> str:
-        snapshot = self.mechanism.read_run_py_snapshot(self.page_path)
+    def read_run_agent_py(self) -> str:
+        snapshot = self.mechanism.read_run_agent_py_snapshot(self.page_path)
         if snapshot["ok"] is not True:
             return _json_result(snapshot)
         content = str(snapshot["content"])
@@ -262,8 +262,8 @@ class CollectorToolbox:
             self._exposed_script_fingerprint = fingerprint
         return _json_result(result)
 
-    def apply_run_py_patch(self, patch: str) -> str:
-        result = self.mechanism.apply_run_py_patch(self.page_path, patch)
+    def apply_run_agent_py_patch(self, patch: str) -> str:
+        result = self.mechanism.apply_run_agent_py_patch(self.page_path, patch)
         payload = json.loads(result)
         if payload.get("ok") is True:
             self._exposed_script_fingerprint = str(payload["script_fingerprint"])
@@ -449,23 +449,23 @@ class CollectorToolbox:
                 description="Scroll to a different state on the current page; cannot navigate back.",
             ),
             StructuredTool.from_function(
-                func=self.read_run_py,
-                name="read_run_py",
-                description="Read the current page's run.py.",
+                func=self.read_run_agent_py,
+                name="read_run_agent_py",
+                description="Read the current page's run.agent.py.",
             ),
             StructuredTool.from_function(
-                func=self.apply_run_py_patch,
-                name="apply_run_py_patch",
+                func=self.apply_run_agent_py_patch,
+                name="apply_run_agent_py_patch",
                 description=(
-                    "Incrementally update run.py with a patch matching the grammar in the collector system prompt. "
-                    "It must contain exactly one update_hunk named run.py and no add, delete, move, or other file."
+                    "Incrementally update run.agent.py with a patch matching the grammar in the collector system prompt. "
+                    "It must contain exactly one update_hunk named run.agent.py and no add, delete, move, or other file."
                 ),
             ),
             StructuredTool.from_function(
                 func=self.sniff_run,
                 name="sniff_run",
                 description=(
-                    "Capture unchanged current XML, run run.py, compare against the baseline bound to that XML, "
+                    "Capture unchanged current XML, run run.agent.py, compare against the baseline bound to that XML, "
                     "and return deterministic evaluation plus multi-state verification status."
                 ),
             ),
@@ -495,7 +495,7 @@ class CollectorToolbox:
         return result
 
     def _script_fingerprint(self) -> str:
-        return _fingerprint(self.mechanism.read_run_py(self.page_path))
+        return _fingerprint(self.mechanism.read_run_agent_py(self.page_path))
 
     def _record_evaluation(
         self,

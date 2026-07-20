@@ -33,7 +33,7 @@ def _tool_message(tool_name: str, content: str = "cup") -> ToolMessage:
 def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, CollectorTrainingRegistry, Path]:
     page_dir = tmp_path / "pages" / "meituan" / "美食" / "商家"
     page_dir.mkdir(parents=True)
-    (page_dir / "run.py").write_text(
+    (page_dir / "run.agent.py").write_text(
         "def run(xml: str):\n"
         "    return {\n"
         "        'items': [{'name': xml, 'price': '10'}],\n"
@@ -159,7 +159,7 @@ def test_wrap_tool_call_uses_tool_call_name_not_result_content_to_trigger(tmp_pa
 def test_wrap_tool_call_returns_structured_collection_error_without_persisting(tmp_path: Path) -> None:
     page_dir = tmp_path / "pages" / "meituan" / "美食" / "商家"
     page_dir.mkdir(parents=True)
-    (page_dir / "run.py").write_text("def run(xml: str):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    raise ValueError('bad parse')\n", encoding="utf-8")
     mechanism = PageMechanism(tmp_path / "pages")
     registry = CollectorTrainingRegistry()
     _mark_trained(registry)

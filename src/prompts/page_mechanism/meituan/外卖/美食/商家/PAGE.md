@@ -34,7 +34,7 @@
 }
 ```
 
-The collector saves this profile from the initial top-of-page XML. It is not returned by `run.py` and is not part of item extraction scoring.
+The collector saves this profile from the initial top-of-page XML. It is not returned by `run.agent.py` and is not part of item extraction scoring.
 
 ## Collection Schema
 ```json

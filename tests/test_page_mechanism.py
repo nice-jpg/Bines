@@ -30,16 +30,16 @@ def test_query_page_and_task_docs_are_separate(tmp_path: Path) -> None:
     assert "page structure" not in task
 
 
-def test_run_py_is_page_scoped_and_rejects_path_escape(tmp_path: Path) -> None:
+def test_run_agent_py_is_page_scoped_and_rejects_path_escape(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
     mechanism = PageMechanism(tmp_path)
 
-    result = mechanism.write_run_py("meituan", "def run(xml: str):\n    return {'items': []}\n")
-    rejected = mechanism.write_run_py("../secret", "bad")
+    result = mechanism.write_run_agent_py("meituan", "def run(xml: str):\n    return {'items': []}\n")
+    rejected = mechanism.write_run_agent_py("../secret", "bad")
 
     assert json.loads(result)["ok"] is True
-    assert (page_dir / "run.py").is_file()
+    assert (page_dir / "run.agent.py").is_file()
     assert "must not contain '..'" in rejected
 
 
@@ -47,13 +47,13 @@ def test_codex_apply_patch_dependency_contract() -> None:
     assert codex_apply_patch_version == "0.4.0"
 
 
-def test_apply_run_py_patch_updates_multiple_chunks_atomically(
+def test_apply_run_agent_py_patch_updates_multiple_chunks_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    run_path = page_dir / "run.py"
+    run_path = page_dir / "run.agent.py"
     original = (
         "PREFIX = 'old'\n"
         "\n"
@@ -81,7 +81,7 @@ def test_apply_run_py_patch_updates_multiple_chunks_atomically(
 
     monkeypatch.setattr(page_mechanism_module.os, "replace", observed_replace)
     patch = """*** Begin Patch
-*** Update File: run.py
+*** Update File: run.agent.py
 @@
 -PREFIX = 'old'
 +PREFIX = 'new'
@@ -90,7 +90,7 @@ def test_apply_run_py_patch_updates_multiple_chunks_atomically(
 +    return {'items': [xml], 'source': PREFIX}
 *** End Patch"""
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["ok"] is True
     assert result["applied"] is True
@@ -104,10 +104,10 @@ def test_apply_run_py_patch_updates_multiple_chunks_atomically(
 @pytest.mark.parametrize(
     "patch",
     [
-        "*** Begin Patch\n*** Add File: run.py\n+bad\n*** End Patch",
-        "*** Begin Patch\n*** Delete File: run.py\n*** End Patch",
+        "*** Begin Patch\n*** Add File: run.agent.py\n+bad\n*** End Patch",
+        "*** Begin Patch\n*** Delete File: run.agent.py\n*** End Patch",
         (
-            "*** Begin Patch\n*** Update File: run.py\n*** Move to: moved.py\n"
+            "*** Begin Patch\n*** Update File: run.agent.py\n*** Move to: moved.py\n"
             "@@\n-def run(xml):\n+def run(xml: str):\n*** End Patch"
         ),
         (
@@ -115,26 +115,26 @@ def test_apply_run_py_patch_updates_multiple_chunks_atomically(
             "@@\n-old\n+new\n*** End Patch"
         ),
         (
-            "*** Begin Patch\n*** Update File: ../run.py\n"
+            "*** Begin Patch\n*** Update File: ../run.agent.py\n"
             "@@\n-old\n+new\n*** End Patch"
         ),
         (
-            "*** Begin Patch\n*** Update File: run.py\n@@\n-def run(xml):\n+def run(xml: str):\n"
+            "*** Begin Patch\n*** Update File: run.agent.py\n@@\n-def run(xml):\n+def run(xml: str):\n"
             "*** Update File: other.py\n@@\n-old\n+new\n*** End Patch"
         ),
     ],
 )
-def test_apply_run_py_patch_rejects_operations_outside_single_run_py(
+def test_apply_run_agent_py_patch_rejects_operations_outside_single_run_agent_py(
     tmp_path: Path,
     patch: str,
 ) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    run_path = page_dir / "run.py"
+    run_path = page_dir / "run.agent.py"
     original = "def run(xml):\n    return {'items': []}\n"
     run_path.write_text(original, encoding="utf-8")
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["ok"] is False
     assert result["applied"] is False
@@ -142,26 +142,26 @@ def test_apply_run_py_patch_rejects_operations_outside_single_run_py(
     assert run_path.read_text(encoding="utf-8") == original
 
 
-def test_apply_run_py_patch_rejects_invalid_format_conflict_and_invalid_python(tmp_path: Path) -> None:
+def test_apply_run_agent_py_patch_rejects_invalid_format_conflict_and_invalid_python(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    run_path = page_dir / "run.py"
+    run_path = page_dir / "run.agent.py"
     original = "def run(xml):\n    return {'items': []}\n"
     run_path.write_text(original, encoding="utf-8")
     mechanism = PageMechanism(tmp_path)
 
-    malformed = json.loads(mechanism.apply_run_py_patch("meituan", "not a patch"))
+    malformed = json.loads(mechanism.apply_run_agent_py_patch("meituan", "not a patch"))
     conflict = json.loads(
-        mechanism.apply_run_py_patch(
+        mechanism.apply_run_agent_py_patch(
             "meituan",
-            "*** Begin Patch\n*** Update File: run.py\n@@\n-missing\n+new\n*** End Patch",
+            "*** Begin Patch\n*** Update File: run.agent.py\n@@\n-missing\n+new\n*** End Patch",
         )
     )
     invalid_python = json.loads(
-        mechanism.apply_run_py_patch(
+        mechanism.apply_run_agent_py_patch(
             "meituan",
             (
-                "*** Begin Patch\n*** Update File: run.py\n@@\n"
+                "*** Begin Patch\n*** Update File: run.agent.py\n@@\n"
                 "-    return {'items': []}\n+    return {'items': [\n*** End Patch"
             ),
         )
@@ -169,27 +169,27 @@ def test_apply_run_py_patch_rejects_invalid_format_conflict_and_invalid_python(t
 
     assert malformed["error_type"] == "InvalidPatchFormat"
     assert conflict["error_type"] == "PatchConflict"
-    assert conflict["error"] == "Patch context does not match the current run.py."
+    assert conflict["error"] == "Patch context does not match the current run.agent.py."
     assert invalid_python["error_type"] == "InvalidPython"
     assert invalid_python["line"] == 2
     assert run_path.read_text(encoding="utf-8") == original
 
 
-def test_apply_run_py_patch_rejects_invalid_engine_result_without_writing(
+def test_apply_run_agent_py_patch_rejects_invalid_engine_result_without_writing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    run_path = page_dir / "run.py"
+    run_path = page_dir / "run.agent.py"
     original = "def run(xml):\n    return {'items': []}\n"
     run_path.write_text(original, encoding="utf-8")
 
     class InvalidResult:
         added = ["other.py"]
         deleted = []
-        modified = ["run.py"]
-        files = {"run.py": original, "other.py": "bad"}
+        modified = ["run.agent.py"]
+        files = {"run.agent.py": original, "other.py": "bad"}
 
     monkeypatch.setattr(
         page_mechanism_module,
@@ -197,23 +197,23 @@ def test_apply_run_py_patch_rejects_invalid_engine_result_without_writing(
         lambda patch, files: InvalidResult(),
     )
     patch = (
-        "*** Begin Patch\n*** Update File: run.py\n@@\n"
+        "*** Begin Patch\n*** Update File: run.agent.py\n@@\n"
         "-def run(xml):\n+def run(xml: str):\n*** End Patch"
     )
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["error_type"] == "PatchResultError"
     assert run_path.read_text(encoding="utf-8") == original
 
 
-def test_apply_run_py_patch_commit_failure_preserves_file_and_removes_temp(
+def test_apply_run_agent_py_patch_commit_failure_preserves_file_and_removes_temp(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    run_path = page_dir / "run.py"
+    run_path = page_dir / "run.agent.py"
     original = "def run(xml):\n    return {'items': []}\n"
     run_path.write_text(original, encoding="utf-8")
     monkeypatch.setattr(
@@ -222,21 +222,21 @@ def test_apply_run_py_patch_commit_failure_preserves_file_and_removes_temp(
         lambda source, destination: (_ for _ in ()).throw(OSError("commit failed")),
     )
     patch = (
-        "*** Begin Patch\n*** Update File: run.py\n@@\n"
+        "*** Begin Patch\n*** Update File: run.agent.py\n@@\n"
         "-def run(xml):\n+def run(xml: str):\n*** End Patch"
     )
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_py_patch("meituan", patch))
+    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["error_type"] == "PatchCommitError"
     assert run_path.read_text(encoding="utf-8") == original
-    assert list(page_dir.glob(".run.py.*.tmp")) == []
+    assert list(page_dir.glob(".run.agent.py.*.tmp")) == []
 
 
 def test_sniff_run_uses_only_current_xml_and_persists_latest_json_state(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text(
+    (page_dir / "run.agent.py").write_text(
         "def run(xml: str):\n"
         "    return {'items': [{'name': xml}]}\n",
         encoding="utf-8",
@@ -252,10 +252,10 @@ def test_sniff_run_uses_only_current_xml_and_persists_latest_json_state(tmp_path
     assert mechanism.state_for("meituan") == {"items": [{"name": "two"}]}
 
 
-def test_run_py_exception_returns_structured_repair_signal(tmp_path: Path) -> None:
+def test_run_agent_py_exception_returns_structured_repair_signal(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.py").write_text("def run(xml: str):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    raise ValueError('bad parse')\n", encoding="utf-8")
 
     result = json.loads(PageMechanism(tmp_path).sniff_run("meituan", "<xml/>"))
 
