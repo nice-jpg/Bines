@@ -16,6 +16,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
 
 CAPTCHA_RESUME_TEXT = "done"
+LIVENESS_RESUME_TEXT = "继续"
 
 
 class MutableNotifier:
@@ -57,7 +58,17 @@ def main() -> None:
     def on_message(message) -> None:
         notifier.set(channel.build_notifier(message.target))
         session_id = f"feishu:{message.chat_id}"
-        if message.text == CAPTCHA_RESUME_TEXT and runtime.has_pending_interrupt(session_id):
+        has_pending = getattr(runtime, "has_pending_interrupt", lambda _session_id: False)
+        if has_pending(session_id):
+            interrupt_kind_getter = getattr(runtime, "pending_interrupt_kind", lambda _session_id: "human")
+            interrupt_kind = interrupt_kind_getter(session_id)
+            expected_text = LIVENESS_RESUME_TEXT if interrupt_kind == "liveness" else CAPTCHA_RESUME_TEXT
+            if message.text != expected_text:
+                channel.send_text(
+                    message.target,
+                    f"当前任务等待恢复。请回复“{expected_text}”继续。",
+                )
+                return
             result = runtime.resume_turn(
                 session_id=session_id,
                 user_input=message.text,

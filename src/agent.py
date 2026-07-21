@@ -18,6 +18,7 @@ from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
+from langgraph.errors import GraphRecursionError
 
 try:
     from src.middleware import (
@@ -27,9 +28,13 @@ try:
         DeviceContextCompressionMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
+        ProbeLifecycleMiddleware,
+        PROBE_COMPLETED,
+        PROBE_STATUS,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
         initial_page_context_state,
+        initial_probe_state,
     )
     from src.page_mechanism import PageMechanism
     from src.tools import collect_conductor_tools
@@ -37,7 +42,7 @@ try:
     from src.tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
     from src.tools.navigation import NAVIGATION_TOOL_NAMES
     from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
-    from src.tasks import build_app_probe_messages, messages_request_app_probe
+    from src.tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from middleware import (
         CollectionPersistenceMiddleware,
@@ -46,9 +51,13 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
         DeviceContextCompressionMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
+        ProbeLifecycleMiddleware,
+        PROBE_COMPLETED,
+        PROBE_STATUS,
         ToolErrorMiddleware,
         create_captcha_human_in_the_loop_middleware,
         initial_page_context_state,
+        initial_probe_state,
     )
     from page_mechanism import PageMechanism
     from tools import collect_conductor_tools
@@ -56,7 +65,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
     from tools.navigation import NAVIGATION_TOOL_NAMES
     from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
-    from tasks import build_app_probe_messages, messages_request_app_probe
+    from tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -68,6 +77,12 @@ class AgentRunResult:
     interrupted: bool = False
     interrupts: list[Any] | None = None
     summary: list[Any] | None = None
+
+
+@dataclass(frozen=True)
+class _PendingInterrupt:
+    thread_id: str
+    kind: str
 
 
 class AgentRuntime:
@@ -86,7 +101,7 @@ class AgentRuntime:
         self.agent = build_agent(model=model, tools=self.tools, name=name)
         self.sessions: dict[str, list[Any]] = {}
         self._stateless_counter = itertools.count(1)
-        self._pending_thread_ids: dict[str, str] = {}
+        self._pending_interrupts: dict[str, _PendingInterrupt] = {}
 
     def run_turn(
         self,
@@ -110,23 +125,23 @@ class AgentRuntime:
         input_state: dict[str, Any] = {"messages": prepared_messages}
         if probe_requested:
             input_state.update(initial_page_context_state())
-        state = self.agent.invoke(
-            input_state,
-            config=_invoke_config(max_iterations, thread_id),
-        )
-        interrupts = _extract_interrupts(state)
-        if session_id and interrupts:
-            self._pending_thread_ids[session_id] = thread_id
-        elif session_id:
-            self._pending_thread_ids.pop(session_id, None)
-        if session_id and not interrupts:
-            self.sessions[session_id] = list(state.get("messages") or prepared_messages)
-        return AgentRunResult(
-            output=_latest_text(state),
-            state=state,
-            stopped_by="create_agent",
-            interrupted=bool(interrupts),
-            interrupts=interrupts,
+            input_state.update(initial_probe_state(probe_task_spec().target_leaf_paths))
+        try:
+            state = self.agent.invoke(
+                input_state,
+                config=_invoke_config(max_iterations, thread_id),
+            )
+        except GraphRecursionError:
+            return AgentRunResult(
+                output="Agent达到运行递归上限，任务状态已保留但尚未完成。",
+                state={},
+                stopped_by="recursion_limit",
+            )
+        return self._normalize_result(
+            state,
+            prepared_messages=prepared_messages,
+            session_id=session_id,
+            thread_id=thread_id,
         )
 
     def resume_turn(
@@ -140,27 +155,32 @@ class AgentRuntime:
 
         if max_iterations < 1:
             raise ValueError("max_iterations must be >= 1")
-        thread_id = self._pending_thread_ids.get(session_id)
-        if not thread_id:
+        pending = self._pending_interrupts.get(session_id)
+        if not pending:
             raise ValueError(f"No interrupted agent workflow is pending for session: {session_id}")
 
         resume_message = "Human captcha authentication completed." if user_input is None else str(user_input)
-        state = self.agent.invoke(
-            Command(resume={"decisions": [{"type": "respond", "message": resume_message}]}),
-            config=_invoke_config(max_iterations, thread_id),
+        resume_payload = (
+            {"action": "continue", "message": resume_message}
+            if pending.kind == "liveness"
+            else {"decisions": [{"type": "respond", "message": resume_message}]}
         )
-        interrupts = _extract_interrupts(state)
-        if interrupts:
-            self._pending_thread_ids[session_id] = thread_id
-        else:
-            self._pending_thread_ids.pop(session_id, None)
-            self.sessions[session_id] = list(state.get("messages") or self.sessions.get(session_id, []))
-        return AgentRunResult(
-            output=_latest_text(state),
-            state=state,
-            stopped_by="create_agent",
-            interrupted=bool(interrupts),
-            interrupts=interrupts,
+        try:
+            state = self.agent.invoke(
+                Command(resume=resume_payload),
+                config=_invoke_config(max_iterations, pending.thread_id),
+            )
+        except GraphRecursionError:
+            return AgentRunResult(
+                output="Agent达到运行递归上限，任务状态已保留但尚未完成。",
+                state={},
+                stopped_by="recursion_limit",
+            )
+        return self._normalize_result(
+            state,
+            prepared_messages=self.sessions.get(session_id, []),
+            session_id=session_id,
+            thread_id=pending.thread_id,
         )
 
     def _prepare_messages(self, turn_messages: list[Any], *, session_id: str | None) -> list[Any]:
@@ -173,7 +193,42 @@ class AgentRuntime:
         return messages
 
     def has_pending_interrupt(self, session_id: str) -> bool:
-        return session_id in self._pending_thread_ids
+        return session_id in self._pending_interrupts
+
+    def pending_interrupt_kind(self, session_id: str) -> str | None:
+        pending = self._pending_interrupts.get(session_id)
+        return pending.kind if pending is not None else None
+
+    def _normalize_result(
+        self,
+        state: Mapping[str, Any],
+        *,
+        prepared_messages: Sequence[Any],
+        session_id: str | None,
+        thread_id: str,
+    ) -> AgentRunResult:
+        interrupts = _extract_interrupts(state)
+        interrupt_kind = _interrupt_kind(interrupts)
+        if session_id and interrupts:
+            self._pending_interrupts[session_id] = _PendingInterrupt(thread_id, interrupt_kind)
+        elif session_id:
+            self._pending_interrupts.pop(session_id, None)
+            self.sessions[session_id] = list(state.get("messages") or prepared_messages)
+        stopped_by = (
+            f"{interrupt_kind}_interrupt"
+            if interrupts
+            else "completed"
+            if state.get(PROBE_STATUS) == PROBE_COMPLETED
+            else "create_agent"
+        )
+        output = _interrupt_output(interrupts) if interrupts else _latest_text(state)
+        return AgentRunResult(
+            output=output,
+            state=state,
+            stopped_by=stopped_by,
+            interrupted=bool(interrupts),
+            interrupts=interrupts,
+        )
 
     def _thread_id_for_turn(self, session_id: str | None) -> str:
         if session_id:
@@ -204,6 +259,7 @@ def build_agent(
         training_registry=collector_manager.training_registry,
         workbook_sink=workbook_sink,
     )
+    probe_lifecycle = ProbeLifecycleMiddleware(mechanism=mechanism)
     registered_tools = _with_collected_tools(
         tools,
         [
@@ -214,11 +270,13 @@ def build_agent(
                 collector_manager=collector_manager,
             ),
             *collection_persistence.create_tools(),
+            *probe_lifecycle.create_tools(),
         ],
     )
     middlewares: list[AgentMiddleware] = []
     middlewares.append(ToolErrorMiddleware())
     middlewares.append(DangerousToolMiddleware())
+    middlewares.append(probe_lifecycle)
     middlewares.append(PageContextMiddleware(mechanism=mechanism))
     middlewares.append(
         CollectorReadinessMiddleware(
@@ -319,6 +377,8 @@ RUNTIME_MANAGED_TOOL_NAMES = {
     "query_page_doc",
     "query_task_doc",
     "prepare_collector",
+    "is_done",
+    "authorize_probe_completion",
 }
 
 
@@ -371,3 +431,25 @@ def _latest_text(state: Mapping[str, Any]) -> str:
     if content is None:
         return ""
     return str(content)
+
+
+def _interrupt_value(value: Any) -> Any:
+    return getattr(value, "value", value)
+
+
+def _interrupt_kind(interrupts: Sequence[Any]) -> str:
+    for item in interrupts:
+        value = _interrupt_value(item)
+        if isinstance(value, Mapping) and value.get("kind") == "liveness":
+            return "liveness"
+    return "human"
+
+
+def _interrupt_output(interrupts: Sequence[Any]) -> str:
+    for item in interrupts:
+        value = _interrupt_value(item)
+        if isinstance(value, Mapping):
+            message = value.get("message")
+            if isinstance(message, str):
+                return message
+    return ""

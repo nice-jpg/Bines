@@ -6,11 +6,17 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 try:
-    from src.prompts import build_initial_messages
+    from src.prompts import ProbeTaskSpec, build_initial_messages, build_probe_task_spec
 except ModuleNotFoundError:  # Supports running with src on PYTHONPATH.
-    from prompts import build_initial_messages
+    from prompts import ProbeTaskSpec, build_initial_messages, build_probe_task_spec
 
 APP_PROBE_TRIGGER = "执行应用探测任务"
+
+
+def probe_task_spec(workspace_dir: str | Path | None = None) -> ProbeTaskSpec:
+    """Load deterministic lifecycle targets for an application probe."""
+
+    return build_probe_task_spec(workspace_dir)
 
 
 def is_app_probe_request(text: str) -> bool:

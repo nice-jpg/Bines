@@ -5,6 +5,7 @@ from .app_probe import (
     build_app_probe_messages,
     is_app_probe_request,
     messages_request_app_probe,
+    probe_task_spec,
     with_app_probe_messages,
 )
 
@@ -13,5 +14,6 @@ __all__ = [
     "build_app_probe_messages",
     "is_app_probe_request",
     "messages_request_app_probe",
+    "probe_task_spec",
     "with_app_probe_messages",
 ]

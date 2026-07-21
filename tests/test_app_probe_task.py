@@ -12,6 +12,7 @@ from tasks.app_probe import (
     build_app_probe_messages,
     is_app_probe_request,
     messages_request_app_probe,
+    probe_task_spec,
 )
 
 
@@ -56,6 +57,26 @@ class AppProbeTaskTests(unittest.TestCase):
         self.assertIn("<environment_context>", messages[0]["content"])
         self.assertIn("<config_context>", messages[1]["content"])
         self.assertIn("- 应用包名：com.sankuai.meituan", messages[1]["content"])
+
+    def test_probe_task_spec_builds_absolute_leaf_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            workspace = Path(tmp_dir)
+            (workspace / "config.xml").write_text(
+                """
+<package name="com.sankuai.meituan">
+    <city name="安徽省宿州市">
+        <args><address name="A"/><range size="1"/></args>
+        <subpage name="外卖"><leaf name="美食"/></subpage>
+    </city>
+</package>
+""",
+                encoding="utf-8",
+            )
+
+            spec = probe_task_spec(workspace)
+
+        self.assertEqual(spec.package_name, "com.sankuai.meituan")
+        self.assertEqual(spec.target_leaf_paths, ("meituan/外卖/美食",))
 
 
 if __name__ == "__main__":

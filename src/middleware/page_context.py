@@ -23,8 +23,10 @@ from langgraph.types import Command
 from typing_extensions import NotRequired
 
 try:
+    from src.middleware.probe_state import reset_collection_state
     from src.page_mechanism import PageMechanism, normalize_page_path
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+    from middleware.probe_state import reset_collection_state
     from page_mechanism import PageMechanism, normalize_page_path
 
 
@@ -300,6 +302,7 @@ def _page_context_state(
         PAGE_VISIT_ID: uuid4().hex if new_visit and path else "",
         PAGE_PRODUCT_ENTRY_TAPS: 0,
         PAGE_COLLECTION_STARTED: False,
+        **reset_collection_state(),
     }
     return state
 
@@ -312,6 +315,7 @@ def _page_visit_update(path: str) -> dict[str, Any]:
         PAGE_VISIT_ID: uuid4().hex,
         PAGE_PRODUCT_ENTRY_TAPS: 0,
         PAGE_COLLECTION_STARTED: False,
+        **reset_collection_state(),
     }
 
 

@@ -6,7 +6,13 @@ import types
 import unittest
 from pathlib import Path
 
+import langgraph.checkpoint.memory  # Keep real LangGraph dependencies loaded before local LangChain stubs.
+import langgraph.errors
+import langgraph.types
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import agent as _agent_dependency_preload  # noqa: E402,F401
+import collector as _collector_dependency_preload  # noqa: E402,F401
 
 
 class AgentRuntimeTests(unittest.TestCase):
@@ -191,6 +197,11 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual(second_new_tail, "普通消息")
         self.assertTrue(captured["input_states"][0]["page_context_active"])
         self.assertEqual(captured["input_states"][0]["page_context_path"], "")
+        self.assertEqual(captured["input_states"][0]["probe_status"], "running")
+        self.assertEqual(
+            captured["input_states"][0]["probe_target_leaf_paths"],
+            ("meituan/外卖/美食",),
+        )
         self.assertNotIn("page_context_active", captured["input_states"][1])
 
     def test_interrupted_state_marks_result_and_can_resume_same_session(self) -> None:

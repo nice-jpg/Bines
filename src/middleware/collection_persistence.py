@@ -3,15 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
 import json
-from threading import Lock
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.types import Command
 
 try:
     from src.middleware.page_context import (
@@ -19,6 +18,13 @@ try:
         PAGE_CONTEXT_PATH,
         PAGE_VISIT_ID,
         is_compact_popup_result,
+    )
+    from src.middleware.probe_state import (
+        COLLECTION_INITIALIZED,
+        COLLECTION_LATEST_NEW_COUNT,
+        COLLECTION_PAGE_VISIT_ID,
+        MERCHANT_COLLECTION_DONE,
+        ProbeState,
     )
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
@@ -28,6 +34,13 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         PAGE_VISIT_ID,
         is_compact_popup_result,
     )
+    from middleware.probe_state import (
+        COLLECTION_INITIALIZED,
+        COLLECTION_LATEST_NEW_COUNT,
+        COLLECTION_PAGE_VISIT_ID,
+        MERCHANT_COLLECTION_DONE,
+        ProbeState,
+    )
     from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
@@ -35,42 +48,10 @@ ITEM_APPEND_TOOLS = {"swipe_up", "swipe_down"}
 COLLECTION_XML_TOOL_NAMES = {"tap_in_page", "swipe_up", "swipe_down", "uiautomate"}
 
 
-@dataclass(frozen=True)
-class CollectionProgressRecord:
-    """Latest persisted item delta for one concrete page visit."""
-
-    page_visit_id: str
-    page_path: str
-    latest_new_count: int
-
-
-class CollectionProgressRegistry:
-    """Store collection progress independently for each page visit."""
-
-    def __init__(self) -> None:
-        self._records: dict[tuple[str, str], CollectionProgressRecord] = {}
-        self._lock = Lock()
-
-    def update(self, page_visit_id: str, page_path: str, latest_new_count: int) -> None:
-        key = (str(page_visit_id or ""), str(page_path or ""))
-        if not all(key):
-            return
-        record = CollectionProgressRecord(
-            page_visit_id=key[0],
-            page_path=key[1],
-            latest_new_count=max(0, int(latest_new_count)),
-        )
-        with self._lock:
-            self._records[key] = record
-
-    def get(self, page_visit_id: str, page_path: str) -> CollectionProgressRecord | None:
-        key = (str(page_visit_id or ""), str(page_path or ""))
-        with self._lock:
-            return self._records.get(key)
-
-
-class CollectionPersistenceMiddleware(AgentMiddleware):
+class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
     """Run page-local scripts and persist collection output after XML tools."""
+
+    state_schema = ProbeState
 
     def __init__(
         self,
@@ -82,7 +63,6 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
         self.mechanism = mechanism
         self.training_registry = training_registry
         self.workbook_sink = workbook_sink
-        self._progress = CollectionProgressRegistry()
 
     def create_tools(self) -> list[StructuredTool]:
         """Return conductor tools bound to this middleware's progress state."""
@@ -103,7 +83,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
             )
         ]
 
-    def is_done(self, runtime: ToolRuntime) -> dict[str, Any]:
+    def is_done(self, runtime: ToolRuntime) -> Command:
         """Return deterministic completion state for the current merchant visit."""
 
         state = runtime.state if isinstance(runtime.state, Mapping) else {}
@@ -116,25 +96,44 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
             "page_path": current_path,
             "page_visit_id": visit_id,
         }
+        error_type = ""
         if not current_path:
-            return {**base, "ok": False, "error_type": "missing_page_context"}
-        if not visit_id:
-            return {**base, "ok": False, "error_type": "missing_page_visit_id"}
-        if not self.mechanism.is_merchant_page(current_path):
-            return {**base, "ok": False, "error_type": "is_done_not_available"}
-        if not self.training_registry.is_trained(visit_id, current_path):
-            return {**base, "ok": False, "error_type": "collector_not_trained"}
+            error_type = "missing_page_context"
+        elif not visit_id:
+            error_type = "missing_page_visit_id"
+        elif not self.mechanism.is_merchant_page(current_path):
+            error_type = "is_done_not_available"
+        elif not self.training_registry.is_trained(visit_id, current_path):
+            error_type = "collector_not_trained"
 
-        progress = self._progress.get(visit_id, current_path)
-        if progress is None:
-            return {**base, "ok": True}
-        return {
+        initialized = (
+            state.get(COLLECTION_INITIALIZED) is True
+            and str(state.get(COLLECTION_PAGE_VISIT_ID) or "") == visit_id
+        )
+        latest_new_count = (
+            max(0, int(state.get(COLLECTION_LATEST_NEW_COUNT, 0)))
+            if initialized
+            else 0
+        )
+        done = bool(not error_type and initialized and latest_new_count == 0)
+        payload = {
             **base,
-            "ok": True,
-            "done": progress.latest_new_count == 0,
-            "initialized": True,
-            "latest_new_count": progress.latest_new_count,
+            "ok": not error_type,
+            "done": done,
+            "initialized": initialized,
+            "latest_new_count": latest_new_count,
         }
+        if error_type:
+            payload["error_type"] = error_type
+        message = ToolMessage(
+            content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            tool_call_id=str(getattr(runtime, "tool_call_id", "") or ""),
+            name="is_done",
+            status="success" if not error_type else "error",
+            additional_kwargs={} if not error_type else {"error_type": error_type},
+        )
+        update = {MERCHANT_COLLECTION_DONE: done} if not error_type else {}
+        return Command(update={"messages": [message], **update})
 
     def wrap_tool_call(
         self,
@@ -176,8 +175,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
 
         collection = self.mechanism.run_page_script(current_path, result.content)
         persistence = self._persist(tool_name, current_path, visit_id, collection)
-        self._record_progress(tool_name, current_path, visit_id, persistence)
-        return _replace_tool_message_content(
+        wrapped = _replace_tool_message_content(
             result,
             json.dumps(
                 {
@@ -190,22 +188,28 @@ class CollectionPersistenceMiddleware(AgentMiddleware):
                 sort_keys=True,
             ),
         )
+        progress_update = self._progress_update(tool_name, visit_id, persistence)
+        return Command(update={"messages": [wrapped], **progress_update}) if progress_update else wrapped
 
-    def _record_progress(
+    def _progress_update(
         self,
         tool_name: str,
-        current_path: str,
         visit_id: str,
         persistence: Mapping[str, Any],
-    ) -> None:
+    ) -> dict[str, Any]:
         if tool_name not in ITEM_APPEND_TOOLS:
-            return
+            return {}
         if persistence.get("ok") is not True or persistence.get("skipped") is True:
-            return
+            return {}
         appended_items = persistence.get("appended_items")
         if isinstance(appended_items, bool) or not isinstance(appended_items, int):
-            return
-        self._progress.update(visit_id, current_path, appended_items)
+            return {}
+        return {
+            COLLECTION_INITIALIZED: True,
+            COLLECTION_LATEST_NEW_COUNT: max(0, appended_items),
+            COLLECTION_PAGE_VISIT_ID: visit_id,
+            MERCHANT_COLLECTION_DONE: False,
+        }
 
     def _persist(
         self,

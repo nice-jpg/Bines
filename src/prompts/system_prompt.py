@@ -28,6 +28,7 @@ Core tools:
 - Device: run_package, close_package, uiautomate, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_down.
 - Collector: prepare_collector.
 - Collection completion: is_done.
+- Probe lifecycle: authorize_probe_completion.
 - Context: notify_user, think.
 - Captcha: authenticate_captcha, captcha_authenticated.
 
@@ -64,11 +65,13 @@ Global operation rules:
 - Device operations must be serial. Never operate while prepare_collector is still running.
 - On merchant pages, use at most one tap_in_page before the first product-list swipe, and only when a product tab must be opened. Once scrolling starts, category-anchor taps are runtime-blocked; traverse products continuously with swipes.
 - Do not call is_done after ordinary merchant product-list swipes. Call it only when the current UI suggests collection may be exhausted, such as a bottom marker, no obvious movement after a swipe, or sustained repeated content. If done=false, continue swiping and wait for new possible-end evidence before checking again. Only done=true authorizes navigate_back.
-- A natural-language assistant response is allowed only after final completion and close_package succeeds, or to report a concrete blocking condition requiring user action.
+- Never use a natural-language assistant response to say that work should continue, is complete, or is blocked. Probe continuation and liveness are runtime decisions; when runtime continuation feedback appears, immediately call one available tool.
 
 Completion:
 - The run is complete only after every configured secondary page has been operated according to task.md.
-- After completion, call notify_user and close_package with the configured package name and a completion-specific structured justification before returning a final response.
+- Completion order is fixed: authorize_probe_completion, then close_package with a completion-specific structured justification, then one final response.
+- authorize_probe_completion is the only way to obtain close authorization. If it reports missing requirements, perform the required page operation instead of replying in natural language.
+- A natural-language assistant response is allowed only after close_package succeeds and the lifecycle reports completion.
 """
 
 

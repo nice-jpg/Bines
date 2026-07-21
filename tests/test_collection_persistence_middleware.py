@@ -8,9 +8,16 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import ToolMessage
+from langgraph.types import Command
 
 from middleware.collection_persistence import CollectionPersistenceMiddleware
 from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+from middleware.probe_state import (
+    COLLECTION_INITIALIZED,
+    COLLECTION_LATEST_NEW_COUNT,
+    COLLECTION_PAGE_VISIT_ID,
+    MERCHANT_COLLECTION_DONE,
+)
 from page_mechanism import CollectorTrainingRegistry, PageMechanism
 from tools.content_provider import CollectionWorkbookSink, ContentProvider, _read_xlsx
 
@@ -34,6 +41,23 @@ def _request(
 
 def _tool_message(tool_name: str, content: str = "cup") -> ToolMessage:
     return ToolMessage(content=content, tool_call_id=f"{tool_name}-1", name=tool_name)
+
+
+def _message(result: ToolMessage | Command) -> ToolMessage:
+    if isinstance(result, ToolMessage):
+        return result
+    assert isinstance(result.update, dict)
+    return result.update["messages"][-1]
+
+
+def _apply_state(state: dict, result: ToolMessage | Command) -> None:
+    if not isinstance(result, Command) or not isinstance(result.update, dict):
+        return
+    state.update({key: value for key, value in result.update.items() if key != "messages"})
+
+
+def _payload(result: ToolMessage | Command) -> dict:
+    return json.loads(_message(result).content)
 
 
 def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, CollectorTrainingRegistry, Path]:
@@ -76,7 +100,7 @@ def test_wrap_tool_call_does_not_persist_before_collector_training(tmp_path: Pat
     middleware, _registry, workbook_path = _middleware(tmp_path)
 
     result = middleware.wrap_tool_call(_request("swipe_up"), lambda _request: _tool_message("swipe_up"))
-    payload = json.loads(result.content)
+    payload = _payload(result)
 
     assert payload["collection"]["ok"] is True
     assert payload["persistence"]["reason"] == "collector_not_trained"
@@ -90,8 +114,8 @@ def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) ->
     first = middleware.wrap_tool_call(_request("swipe_up"), lambda _request: _tool_message("swipe_up", "cup"))
     second = middleware.wrap_tool_call(_request("swipe_down"), lambda _request: _tool_message("swipe_down", "cup"))
 
-    first_payload = json.loads(first.content)
-    second_payload = json.loads(second.content)
+    first_payload = _payload(first)
+    second_payload = _payload(second)
 
     assert first_payload["persistence"]["appended_items"] == 1
     assert second_payload["persistence"]["appended_items"] == 0
@@ -102,21 +126,25 @@ def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) ->
 def test_is_done_uses_latest_persisted_item_delta(tmp_path: Path) -> None:
     middleware, registry, _workbook_path = _middleware(tmp_path)
     _mark_trained(registry)
-    runtime = SimpleNamespace(state=_request("is_done").state)
+    runtime = SimpleNamespace(state=_request("is_done").state, tool_call_id="is-done-1")
 
     initial = middleware.is_done(runtime)
-    middleware.wrap_tool_call(
+    first_swipe = middleware.wrap_tool_call(
         _request("swipe_up"),
         lambda _request: _tool_message("swipe_up", "cup"),
     )
+    _apply_state(runtime.state, first_swipe)
     after_new_item = middleware.is_done(runtime)
-    middleware.wrap_tool_call(
-        _request("swipe_up"),
+    second_request = _request("swipe_up")
+    second_request.state.update(runtime.state)
+    second_swipe = middleware.wrap_tool_call(
+        second_request,
         lambda _request: _tool_message("swipe_up", "cup"),
     )
+    _apply_state(runtime.state, second_swipe)
     after_duplicate = middleware.is_done(runtime)
 
-    assert initial == {
+    assert _payload(initial) == {
         "ok": True,
         "done": False,
         "initialized": False,
@@ -124,21 +152,23 @@ def test_is_done_uses_latest_persisted_item_delta(tmp_path: Path) -> None:
         "page_path": "meituan/美食/商家",
         "page_visit_id": "visit-a",
     }
-    assert after_new_item["initialized"] is True
-    assert after_new_item["latest_new_count"] == 1
-    assert after_new_item["done"] is False
-    assert after_duplicate["latest_new_count"] == 0
-    assert after_duplicate["done"] is True
+    assert _payload(after_new_item)["initialized"] is True
+    assert _payload(after_new_item)["latest_new_count"] == 1
+    assert _payload(after_new_item)["done"] is False
+    assert _payload(after_duplicate)["latest_new_count"] == 0
+    assert _payload(after_duplicate)["done"] is True
+    assert after_duplicate.update[MERCHANT_COLLECTION_DONE] is True
 
 
 def test_non_swipe_tools_do_not_overwrite_collection_progress(tmp_path: Path) -> None:
     middleware, registry, _workbook_path = _middleware(tmp_path)
     _mark_trained(registry)
-    runtime = SimpleNamespace(state=_request("is_done").state)
-    middleware.wrap_tool_call(
+    runtime = SimpleNamespace(state=_request("is_done").state, tool_call_id="is-done-1")
+    swipe_result = middleware.wrap_tool_call(
         _request("swipe_up"),
         lambda _request: _tool_message("swipe_up", "cup"),
     )
+    _apply_state(runtime.state, swipe_result)
 
     for tool_name in ("uiautomate", "tap_in_page"):
         middleware.wrap_tool_call(
@@ -146,8 +176,8 @@ def test_non_swipe_tools_do_not_overwrite_collection_progress(tmp_path: Path) ->
             lambda _request, name=tool_name: _tool_message(name, "cup"),
         )
 
-    assert middleware.is_done(runtime)["latest_new_count"] == 1
-    assert middleware.is_done(runtime)["done"] is False
+    assert _payload(middleware.is_done(runtime))["latest_new_count"] == 1
+    assert _payload(middleware.is_done(runtime))["done"] is False
 
 
 def test_is_done_is_isolated_by_page_visit_and_rejects_non_merchant_page(tmp_path: Path) -> None:
@@ -160,7 +190,7 @@ def test_is_done_is_isolated_by_page_visit_and_rejects_non_merchant_page(tmp_pat
     )
 
     visit_b = middleware.is_done(
-        SimpleNamespace(state=_request("is_done", page_visit_id="visit-b").state)
+        SimpleNamespace(state=_request("is_done", page_visit_id="visit-b").state, tool_call_id="done-b")
     )
     list_page = middleware.is_done(
         SimpleNamespace(
@@ -168,16 +198,17 @@ def test_is_done_is_isolated_by_page_visit_and_rejects_non_merchant_page(tmp_pat
                 "is_done",
                 page_path="meituan/美食",
                 page_visit_id="visit-list",
-            ).state
+            ).state,
+            tool_call_id="done-list",
         )
     )
 
-    assert visit_b["ok"] is True
-    assert visit_b["initialized"] is False
-    assert visit_b["done"] is False
-    assert list_page["ok"] is False
-    assert list_page["error_type"] == "is_done_not_available"
-    assert list_page["done"] is False
+    assert _payload(visit_b)["ok"] is True
+    assert _payload(visit_b)["initialized"] is False
+    assert _payload(visit_b)["done"] is False
+    assert _payload(list_page)["ok"] is False
+    assert _payload(list_page)["error_type"] == "is_done_not_available"
+    assert _payload(list_page)["done"] is False
 
 
 def test_is_done_tool_hides_tool_runtime_argument(tmp_path: Path) -> None:
@@ -200,7 +231,7 @@ def test_prepare_collector_initializes_merchant_sheet_from_registry(tmp_path: Pa
             '{"ok": true, "trained": true, "page_visit_id": "visit-a"}',
         ),
     )
-    payload = json.loads(result.content)
+    payload = _payload(result)
 
     assert payload["persistence"]["ok"] is True
     assert payload["persistence"]["merchant_sheet"] == "商家A"
@@ -213,7 +244,7 @@ def test_wrap_tool_call_initializes_sheet_but_does_not_append_for_same_page_read
 
     for tool_name in ("tap_in_page", "uiautomate"):
         result = middleware.wrap_tool_call(_request(tool_name), lambda _request: _tool_message(tool_name, "cup"))
-        payload = json.loads(result.content)
+        payload = _payload(result)
         assert payload["persistence"]["appended_items"] == 0
 
     assert _read_xlsx(workbook_path) == [["name", "distance"], ["商家A", "1km"]]
@@ -226,7 +257,7 @@ def test_navigation_xml_does_not_run_page_script(tmp_path: Path) -> None:
 
     for tool_name in ("navigate_to", "navigate_back"):
         result = middleware.wrap_tool_call(_request(tool_name), lambda _request: _tool_message(tool_name, "cup"))
-        assert result.content == "cup"
+        assert _message(result).content == "cup"
 
     assert _read_xlsx(workbook_path) == []
 
@@ -240,7 +271,7 @@ def test_overlay_close_xml_does_not_run_old_page_script(tmp_path: Path) -> None:
         lambda _request: _tool_message("tap_in_page", "new-page-xml"),
     )
 
-    assert result.content == "new-page-xml"
+    assert _message(result).content == "new-page-xml"
     assert _read_xlsx(workbook_path) == []
 
 
@@ -253,7 +284,7 @@ def test_wrap_tool_call_uses_tool_call_name_not_result_content_to_trigger(tmp_pa
         lambda _request: _tool_message("think", "this content mentions swipe_up and merchant data"),
     )
 
-    assert result.content == "this content mentions swipe_up and merchant data"
+    assert _message(result).content == "this content mentions swipe_up and merchant data"
     assert _read_xlsx(workbook_path) == []
 
 
@@ -271,7 +302,7 @@ def test_wrap_tool_call_returns_structured_collection_error_without_persisting(t
     )
 
     result = middleware.wrap_tool_call(_request("swipe_up"), lambda _request: _tool_message("swipe_up"))
-    payload = json.loads(result.content)
+    payload = _payload(result)
 
     assert payload["collection"]["ok"] is False
     assert payload["collection"]["error_type"] == "ValueError"

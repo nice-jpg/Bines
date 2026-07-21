@@ -25,6 +25,7 @@ from middleware.page_context import (
     PageContextState,
     initial_page_context_state,
 )
+from middleware.probe_state import reset_collection_state
 from page_mechanism import PageMechanism
 
 
@@ -95,6 +96,7 @@ def test_initial_state_activates_context_without_manual_phase() -> None:
         PAGE_VISIT_ID: "",
         PAGE_PRODUCT_ENTRY_TAPS: 0,
         PAGE_COLLECTION_STARTED: False,
+        **reset_collection_state(),
     }
 
 

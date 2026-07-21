@@ -12,6 +12,30 @@ DEFAULT_SHELL = "zsh"
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 
+@dataclass(frozen=True)
+class ProbeTaskSpec:
+    """Deterministic lifecycle targets derived from workspace config."""
+
+    package_name: str
+    target_leaf_paths: tuple[str, ...]
+
+
+def build_probe_task_spec(workspace_dir: str | Path | None = None) -> ProbeTaskSpec:
+    """Return the configured package and absolute canonical leaf paths."""
+
+    workspace_path = Path(workspace_dir) if workspace_dir is not None else _default_workspace_dir()
+    config = _read_config(workspace_path / "config.xml")
+    app_root = config.package_name.rsplit(".", 1)[-1] if config.package_name != "未配置" else ""
+    paths: list[str] = []
+    for city in config.cities:
+        for node in city.page_roots:
+            _collect_leaf_paths(node, [app_root] if app_root else [], paths)
+    return ProbeTaskSpec(
+        package_name=config.package_name,
+        target_leaf_paths=tuple(dict.fromkeys(path for path in paths if path)),
+    )
+
+
 def build_initial_messages(
     workspace_dir: str | Path | None = None,
     *,
@@ -118,6 +142,15 @@ def _append_page_node(
     lines.append(f"{indent}- subpage：{node.name}（当前页面内可点击跳转，路径：{path_text}）")
     for child in node.children:
         _append_page_node(lines, child, indent_level=indent_level + 1, ancestors=path_parts)
+
+
+def _collect_leaf_paths(node: "_PageNode", ancestors: list[str], output: list[str]) -> None:
+    path_parts = [*ancestors, node.name]
+    if node.kind == "leaf":
+        output.append("/".join(path_parts))
+        return
+    for child in node.children:
+        _collect_leaf_paths(child, path_parts, output)
 
 
 @dataclass(frozen=True)
