@@ -13,6 +13,7 @@ from langgraph.types import Command
 from middleware.collection_persistence import CollectionPersistenceMiddleware
 from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
 from middleware.probe_state import (
+    COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
     COLLECTION_INITIALIZED,
     COLLECTION_LATEST_NEW_COUNT,
     COLLECTION_PAGE_VISIT_ID,
@@ -137,7 +138,7 @@ def test_long_swipe_uses_the_same_collection_persistence_path(tmp_path: Path) ->
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
 
 
-def test_is_done_uses_latest_persisted_item_delta(tmp_path: Path) -> None:
+def test_is_done_requires_three_consecutive_empty_swipes(tmp_path: Path) -> None:
     middleware, registry, _workbook_path = _middleware(tmp_path)
     _mark_trained(registry)
     runtime = SimpleNamespace(state=_request("is_done").state, tool_call_id="is-done-1")
@@ -149,29 +150,59 @@ def test_is_done_uses_latest_persisted_item_delta(tmp_path: Path) -> None:
     )
     _apply_state(runtime.state, first_swipe)
     after_new_item = middleware.is_done(runtime)
-    second_request = _request("swipe_up")
-    second_request.state.update(runtime.state)
-    second_swipe = middleware.wrap_tool_call(
-        second_request,
-        lambda _request: _tool_message("swipe_up", "cup"),
-    )
-    _apply_state(runtime.state, second_swipe)
-    after_duplicate = middleware.is_done(runtime)
+    empty_checks = []
+    for _ in range(3):
+        duplicate_request = _request("swipe_up")
+        duplicate_request.state.update(runtime.state)
+        duplicate_swipe = middleware.wrap_tool_call(
+            duplicate_request,
+            lambda _request: _tool_message("swipe_up", "cup"),
+        )
+        _apply_state(runtime.state, duplicate_swipe)
+        empty_checks.append(middleware.is_done(runtime))
 
     assert _payload(initial) == {
         "ok": True,
         "done": False,
         "initialized": False,
         "latest_new_count": 0,
+        "consecutive_empty_swipes": 0,
         "page_path": "meituan/美食/商家",
         "page_visit_id": "visit-a",
     }
     assert _payload(after_new_item)["initialized"] is True
     assert _payload(after_new_item)["latest_new_count"] == 1
     assert _payload(after_new_item)["done"] is False
-    assert _payload(after_duplicate)["latest_new_count"] == 0
-    assert _payload(after_duplicate)["done"] is True
-    assert after_duplicate.update[MERCHANT_COLLECTION_DONE] is True
+    assert [_payload(result)["consecutive_empty_swipes"] for result in empty_checks] == [1, 2, 3]
+    assert [_payload(result)["done"] for result in empty_checks] == [False, False, True]
+    assert empty_checks[-1].update[MERCHANT_COLLECTION_DONE] is True
+
+
+def test_new_items_reset_the_consecutive_empty_swipe_count(tmp_path: Path) -> None:
+    middleware, registry, _workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    state = _request("swipe_up").state
+
+    for content in ("cup", "cup", "cup"):
+        request = _request("swipe_up")
+        request.state.update(state)
+        result = middleware.wrap_tool_call(
+            request,
+            lambda _request, value=content: _tool_message("swipe_up", value),
+        )
+        _apply_state(state, result)
+    assert state[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 2
+
+    request = _request("swipe_up")
+    request.state.update(state)
+    result = middleware.wrap_tool_call(
+        request,
+        lambda _request: _tool_message("swipe_up", "plate"),
+    )
+    _apply_state(state, result)
+
+    assert state[COLLECTION_LATEST_NEW_COUNT] == 1
+    assert state[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 0
 
 
 def test_non_swipe_tools_do_not_overwrite_collection_progress(tmp_path: Path) -> None:

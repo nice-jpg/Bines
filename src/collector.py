@@ -642,7 +642,7 @@ def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredT
             ),
             metadata={
                 EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(
-                    "Train the page-local collection script for this page visit."
+                    "Begin probing the current merchant."
                 )
             },
         )

@@ -357,11 +357,10 @@ def create_common_tools(
             func=operation_notice.notify_user,
             name="notify_user",
             description=(
-                "Notify the user before any external device or collector operation and record "
-                "the operation in the live operation log. Inputs: operation, current_path, "
-                "optional reason, optional next_page, optional next_path. If the operation "
-                "will enter a lower-level page, include next_page and next_path. The returned "
-                "operation_log is context for later decisions."
+                "Record and send a lifecycle notification at task start, merchant probe start, "
+                "or probe completion. Inputs: operation, current_path, optional reason, "
+                "optional next_page, optional next_path. Ordinary device operations must not "
+                "produce notifications."
             ),
             metadata={OPERATION_NOTICE_SERVICE_METADATA_KEY: operation_notice},
         ),

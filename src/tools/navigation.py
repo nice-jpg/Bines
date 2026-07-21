@@ -11,10 +11,6 @@ from langchain_core.tools import StructuredTool
 if __package__ and __package__.startswith("src."):
     from src.page_mechanism import PageMechanism, normalize_page_path
     from src.tools.event_hub import EventHub
-    from src.tools.operation_policy import (
-        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
-        ExternalOperationPolicy,
-    )
     from src.tools.operation_effect import (
         NAVIGATION_PAGE_CHANGE_POLICY,
         OPERATION_EFFECT_POLICY_METADATA_KEY,
@@ -22,10 +18,6 @@ if __package__ and __package__.startswith("src."):
 else:  # Supports running tests with src on sys.path.
     from page_mechanism import PageMechanism, normalize_page_path
     from tools.event_hub import EventHub
-    from tools.operation_policy import (
-        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
-        ExternalOperationPolicy,
-    )
     from tools.operation_effect import (
         NAVIGATION_PAGE_CHANGE_POLICY,
         OPERATION_EFFECT_POLICY_METADATA_KEY,
@@ -94,11 +86,6 @@ def create_navigation_tools(
                 "sort option, tab, expand control, or popup close button. Never use it to enter or "
                 "leave a business page. Returns current UIAutomator XML."
             ),
-            metadata={
-                EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(
-                    "Operate a visible control on the current page."
-                )
-            },
         ),
         StructuredTool.from_function(
             func=navigation.navigate_to,
@@ -109,10 +96,6 @@ def create_navigation_tools(
                 "meituan/外卖/美食/商家. The target manual is validated before the device is touched."
             ),
             metadata={
-                EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(
-                    "Navigate to the declared business page.",
-                    next_path_argument="next_path",
-                ),
                 OPERATION_EFFECT_POLICY_METADATA_KEY: NAVIGATION_PAGE_CHANGE_POLICY,
             },
         ),
@@ -123,12 +106,6 @@ def create_navigation_tools(
                 "Return to a declared prior business page. Provide its complete canonical next_path, "
                 "for example meituan/外卖/美食. The target manual is validated before the device is touched."
             ),
-            metadata={
-                EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(
-                    "Return to the declared business page.",
-                    next_path_argument="next_path",
-                )
-            },
         ),
     ]
 

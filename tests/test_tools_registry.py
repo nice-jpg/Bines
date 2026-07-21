@@ -12,6 +12,7 @@ from tools.operation_effect import (
     OPERATION_EFFECT_POLICY_METADATA_KEY,
     SCROLL_PAGE_CHANGE_POLICY,
 )
+from tools.operation_policy import EXTERNAL_OPERATION_POLICY_METADATA_KEY
 
 
 class FakeSubagentManager:
@@ -108,7 +109,24 @@ class ToolsRegistryTests(unittest.TestCase):
                 SCROLL_PAGE_CHANGE_POLICY,
             )
         for name in ("tap_in_page", "navigate_back", "run_package", "close_package", "uiautomate"):
-            self.assertNotIn(OPERATION_EFFECT_POLICY_METADATA_KEY, tools[name].metadata)
+            self.assertNotIn(OPERATION_EFFECT_POLICY_METADATA_KEY, tools[name].metadata or {})
+
+    def test_notifications_are_limited_to_probe_lifecycle_milestones(self) -> None:
+        tools = {tool.name: tool for tool in collect_conductor_tools()}
+
+        for name in ("run_package", "prepare_collector", "close_package"):
+            self.assertIn(EXTERNAL_OPERATION_POLICY_METADATA_KEY, tools[name].metadata or {})
+        for name in (
+            "tap_in_page",
+            "navigate_to",
+            "navigate_back",
+            "swipe_up",
+            "swipe_up_long",
+            "swipe_down",
+            "uiautomate",
+            "screenshot",
+        ):
+            self.assertNotIn(EXTERNAL_OPERATION_POLICY_METADATA_KEY, tools[name].metadata or {})
 
 if __name__ == "__main__":
     unittest.main()

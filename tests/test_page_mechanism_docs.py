@@ -57,6 +57,7 @@ class PageMechanismDocTests(unittest.TestCase):
                 self.assertIn('return {"items":', run_text)
                 self.assertIn("without calling `is_done` after ordinary swipes", task)
                 self.assertIn("Call `is_done` only when the page may be exhausted", task)
+                self.assertIn("three consecutive valid collection swipes", task)
                 self.assertIn("only collection completion authorization", task)
                 self.assertNotIn("two consecutive", task)
 

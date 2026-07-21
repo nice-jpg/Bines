@@ -67,7 +67,7 @@ class ToolSpec:
     description: str
     operation_name: str
     returns_xml: bool = False
-    notice_reason: str = "Execute an external device operation."
+    notice_reason: str | None = None
     effect_policy: OperationEffectPolicy | None = None
 
 
@@ -76,13 +76,13 @@ TOOL_SPECS = (
         "run_package",
         "Open an Android application by package name. This dangerous action requires a structured justification.",
         "run_package",
-        notice_reason="Launch the configured application for the active probe.",
+        notice_reason="Start the application probe task.",
     ),
     ToolSpec(
         "close_package",
         "Force-stop an Android application by package name. This dangerous action requires a structured justification.",
         "close_package",
-        notice_reason="Close the configured application after probe completion.",
+        notice_reason="Complete the application probe task.",
     ),
     ToolSpec(
         "tap",
@@ -315,9 +315,9 @@ def _build_tool(spec: ToolSpec, hub: EventHub) -> StructuredTool:
     operation = _resolve_operation(spec.operation_name, hub)
     tool_func = model_tool_callable(operation)
     safety_policy = dangerous_policy_for(operation)
-    metadata = {
-        EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(spec.notice_reason),
-    }
+    metadata = {}
+    if spec.notice_reason is not None:
+        metadata[EXTERNAL_OPERATION_POLICY_METADATA_KEY] = ExternalOperationPolicy(spec.notice_reason)
     if safety_policy is not None:
         metadata[DANGEROUS_TOOL_POLICY_METADATA_KEY] = safety_policy
     if spec.effect_policy is not None:

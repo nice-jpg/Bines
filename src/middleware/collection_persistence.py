@@ -20,6 +20,7 @@ try:
         is_compact_popup_result,
     )
     from src.middleware.probe_state import (
+        COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
         COLLECTION_INITIALIZED,
         COLLECTION_LATEST_NEW_COUNT,
         COLLECTION_PAGE_VISIT_ID,
@@ -36,6 +37,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         is_compact_popup_result,
     )
     from middleware.probe_state import (
+        COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
         COLLECTION_INITIALIZED,
         COLLECTION_LATEST_NEW_COUNT,
         COLLECTION_PAGE_VISIT_ID,
@@ -78,9 +80,9 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
                     "Call only when visible page evidence suggests the product region may be "
                     "exhausted, such as a bottom marker, no obvious movement after a swipe, or "
                     "sustained repeated content. Do not call after ordinary swipes. Returns "
-                    "done=false while the latest valid swipe added items or before any valid "
-                    "collection swipe; returns done=true only when the latest valid swipe added "
-                    "zero new items."
+                    "done=false before collection or until three consecutive valid collection "
+                    "swipes add zero new items. Any swipe that adds items resets the empty-swipe "
+                    "count."
                 ),
             )
         ]
@@ -95,6 +97,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             "done": False,
             "initialized": False,
             "latest_new_count": 0,
+            "consecutive_empty_swipes": 0,
             "page_path": current_path,
             "page_visit_id": visit_id,
         }
@@ -117,13 +120,19 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             if initialized
             else 0
         )
-        done = bool(not error_type and initialized and latest_new_count == 0)
+        consecutive_empty_swipes = (
+            max(0, int(state.get(COLLECTION_CONSECUTIVE_EMPTY_SWIPES, 0)))
+            if initialized
+            else 0
+        )
+        done = bool(not error_type and initialized and consecutive_empty_swipes >= 3)
         payload = {
             **base,
             "ok": not error_type,
             "done": done,
             "initialized": initialized,
             "latest_new_count": latest_new_count,
+            "consecutive_empty_swipes": consecutive_empty_swipes,
         }
         if error_type:
             payload["error_type"] = error_type
@@ -191,7 +200,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
                 sort_keys=True,
             ),
         )
-        progress_update = self._progress_update(tool_name, visit_id, persistence)
+        progress_update = self._progress_update(tool_name, visit_id, persistence, state)
         return Command(update={"messages": [wrapped], **progress_update}) if progress_update else wrapped
 
     def _progress_update(
@@ -199,6 +208,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         tool_name: str,
         visit_id: str,
         persistence: Mapping[str, Any],
+        state: Mapping[str, Any],
     ) -> dict[str, Any]:
         if tool_name not in ITEM_APPEND_TOOLS:
             return {}
@@ -207,9 +217,18 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         appended_items = persistence.get("appended_items")
         if isinstance(appended_items, bool) or not isinstance(appended_items, int):
             return {}
+        same_visit = str(state.get(COLLECTION_PAGE_VISIT_ID) or "") == visit_id
+        previous_empty_swipes = (
+            max(0, int(state.get(COLLECTION_CONSECUTIVE_EMPTY_SWIPES, 0)))
+            if same_visit and state.get(COLLECTION_INITIALIZED) is True
+            else 0
+        )
+        new_count = max(0, appended_items)
+        consecutive_empty_swipes = previous_empty_swipes + 1 if new_count == 0 else 0
         return {
             COLLECTION_INITIALIZED: True,
-            COLLECTION_LATEST_NEW_COUNT: max(0, appended_items),
+            COLLECTION_LATEST_NEW_COUNT: new_count,
+            COLLECTION_CONSECUTIVE_EMPTY_SWIPES: consecutive_empty_swipes,
             COLLECTION_PAGE_VISIT_ID: visit_id,
             MERCHANT_COLLECTION_DONE: False,
         }

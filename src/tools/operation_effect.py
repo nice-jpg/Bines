@@ -62,8 +62,8 @@ NAVIGATION_PAGE_CHANGE_POLICY = OperationEffectPolicy(
 )
 SCROLL_PAGE_CHANGE_POLICY = OperationEffectPolicy(
     kind=OperationEffectKind.PARTIAL_CHANGE,
-    minimum_similarity=0.1,
-    maximum_similarity=0.9,
+    minimum_similarity=0.05,
+    maximum_similarity=0.95,
 )
 
 

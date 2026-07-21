@@ -25,6 +25,7 @@ from .page_manual import PageManualMiddleware
 from .operation_notice import OperationNoticeMiddleware
 from .probe_lifecycle import ProbeLifecycleMiddleware
 from .probe_state import (
+    COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
     COLLECTION_INITIALIZED,
     COLLECTION_LATEST_NEW_COUNT,
     COLLECTION_PAGE_VISIT_ID,
@@ -61,6 +62,7 @@ __all__ = [
     "OperationNoticeMiddleware",
     "ProbeLifecycleMiddleware",
     "COLLECTION_INITIALIZED",
+    "COLLECTION_CONSECUTIVE_EMPTY_SWIPES",
     "COLLECTION_LATEST_NEW_COUNT",
     "COLLECTION_PAGE_VISIT_ID",
     "MERCHANT_COLLECTION_DONE",

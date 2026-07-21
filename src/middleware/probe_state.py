@@ -27,6 +27,7 @@ PROBE_COMPLETED = "completed"
 
 COLLECTION_INITIALIZED = "collection_initialized"
 COLLECTION_LATEST_NEW_COUNT = "collection_latest_new_count"
+COLLECTION_CONSECUTIVE_EMPTY_SWIPES = "collection_consecutive_empty_swipes"
 MERCHANT_COLLECTION_DONE = "merchant_collection_done"
 COLLECTION_PAGE_VISIT_ID = "collection_page_visit_id"
 
@@ -41,6 +42,7 @@ class ProbeState(AgentState):
     probe_continuation_reason: NotRequired[Annotated[str, replace_state_value]]
     collection_initialized: NotRequired[Annotated[bool, replace_state_value]]
     collection_latest_new_count: NotRequired[Annotated[int, replace_state_value]]
+    collection_consecutive_empty_swipes: NotRequired[Annotated[int, replace_state_value]]
     merchant_collection_done: NotRequired[Annotated[bool, replace_state_value]]
     collection_page_visit_id: NotRequired[Annotated[str, replace_state_value]]
 
@@ -64,6 +66,7 @@ def reset_collection_state() -> dict[str, Any]:
     return {
         COLLECTION_INITIALIZED: False,
         COLLECTION_LATEST_NEW_COUNT: 0,
+        COLLECTION_CONSECUTIVE_EMPTY_SWIPES: 0,
         MERCHANT_COLLECTION_DONE: False,
         COLLECTION_PAGE_VISIT_ID: "",
     }
@@ -71,6 +74,7 @@ def reset_collection_state() -> dict[str, Any]:
 
 __all__ = [
     "COLLECTION_INITIALIZED",
+    "COLLECTION_CONSECUTIVE_EMPTY_SWIPES",
     "COLLECTION_LATEST_NEW_COUNT",
     "COLLECTION_PAGE_VISIT_ID",
     "MERCHANT_COLLECTION_DONE",

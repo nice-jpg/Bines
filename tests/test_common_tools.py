@@ -198,7 +198,8 @@ class CommonToolTests(unittest.TestCase):
                 "think",
             ],
         )
-        self.assertIn("before any external device or collector operation", tools[0].description)
+        self.assertIn("task start, merchant probe start, or probe completion", tools[0].description)
+        self.assertIn("Ordinary device operations must not produce notifications", tools[0].description)
         self.assertIn("human captcha authentication", tools[1].description)
         self.assertIn("captcha has been completed", tools[2].description)
         self.assertIn("complex tool outputs", tools[3].description)

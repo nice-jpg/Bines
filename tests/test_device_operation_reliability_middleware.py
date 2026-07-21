@@ -100,7 +100,7 @@ def test_navigation_accepts_only_similarity_below_half() -> None:
 
 
 def test_scroll_boundaries_are_inclusive() -> None:
-    for score in (0.1, 0.9):
+    for score in (0.05, 0.95):
         middleware, _ = _middleware(score)
         expected = _message("swipe_up")
         result = middleware.wrap_tool_call(
@@ -108,7 +108,7 @@ def test_scroll_boundaries_are_inclusive() -> None:
         )
         assert result is expected
 
-    for score in (0.099, 0.901):
+    for score in (0.049, 0.951):
         middleware, _ = _middleware(score)
         result = middleware.wrap_tool_call(
             _request(_tool("swipe_down", SCROLL_PAGE_CHANGE_POLICY)), lambda _: _message("swipe_down")
@@ -142,7 +142,7 @@ def test_unverifiable_post_result_exposes_no_page_details() -> None:
 
 
 def test_async_path_uses_the_same_policy() -> None:
-    middleware, hub = _middleware(0.95)
+    middleware, hub = _middleware(0.96)
 
     async def handler(_):
         return _message("swipe_up")
@@ -175,7 +175,7 @@ def test_rejected_scroll_does_not_reach_collection_persistence() -> None:
         mechanism=mechanism,
         training_registry=FakeRegistry(),
     )
-    reliability, _ = _middleware(0.95)
+    reliability, _ = _middleware(0.96)
     request = _request(_tool("swipe_up", SCROLL_PAGE_CHANGE_POLICY))
 
     result = persistence.wrap_tool_call(
