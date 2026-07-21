@@ -12,10 +12,12 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
 try:
+    from src.middleware.tool_io import tool_definition_name
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from src.prompts import COLLECTOR_PROMPT
     from src.tools.event_hub import EventHub
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+    from middleware.tool_io import tool_definition_name
     from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from prompts import COLLECTOR_PROMPT
     from tools.event_hub import EventHub
@@ -50,7 +52,7 @@ class CollectorManager:
     ) -> str:
         """Delegate run.agent.py preparation to an isolated collector."""
 
-        runtime_state = runtime.state if isinstance(runtime.state, Mapping) else {}
+        runtime_state = runtime.state
         current_path = str(runtime_state.get("page_context_path") or "")
         visit_id = str(runtime_state.get("page_visit_id") or "")
         canonical_path = self.mechanism.validate_page_manual(page_path)
@@ -612,21 +614,17 @@ def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredT
     ]
 
 
-def _latest_text(state: Any) -> str:
-    messages: Sequence[Any] = (
-        state.get("messages") if isinstance(state, dict) else getattr(state, "messages", [])
-    )
+def _latest_text(state: Mapping[str, Any]) -> str:
+    messages: Sequence[Any] = state.get("messages") or []
     if not messages:
         return ""
     latest = messages[-1]
-    content = latest.get("content") if isinstance(latest, dict) else getattr(latest, "content", None)
+    content = latest.get("content") if isinstance(latest, Mapping) else latest.content
     return content if isinstance(content, str) else str(content or "")
 
 
 def _tool_name(tool: Any) -> str:
-    if isinstance(tool, Mapping):
-        return str(tool.get("name") or tool.get("function", {}).get("name") or "")
-    return str(getattr(tool, "name", "") or "")
+    return tool_definition_name(tool)
 
 
 def _escape_text(value: Any) -> str:

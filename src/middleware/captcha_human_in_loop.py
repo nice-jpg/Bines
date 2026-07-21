@@ -7,6 +7,8 @@ from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain_core.messages import AIMessage
+from langchain_core.tools import BaseTool
 
 CAPTCHA_AUTHENTICATION_TOOL_NAME = "authenticate_captcha"
 CAPTCHA_AUTHENTICATED_TOOL_NAME = "captcha_authenticated"
@@ -37,12 +39,15 @@ class CaptchaHumanInTheLoopMiddleware(HumanInTheLoopMiddleware):
     def _start_pending_authentication_sessions(self, state: Any, runtime: Any) -> None:
         if self.authentication_tool is None:
             return
-        messages = state["messages"] if isinstance(state, dict) else getattr(state, "messages", [])
+        messages = state.get("messages", [])
         if not messages:
             return
 
-        last_ai_msg = next((msg for msg in reversed(messages) if getattr(msg, "tool_calls", None)), None)
-        if not last_ai_msg or not getattr(last_ai_msg, "tool_calls", None):
+        last_ai_msg = next(
+            (msg for msg in reversed(messages) if isinstance(msg, AIMessage) and msg.tool_calls),
+            None,
+        )
+        if last_ai_msg is None:
             return
 
         for tool_call in last_ai_msg.tool_calls:
@@ -73,20 +78,13 @@ def _respond_interrupt_config() -> Any:
     )
 
 
-def _find_tool(tools: Sequence[Any], name: str) -> Any | None:
+def _find_tool(tools: Sequence[Any], name: str) -> BaseTool | None:
     for tool in tools:
-        tool_name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+        tool_name = tool.get("name") if isinstance(tool, dict) else tool.name
         if tool_name == name:
             return tool
     return None
 
 
-def _invoke_tool(tool: Any, args: dict[str, Any]) -> Any:
-    if hasattr(tool, "invoke"):
-        return tool.invoke(args)
-    func = getattr(tool, "func", None)
-    if callable(func):
-        return func(**args)
-    if callable(tool):
-        return tool(**args)
-    raise TypeError(f"Tool {tool!r} is not callable.")
+def _invoke_tool(tool: BaseTool, args: dict[str, Any]) -> Any:
+    return tool.invoke(args)

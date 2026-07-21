@@ -82,4 +82,11 @@ FeishuChannel = FeishuChannelRuntime
 
 def _log_level(value: str):
     normalized = str(value or "INFO").upper()
-    return getattr(lark.LogLevel, normalized, lark.LogLevel.INFO)
+    levels = {
+        "CRITICAL": lark.LogLevel.CRITICAL,
+        "DEBUG": lark.LogLevel.DEBUG,
+        "ERROR": lark.LogLevel.ERROR,
+        "INFO": lark.LogLevel.INFO,
+        "WARNING": lark.LogLevel.WARNING,
+    }
+    return levels.get(normalized, lark.LogLevel.INFO)

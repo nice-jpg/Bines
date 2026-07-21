@@ -12,10 +12,10 @@ from langchain_openai import ChatOpenAI
 
 try:
     # This is the canonical import when launched through mind_controller/run_master.py.
-    from codex import create_chat_model
+    from codex import OpenAICodexModel, create_chat_model
 except ModuleNotFoundError:
     # Also support importing trainer directly from the repository root.
-    from src.codex import create_chat_model
+    from src.codex import OpenAICodexModel, create_chat_model
 
 WORKSPACE_ENV_PATH = Path(__file__).resolve().parents[1] / "workspace" / ".env"
 
@@ -52,6 +52,13 @@ def build_model(
         streaming=False,
         use_responses_api=False,
     )
+
+
+def close_model(model: ChatOpenAI | OpenAICodexModel) -> None:
+    """Close only model backends that own persistent transport resources."""
+
+    if isinstance(model, OpenAICodexModel):
+        model.close()
 
 
 def load_model_config(env_path: Path = WORKSPACE_ENV_PATH) -> ModelConfig:

@@ -288,7 +288,7 @@ def _normalized_name(value: Any) -> str:
 
 
 def _context_grade(result: AgentRunResult) -> int:
-    state = getattr(result, "state", None)
+    state = result.state
     if not isinstance(state, Mapping):
         raise ValueError("AgentRunResult.state must be a mapping")
     messages = state.get("messages")

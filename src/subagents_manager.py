@@ -11,6 +11,11 @@ from typing import Any, Callable, Mapping, Sequence
 
 from langchain_core.tools import StructuredTool
 
+try:
+    from src.middleware.tool_io import tool_definition_name
+except ModuleNotFoundError:
+    from middleware.tool_io import tool_definition_name
+
 
 SUBAGENT_TOOL_NAMES = {"spawn_subagent", "call_subagent", "kill_subagent"}
 REQUIRED_SUBAGENT_TOOL_NAMES = {
@@ -301,25 +306,19 @@ def _forbidden_kill_subagent(agent_id: str) -> str:
 
 
 def _tool_name(tool: Any) -> str | None:
-    if isinstance(tool, Mapping):
-        value = tool.get("name")
-        return str(value) if value else None
-    value = getattr(tool, "name", None)
-    return str(value) if value else None
+    return tool_definition_name(tool) or None
 
 
-def _state_messages(state: Mapping[str, Any] | Any) -> Sequence[Any]:
-    if isinstance(state, Mapping):
-        return state.get("messages") or []
-    return getattr(state, "messages", []) or []
+def _state_messages(state: Mapping[str, Any]) -> Sequence[Any]:
+    return state.get("messages") or []
 
 
-def _latest_text(state: Mapping[str, Any] | Any) -> str:
+def _latest_text(state: Mapping[str, Any]) -> str:
     messages = _state_messages(state)
     if not messages:
         return ""
     latest = messages[-1]
-    content = latest.get("content") if isinstance(latest, Mapping) else getattr(latest, "content", None)
+    content = latest.get("content") if isinstance(latest, Mapping) else latest.content
     return content if isinstance(content, str) else str(content or "")
 
 

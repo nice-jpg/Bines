@@ -7,12 +7,13 @@ from dataclasses import asdict
 import json
 from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
 from pydantic import ValidationError
 
 try:
     from src.middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+    from src.middleware.tool_io import ToolInvocation, require_tool_result, tool_messages
     from src.tools.event_logger import WorkspaceEventLogger
     from src.tools.safety import (
         DangerousActionJustification,
@@ -21,6 +22,7 @@ try:
     )
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+    from middleware.tool_io import ToolInvocation, require_tool_result, tool_messages
     from tools.event_logger import WorkspaceEventLogger
     from tools.safety import (
         DangerousActionJustification,
@@ -37,8 +39,8 @@ class DangerousToolMiddleware(AgentMiddleware):
 
     def wrap_tool_call(
         self,
-        request: Any,
-        handler: Callable[[Any], ToolMessage | Any],
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Any],
     ) -> ToolMessage | Any:
         policy = _request_policy(request)
         if policy is None:
@@ -64,7 +66,7 @@ class DangerousToolMiddleware(AgentMiddleware):
         self._log(
             request,
             policy,
-            "executed" if getattr(result, "status", None) != "error" else "execution_failed",
+            _execution_decision(result),
             justification=justification,
             result=_result_summary(result),
         )
@@ -72,8 +74,8 @@ class DangerousToolMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(
         self,
-        request: Any,
-        handler: Callable[[Any], Awaitable[ToolMessage | Any]],
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Any]],
     ) -> ToolMessage | Any:
         policy = _request_policy(request)
         if policy is None:
@@ -99,7 +101,7 @@ class DangerousToolMiddleware(AgentMiddleware):
         self._log(
             request,
             policy,
-            "executed" if getattr(result, "status", None) != "error" else "execution_failed",
+            _execution_decision(result),
             justification=justification,
             result=_result_summary(result),
         )
@@ -107,7 +109,7 @@ class DangerousToolMiddleware(AgentMiddleware):
 
     def _log(
         self,
-        request: Any,
+        request: ToolCallRequest,
         policy: DangerousToolPolicy,
         decision: str,
         *,
@@ -115,15 +117,15 @@ class DangerousToolMiddleware(AgentMiddleware):
         invalid_fields: list[str] | None = None,
         result: dict[str, Any] | None = None,
     ) -> None:
-        call = _tool_call(request)
-        state = _state(request)
+        invocation = ToolInvocation.from_request(request)
+        state = invocation.state
         details: dict[str, Any] = {
             "decision": decision,
             "policy": {
                 **asdict(policy),
                 "risk_level": policy.risk_level.value,
             },
-            "tool_name": str(call.get("name") or getattr(getattr(request, "tool", None), "name", "")),
+            "tool_name": invocation.name,
             "page_path": str(state.get(PAGE_CONTEXT_PATH) or ""),
             "page_visit_id": str(state.get(PAGE_VISIT_ID) or ""),
         }
@@ -136,15 +138,14 @@ class DangerousToolMiddleware(AgentMiddleware):
         self.logger.log("dangerous_tool_call", f"Dangerous tool call {decision}.", details)
 
 
-def _request_policy(request: Any) -> DangerousToolPolicy | None:
-    return dangerous_policy_from_metadata(getattr(getattr(request, "tool", None), "metadata", None))
+def _request_policy(request: ToolCallRequest) -> DangerousToolPolicy | None:
+    return dangerous_policy_from_metadata(ToolInvocation.from_request(request).tool_metadata)
 
 
 def _validated_justification(
-    request: Any,
+    request: ToolCallRequest,
 ) -> tuple[DangerousActionJustification | None, list[str]]:
-    raw = _tool_call(request).get("args", {})
-    raw_justification = raw.get("justification") if isinstance(raw, Mapping) else None
+    raw_justification = ToolInvocation.from_request(request).args.get("justification")
     try:
         return DangerousActionJustification.model_validate(raw_justification), []
     except ValidationError as error:
@@ -157,11 +158,10 @@ def _validated_justification(
         return None, fields or ["justification"]
 
 
-def _invalid_reason_message(request: Any, invalid_fields: list[str]) -> ToolMessage:
-    call = _tool_call(request)
-    tool = getattr(request, "tool", None)
-    tool_name = str(call.get("name") or getattr(tool, "name", None) or "unknown_tool")
-    tool_call_id = str(call.get("id") or call.get("tool_call_id") or "")
+def _invalid_reason_message(request: ToolCallRequest, invalid_fields: list[str]) -> ToolMessage:
+    invocation = ToolInvocation.from_request(request)
+    tool_name = invocation.name or "unknown_tool"
+    tool_call_id = invocation.call_id
     payload = {
         "ok": False,
         "error_type": "dangerous_action_reason_invalid",
@@ -181,22 +181,19 @@ def _invalid_reason_message(request: Any, invalid_fields: list[str]) -> ToolMess
 
 
 def _result_summary(result: Any) -> dict[str, Any]:
-    if isinstance(result, ToolMessage):
+    typed_result = require_tool_result(result)
+    messages = tool_messages(typed_result)
+    if messages:
+        message = messages[-1]
         return {
-            "status": result.status,
-            "content": str(result.content),
+            "status": message.status,
+            "content": str(message.content),
         }
     return {
         "status": "success",
         "content": str(result),
     }
 
-
-def _tool_call(request: Any) -> Mapping[str, Any]:
-    call = getattr(request, "tool_call", None)
-    return call if isinstance(call, Mapping) else {}
-
-
-def _state(request: Any) -> Mapping[str, Any]:
-    state = getattr(request, "state", None)
-    return state if isinstance(state, Mapping) else {}
+def _execution_decision(result: Any) -> str:
+    messages = tool_messages(require_tool_result(result))
+    return "execution_failed" if messages and messages[-1].status == "error" else "executed"

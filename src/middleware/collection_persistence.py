@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping
 import json
 from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
@@ -26,6 +26,7 @@ try:
         MERCHANT_COLLECTION_DONE,
         ProbeState,
     )
+    from src.middleware.tool_io import ToolInvocation
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import (
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         MERCHANT_COLLECTION_DONE,
         ProbeState,
     )
+    from middleware.tool_io import ToolInvocation
     from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
@@ -127,7 +129,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             payload["error_type"] = error_type
         message = ToolMessage(
             content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-            tool_call_id=str(getattr(runtime, "tool_call_id", "") or ""),
+            tool_call_id=str(runtime.tool_call_id or ""),
             name="is_done",
             status="success" if not error_type else "error",
             additional_kwargs={} if not error_type else {"error_type": error_type},
@@ -137,7 +139,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
 
     def wrap_tool_call(
         self,
-        request: Any,
+        request: ToolCallRequest,
         handler: Callable[[Any], ToolMessage | Any],
     ) -> ToolMessage | Any:
         result = handler(request)
@@ -145,31 +147,32 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
 
     async def awrap_tool_call(
         self,
-        request: Any,
+        request: ToolCallRequest,
         handler: Callable[[Any], Awaitable[ToolMessage | Any]],
     ) -> ToolMessage | Any:
         result = await handler(request)
         return self._maybe_wrap_tool_result(request, result)
 
-    def _maybe_wrap_tool_result(self, request: Any, result: ToolMessage | Any) -> ToolMessage | Any:
-        tool_name = _tool_name_from_request(request)
+    def _maybe_wrap_tool_result(self, request: ToolCallRequest, result: ToolMessage | Any) -> ToolMessage | Any:
+        invocation = ToolInvocation.from_request(request)
+        tool_name = invocation.name
         if tool_name == "prepare_collector":
             return self._initialize_trained_merchant(request, result)
         if tool_name not in COLLECTION_XML_TOOL_NAMES:
             return result
         if not isinstance(result, ToolMessage):
             return result
-        if getattr(result, "status", "success") == "error":
+        if result.status == "error":
             return result
         if not isinstance(result.content, str):
             return result
-        state = getattr(request, "state", None)
-        if isinstance(state, Mapping) and state.get(PAGE_CONTEXT_OVERLAY, False):
+        state = invocation.state
+        if state.get(PAGE_CONTEXT_OVERLAY, False):
             return result
         if is_compact_popup_result(result):
             return result
-        current_path = str(state.get(PAGE_CONTEXT_PATH) or "") if isinstance(state, Mapping) else ""
-        visit_id = str(state.get(PAGE_VISIT_ID) or "") if isinstance(state, Mapping) else ""
+        current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
+        visit_id = str(state.get(PAGE_VISIT_ID) or "")
         if not current_path:
             return result
 
@@ -237,11 +240,10 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort around device tools.
             return {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
 
-    def _initialize_trained_merchant(self, request: Any, result: ToolMessage | Any) -> ToolMessage | Any:
-        if not isinstance(result, ToolMessage) or getattr(result, "status", "success") == "error":
+    def _initialize_trained_merchant(self, request: ToolCallRequest, result: ToolMessage | Any) -> ToolMessage | Any:
+        if not isinstance(result, ToolMessage) or result.status == "error":
             return result
-        state = getattr(request, "state", None)
-        state = state if isinstance(state, Mapping) else {}
+        state = ToolInvocation.from_request(request).state
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         visit_id = str(state.get(PAGE_VISIT_ID) or "")
         if self.workbook_sink is None:
@@ -275,22 +277,14 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         return _replace_tool_message_content(result, json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
-def _tool_name_from_request(request: Any) -> str:
-    tool_call = getattr(request, "tool_call", None)
-    if isinstance(tool_call, Mapping):
-        return str(tool_call.get("name") or "")
-    tool = getattr(request, "tool", None)
-    return str(getattr(tool, "name", "") or "")
-
-
 def _replace_tool_message_content(message: ToolMessage, content: str) -> ToolMessage:
     return ToolMessage(
         content=content,
         tool_call_id=message.tool_call_id,
         name=message.name,
-        status=getattr(message, "status", "success"),
-        additional_kwargs=dict(getattr(message, "additional_kwargs", {}) or {}),
-        response_metadata=dict(getattr(message, "response_metadata", {}) or {}),
+        status=message.status,
+        additional_kwargs=dict(message.additional_kwargs),
+        response_metadata=dict(message.response_metadata),
     )
 
 

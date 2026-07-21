@@ -312,7 +312,14 @@ class PageMechanism:
 
         try:
             module = _load_run_module(run_path)
-            run = getattr(module, "run", None)
+            try:
+                run = module.run
+            except AttributeError:
+                return _script_error(
+                    "missing_run_function",
+                    "run.agent.py must define run(xml).",
+                    canonical_path=canonical_path,
+                )
             if not callable(run):
                 return _script_error("missing_run_function", "run.agent.py must define run(xml).", canonical_path=canonical_path)
             output = run(xml)

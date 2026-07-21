@@ -420,7 +420,7 @@ class OpenAICodexModel(BaseChatModel):
                     input_messages.append(
                         {
                             "type": "function_call_output",
-                            "call_id": str(getattr(message, "tool_call_id", "")),
+                            "call_id": str(message.tool_call_id or ""),
                             "output": self._message_text(message),
                         }
                     )
@@ -443,7 +443,7 @@ class OpenAICodexModel(BaseChatModel):
                 custom_call_ids = set(
                     message.additional_kwargs.get("custom_tool_call_ids", []) or []
                 )
-                for tool_call in getattr(message, "tool_calls", []) or []:
+                for tool_call in message.tool_calls:
                     call_id = _tool_call_id(tool_call)
                     if call_id in custom_call_ids:
                         input_messages.append(_to_responses_custom_tool_call(tool_call))
@@ -828,25 +828,14 @@ def _normalize_tool_choice(tool_choice: builtins.dict[str, Any] | str | bool) ->
     return "auto"
 
 
-def _tool_call_id(tool_call: Any) -> str:
-    if isinstance(tool_call, Mapping):
-        return str(tool_call.get("id") or tool_call.get("call_id") or "")
-    return str(
-        getattr(tool_call, "id", None)
-        or getattr(tool_call, "call_id", None)
-        or ""
-    )
+def _tool_call_id(tool_call: Mapping[str, Any]) -> str:
+    return str(tool_call.get("id") or tool_call.get("call_id") or "")
 
 
-def _to_responses_function_call(tool_call: Any) -> dict[str, Any]:
-    if isinstance(tool_call, Mapping):
-        call_id = tool_call.get("id") or tool_call.get("call_id")
-        name = tool_call.get("name")
-        args = tool_call.get("args") or tool_call.get("arguments") or {}
-    else:
-        call_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None)
-        name = getattr(tool_call, "name", None)
-        args = getattr(tool_call, "args", None) or getattr(tool_call, "arguments", None) or {}
+def _to_responses_function_call(tool_call: Mapping[str, Any]) -> dict[str, Any]:
+    call_id = tool_call.get("id") or tool_call.get("call_id")
+    name = tool_call.get("name")
+    args = tool_call.get("args") or tool_call.get("arguments") or {}
     return {
         "type": "function_call",
         "call_id": str(call_id or uuid4()),
@@ -855,15 +844,10 @@ def _to_responses_function_call(tool_call: Any) -> dict[str, Any]:
     }
 
 
-def _to_responses_custom_tool_call(tool_call: Any) -> dict[str, Any]:
-    if isinstance(tool_call, Mapping):
-        call_id = tool_call.get("id") or tool_call.get("call_id")
-        name = tool_call.get("name")
-        args = tool_call.get("args") or {}
-    else:
-        call_id = getattr(tool_call, "id", None) or getattr(tool_call, "call_id", None)
-        name = getattr(tool_call, "name", None)
-        args = getattr(tool_call, "args", None) or {}
+def _to_responses_custom_tool_call(tool_call: Mapping[str, Any]) -> dict[str, Any]:
+    call_id = tool_call.get("id") or tool_call.get("call_id")
+    name = tool_call.get("name")
+    args = tool_call.get("args") or {}
     tool_input = args.get("__arg1", "") if isinstance(args, Mapping) else args
     return {
         "type": "custom_tool_call",
@@ -905,7 +889,7 @@ def _custom_tool_output(message: ToolMessage) -> dict[str, Any] | None:
         if isinstance(block, Mapping) and block.get("type") == "custom_tool_call_output":
             return {
                 "type": "custom_tool_call_output",
-                "call_id": str(getattr(message, "tool_call_id", "")),
+                "call_id": str(message.tool_call_id or ""),
                 "output": str(block.get("output") or ""),
             }
     return None

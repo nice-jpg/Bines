@@ -19,10 +19,13 @@ try:
         PAGE_CONTEXT_PATH,
         PAGE_CONTEXT_PENDING_PATH,
         PAGE_VISIT_ID,
-        _request_tool_name,
-        _state,
-        _tool_succeeded,
-        _with_state_update,
+    )
+    from src.middleware.tool_io import (
+        ToolInvocation,
+        command_state_value,
+        require_tool_result,
+        tool_succeeded,
+        with_state_update,
     )
     from src.middleware.probe_state import (
         MERCHANT_COLLECTION_DONE,
@@ -44,10 +47,13 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         PAGE_CONTEXT_PATH,
         PAGE_CONTEXT_PENDING_PATH,
         PAGE_VISIT_ID,
-        _request_tool_name,
-        _state,
-        _tool_succeeded,
-        _with_state_update,
+    )
+    from middleware.tool_io import (
+        ToolInvocation,
+        command_state_value,
+        require_tool_result,
+        tool_succeeded,
+        with_state_update,
     )
     from middleware.probe_state import (
         MERCHANT_COLLECTION_DONE,
@@ -202,7 +208,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
             },
         )
         message_updates: list[Any] = []
-        if getattr(latest, "id", None):
+        if latest.id:
             message_updates.append(RemoveMessage(id=latest.id))
         message_updates.append(correction)
         return {
@@ -213,10 +219,11 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         }
 
     def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
-        state = _state(request)
+        invocation = ToolInvocation.from_request(request)
+        state = invocation.state
         if str(state.get(PROBE_STATUS) or "") not in {PROBE_RUNNING, PROBE_COMPLETION_AUTHORIZED}:
             return None
-        tool_name = _request_tool_name(request)
+        tool_name = invocation.name
         if tool_name == "close_package" and state.get(PROBE_STATUS) != PROBE_COMPLETION_AUTHORIZED:
             return _lifecycle_error(
                 request,
@@ -234,12 +241,14 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         return None
 
     def _apply_tool_transition(self, request: ToolCallRequest, result: Any) -> Any:
-        state = _state(request)
-        if not _tool_succeeded(result):
+        invocation = ToolInvocation.from_request(request)
+        state = invocation.state
+        typed_result = require_tool_result(result)
+        if not tool_succeeded(typed_result):
             return result
-        tool_name = _request_tool_name(request)
+        tool_name = invocation.name
         update: dict[str, Any] = {}
-        transitioned_path = _result_state_value(result, PAGE_CONTEXT_PATH)
+        transitioned_path = command_state_value(typed_result, PAGE_CONTEXT_PATH)
         if tool_name == "close_package" and state.get(PROBE_STATUS) == PROBE_COMPLETION_AUTHORIZED:
             update.update(
                 {
@@ -266,7 +275,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
             update[PROBE_PREMATURE_FINAL_COUNT] = 0
         elif state.get(PROBE_STATUS) == PROBE_RUNNING:
             update[PROBE_PREMATURE_FINAL_COUNT] = 0
-        return _with_state_update(result, update) if update else result
+        return with_state_update(typed_result, update) if update else result
 
     def _completion_evaluation(self, state: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         missing: list[str] = []
@@ -350,53 +359,49 @@ def _latest_ai_message(messages: Sequence[Any]) -> AIMessage | None:
         if isinstance(message, AIMessage):
             return message
         if isinstance(message, Mapping) and message.get("role") == "assistant":
-            return message  # type: ignore[return-value]
+            return AIMessage(
+                content=message.get("content", ""),
+                id=message.get("id"),
+                tool_calls=message.get("tool_calls") or [],
+            )
     return None
 
 
-def _message_tool_calls(message: Any) -> Sequence[Any]:
-    calls = getattr(message, "tool_calls", None)
-    if calls is None and isinstance(message, Mapping):
-        calls = message.get("tool_calls")
-    return calls if isinstance(calls, Sequence) and not isinstance(calls, (str, bytes)) else ()
+def _message_tool_calls(message: AIMessage) -> Sequence[Any]:
+    return message.tool_calls
 
 
 def _continuation_message_ids(messages: Sequence[Any]) -> list[str]:
     ids: list[str] = []
     for message in messages:
-        context = getattr(message, "additional_kwargs", {}).get("bines_context", {})
+        if not isinstance(message, SystemMessage):
+            continue
+        context = message.additional_kwargs.get("bines_context", {})
         if isinstance(context, Mapping) and context.get("kind") == "probe_runtime_continuation":
-            message_id = getattr(message, "id", None)
+            message_id = message.id
             if message_id:
                 ids.append(str(message_id))
     return ids
 
 
 def _lifecycle_error(request: Any, error_type: str, detail: str) -> ToolMessage:
-    call = getattr(request, "tool_call", None)
-    call = call if isinstance(call, Mapping) else {}
+    invocation = ToolInvocation.from_request(request)
     return ToolMessage(
         content=json.dumps(
             {
                 "ok": False,
                 "error_type": error_type,
                 "detail": detail,
-                "page_path": str(_state(request).get(PAGE_CONTEXT_PATH) or ""),
+                "page_path": str(invocation.state.get(PAGE_CONTEXT_PATH) or ""),
             },
             ensure_ascii=False,
             sort_keys=True,
         ),
-        tool_call_id=str(call.get("id") or call.get("tool_call_id") or ""),
-        name=str(call.get("name") or "unknown_tool"),
+        tool_call_id=invocation.call_id,
+        name=invocation.name or "unknown_tool",
         status="error",
         additional_kwargs={"error_type": error_type},
     )
-
-
-def _result_state_value(result: Any, key: str) -> Any | None:
-    if isinstance(result, Command) and isinstance(result.update, Mapping) and key in result.update:
-        return result.update[key]
-    return None
 
 
 __all__ = ["MAX_PREMATURE_FINALS", "ProbeLifecycleMiddleware"]

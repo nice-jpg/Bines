@@ -77,6 +77,7 @@ def _state(path: str = "meituan/外卖", **overrides) -> dict:
 def _request(tool_name: str, state: dict, **args):
     return SimpleNamespace(
         tool_call={"name": tool_name, "id": f"{tool_name}-1", "args": args},
+        tool=None,
         state=state,
         runtime=SimpleNamespace(config={"configurable": {"thread_id": "thread-1"}}),
     )

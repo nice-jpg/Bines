@@ -22,6 +22,7 @@ class ToolErrorMiddlewareTests(unittest.TestCase):
                 "args": {"x": 100, "y": 200},
             },
             tool=SimpleNamespace(name="tap"),
+            state={},
         )
 
     def test_successful_sync_tool_result_is_unchanged(self) -> None:
@@ -63,7 +64,14 @@ class ToolErrorMiddlewareTests(unittest.TestCase):
             self.middleware.wrap_tool_call(self.request, interrupt)
 
     def test_error_message_falls_back_when_tool_metadata_is_missing(self) -> None:
-        result = make_tool_error_message(SimpleNamespace(), RuntimeError())
+        result = make_tool_error_message(
+            SimpleNamespace(
+                tool_call={"id": "", "name": "", "args": {}},
+                tool=None,
+                state={},
+            ),
+            RuntimeError(),
+        )
 
         self.assertEqual(result.name, "unknown_tool")
         self.assertEqual(result.tool_call_id, "")

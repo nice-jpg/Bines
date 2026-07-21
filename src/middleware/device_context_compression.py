@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -10,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 
 XML_DEVICE_TOOLS = {
     "uiautomate",
@@ -93,9 +93,15 @@ def compact_device_messages(messages: Sequence[Any]) -> list[Any]:
 
 
 def _extract_tool_calls(message: Any) -> dict[str, ToolCallInfo]:
-    raw_tool_calls = _get_value(message, "tool_calls") or []
+    if isinstance(message, AIMessage):
+        raw_tool_calls = message.tool_calls
+        additional_kwargs = message.additional_kwargs
+    elif isinstance(message, Mapping):
+        raw_tool_calls = message.get("tool_calls") or []
+        additional_kwargs = message.get("additional_kwargs") or {}
+    else:
+        return {}
     if not raw_tool_calls:
-        additional_kwargs = _get_value(message, "additional_kwargs") or {}
         raw_tool_calls = additional_kwargs.get("tool_calls", []) if isinstance(additional_kwargs, Mapping) else []
 
     extracted: dict[str, ToolCallInfo] = {}
@@ -107,11 +113,13 @@ def _extract_tool_calls(message: Any) -> dict[str, ToolCallInfo]:
 
 
 def _parse_tool_call(raw_call: Any) -> tuple[str | None, str | None, Mapping[str, Any]]:
-    call_id = _get_value(raw_call, "id") or _get_value(raw_call, "tool_call_id")
-    name = _get_value(raw_call, "name")
-    args = _get_value(raw_call, "args") or {}
+    if not isinstance(raw_call, Mapping):
+        return None, None, {}
+    call_id = raw_call.get("id") or raw_call.get("tool_call_id")
+    name = raw_call.get("name")
+    args = raw_call.get("args") or {}
 
-    function = _get_value(raw_call, "function")
+    function = raw_call.get("function")
     if isinstance(function, Mapping):
         name = name or function.get("name")
         args = args or function.get("arguments") or {}
@@ -136,31 +144,27 @@ def _normalize_args(args: Any) -> Mapping[str, Any]:
 
 
 def _message_content(message: Any) -> str | None:
-    content = _get_value(message, "content")
+    content = message.get("content") if isinstance(message, Mapping) else message.content
     if isinstance(content, str):
         return content
     return None
 
 
 def _message_args(message: Any) -> Mapping[str, Any]:
-    args = _get_value(message, "args")
+    args = message.get("args") if isinstance(message, Mapping) else message.additional_kwargs.get("args")
     return _normalize_args(args)
 
 
 def _tool_call_id(message: Any) -> str | None:
-    value = _get_value(message, "tool_call_id")
+    value = message.get("tool_call_id") if isinstance(message, Mapping) else (
+        message.tool_call_id if isinstance(message, ToolMessage) else None
+    )
     return str(value) if value else None
 
 
 def _tool_name(message: Any) -> str | None:
-    value = _get_value(message, "name")
+    value = message.get("name") if isinstance(message, Mapping) else message.name
     return str(value) if value else None
-
-
-def _get_value(value: Any, key: str) -> Any:
-    if isinstance(value, Mapping):
-        return value.get(key)
-    return getattr(value, key, None)
 
 
 def _is_xml_content(content: str | None) -> bool:
@@ -306,13 +310,6 @@ def _copy_message_with_content(message: Any, content: str) -> Any:
         updated = dict(message)
         updated["content"] = content
         return updated
-    if hasattr(message, "model_copy"):
+    if isinstance(message, BaseMessage):
         return message.model_copy(update={"content": content})
-    if hasattr(message, "copy"):
-        try:
-            return message.copy(update={"content": content})
-        except TypeError:
-            pass
-    updated = copy.copy(message)
-    setattr(updated, "content", content)
-    return updated
+    raise TypeError(f"Unsupported message type: {type(message).__name__}")

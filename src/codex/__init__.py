@@ -1,5 +1,5 @@
 
 
-from .codex_oauth import create_chat_model
+from .codex_oauth import OpenAICodexModel, create_chat_model
 
-__all__ = ["create_chat_model"]
+__all__ = ["OpenAICodexModel", "create_chat_model"]

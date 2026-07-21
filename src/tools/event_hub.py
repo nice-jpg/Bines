@@ -258,7 +258,7 @@ def build_tools() -> list[StructuredTool]:
 
 
 def _build_tool(spec: ToolSpec, hub: EventHub) -> StructuredTool:
-    operation = getattr(hub, spec.operation_name)
+    operation = _resolve_operation(spec.operation_name, hub)
     tool_func = model_tool_callable(operation)
     safety_policy = dangerous_policy_for(operation)
     metadata = (
@@ -272,3 +272,25 @@ def _build_tool(spec: ToolSpec, hub: EventHub) -> StructuredTool:
         description=spec.description,
         metadata=metadata,
     )
+
+
+def _resolve_operation(operation_name: str, hub: EventHub) -> Callable[..., object]:
+    """Resolve only the operation requested by the current tool specification."""
+
+    if operation_name == "run_package":
+        return hub.run_package
+    if operation_name == "close_package":
+        return hub.close_package
+    if operation_name == "tap":
+        return hub.tap
+    if operation_name == "swipe_up":
+        return hub.swipe_up
+    if operation_name == "swipe_down":
+        return hub.swipe_down
+    if operation_name == "swipe_back":
+        return hub.swipe_back
+    if operation_name == "uiautomate":
+        return hub.uiautomate
+    if operation_name == "screenshot":
+        return hub.screenshot
+    raise ValueError(f"Unsupported EventHub operation: {operation_name}")

@@ -60,6 +60,7 @@ def _state(*, message: AIMessage | None = None, path: str = "meituan/外卖/美�
 def _request(tool_name: str, state: dict, **args) -> SimpleNamespace:
     return SimpleNamespace(
         tool_call={"name": tool_name, "id": f"{tool_name}-1", "args": args},
+        tool=None,
         state=state,
     )
 

@@ -13,11 +13,12 @@ from typing import Any, Iterable, Mapping, Sequence
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
+from langchain_core.tools import BaseTool
 
 from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command
+from langgraph.types import Command, Interrupt
 from langgraph.errors import GraphRecursionError
 
 try:
@@ -393,11 +394,11 @@ def _ensure_unique_tool_names(tools: Sequence[Any], *, source: str) -> None:
         seen.add(name)
 
 
-def _tool_name(tool: Any) -> str | None:
+def _tool_name(tool: BaseTool | Mapping[str, Any]) -> str | None:
     if isinstance(tool, Mapping):
         value = tool.get("name")
         return str(value) if value else None
-    value = getattr(tool, "name", None)
+    value = tool.name
     return str(value) if value else None
 
 def run_agent_loop(
@@ -423,9 +424,7 @@ def _latest_text(state: Mapping[str, Any]) -> str:
         return ""
 
     latest = messages[-1]
-    content = getattr(latest, "content", None)
-    if content is None and isinstance(latest, Mapping):
-        content = latest.get("content")
+    content = latest.get("content") if isinstance(latest, Mapping) else latest.content
     if isinstance(content, str):
         return content
     if content is None:
@@ -434,7 +433,7 @@ def _latest_text(state: Mapping[str, Any]) -> str:
 
 
 def _interrupt_value(value: Any) -> Any:
-    return getattr(value, "value", value)
+    return value.value if isinstance(value, Interrupt) else value
 
 
 def _interrupt_kind(interrupts: Sequence[Any]) -> str:

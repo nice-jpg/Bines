@@ -108,6 +108,9 @@ class AgentRuntimeTests(unittest.TestCase):
                 instance.func = kwargs["func"]
                 return instance
 
+        class BaseTool:
+            pass
+
         class SummarizationMiddleware(AgentMiddleware):
             def __init__(self, model):
                 self.model = model
@@ -152,6 +155,7 @@ class AgentRuntimeTests(unittest.TestCase):
         langchain_core_messages.BaseMessage = BaseMessage
         langchain_core_messages.ToolMessage = ToolMessage
         langchain_core_tools.StructuredTool = StructuredTool
+        langchain_core_tools.BaseTool = BaseTool
 
         sys.modules["langchain"] = langchain
         sys.modules["langchain.agents"] = langchain_agents

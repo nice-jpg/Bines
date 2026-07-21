@@ -31,6 +31,7 @@ def _request(
 ) -> SimpleNamespace:
     return SimpleNamespace(
         tool_call={"name": tool_name, "id": f"{tool_name}-1", "args": {}},
+        tool=None,
         state={
             PAGE_CONTEXT_PATH: page_path,
             PAGE_CONTEXT_OVERLAY: overlay,

@@ -43,7 +43,11 @@ def _state(visit_id: str = "visit-a", *, overlay: bool = False) -> dict:
 
 
 def _tool_request(name: str, state: dict):
-    return SimpleNamespace(tool_call={"name": name, "id": f"{name}-1", "args": {}}, state=state)
+    return SimpleNamespace(
+        tool_call={"name": name, "id": f"{name}-1", "args": {}},
+        tool=None,
+        state=state,
+    )
 
 
 def test_untrained_merchant_visit_only_exposes_collector_control_tools(tmp_path: Path) -> None:

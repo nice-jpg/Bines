@@ -14,43 +14,42 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
 
 
 F = TypeVar("F", bound=Callable[..., Any])
-_DANGEROUS_POLICY_ATTR = "__bines_dangerous_tool_policy__"
-_TOOL_CALLABLE_ADAPTER_ATTR = "__bines_tool_callable_adapter__"
+_DANGEROUS_POLICIES: dict[Callable[..., Any], DangerousToolPolicy] = {}
+_TOOL_CALLABLE_ADAPTERS: dict[Callable[..., Any], Callable[..., Any]] = {}
 
 
 def dangerous_func(func: F) -> F:
     """Declare that a method needs structured justification as a model tool."""
 
     policy_id = f"{func.__module__}.{func.__qualname__}"
-    setattr(func, _DANGEROUS_POLICY_ATTR, DangerousToolPolicy(policy_id=policy_id))
-    setattr(func, _TOOL_CALLABLE_ADAPTER_ATTR, _dangerous_tool_callable)
+    _DANGEROUS_POLICIES[func] = DangerousToolPolicy(policy_id=policy_id)
+    _TOOL_CALLABLE_ADAPTERS[func] = _dangerous_tool_callable
     return func
 
 
 def xy_operation(func: F) -> F:
     """Declare that a method is a coordinate-based page operation."""
 
-    setattr(func, _TOOL_CALLABLE_ADAPTER_ATTR, _xy_tool_callable)
+    _TOOL_CALLABLE_ADAPTERS[func] = _xy_tool_callable
     return func
 
 
 def dangerous_policy_for(func: Callable[..., Any]) -> DangerousToolPolicy | None:
     """Read a policy attached by ``dangerous_func``."""
 
-    policy = getattr(func, _DANGEROUS_POLICY_ATTR, None)
-    return policy if isinstance(policy, DangerousToolPolicy) else None
+    return _DANGEROUS_POLICIES.get(_declaration_target(func))
 
 
 def is_xy_operation(func: Callable[..., Any]) -> bool:
     """Return whether a method was declared with ``xy_operation``."""
 
-    return getattr(func, _TOOL_CALLABLE_ADAPTER_ATTR, None) is _xy_tool_callable
+    return _TOOL_CALLABLE_ADAPTERS.get(_declaration_target(func)) is _xy_tool_callable
 
 
 def model_tool_callable(func: Callable[..., Any]) -> Callable[..., Any]:
     """Build the model-facing callable while preserving direct method APIs."""
 
-    adapter = getattr(func, _TOOL_CALLABLE_ADAPTER_ATTR, None)
+    adapter = _TOOL_CALLABLE_ADAPTERS.get(_declaration_target(func))
     return adapter(func) if callable(adapter) else func
 
 
@@ -77,11 +76,15 @@ def _dangerous_tool_callable(func: Callable[..., Any]) -> Callable[..., Any]:
     )
     parameters.insert(var_keyword_index, justification_parameter)
     guarded.__annotations__ = {
-        **getattr(func, "__annotations__", {}),
+        **inspect.get_annotations(func),
         "justification": DangerousActionJustification,
     }
     guarded.__signature__ = signature.replace(parameters=parameters)  # type: ignore[attr-defined]
     return cast(Callable[..., Any], guarded)
+
+
+def _declaration_target(func: Callable[..., Any]) -> Callable[..., Any]:
+    return func.__func__ if inspect.ismethod(func) else func
 
 
 def _xy_tool_callable(func: Callable[..., Any]) -> Callable[[int, int], Any]:

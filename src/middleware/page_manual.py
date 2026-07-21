@@ -81,7 +81,7 @@ class PageManualMiddleware(AgentMiddleware[PageContextState]):
         return {"messages": [_manual_message(current_path, visit_id, digest, bundle)]}
 
     def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
-        state = _state(request)
+        state = request.state
         if not state.get(PAGE_CONTEXT_ACTIVE, False) or not state.get(PAGE_CONTEXT_OVERLAY, False):
             return request
         overlay = SystemMessage(
@@ -136,11 +136,6 @@ def _message_context(message: Any) -> Mapping[str, Any]:
         return {}
     context = additional_kwargs.get("bines_context")
     return context if isinstance(context, Mapping) else {}
-
-
-def _state(request: Any) -> Mapping[str, Any]:
-    state = getattr(request, "state", None)
-    return state if isinstance(state, Mapping) else {}
 
 
 __all__ = ["PageManualMiddleware"]

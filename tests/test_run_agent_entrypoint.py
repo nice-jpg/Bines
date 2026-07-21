@@ -63,6 +63,12 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 calls["runtime_init"] += 1
                 self.tools = tools
 
+            def has_pending_interrupt(self, _session_id):
+                return False
+
+            def pending_interrupt_kind(self, _session_id):
+                return None
+
             def run_turn(self, messages, *, session_id=None, max_iterations):
                 calls["run_turn"].append((messages, session_id, max_iterations))
                 operation_notice = self.tools[0]
@@ -88,6 +94,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_channel.load_feishu_config = lambda: "config"
         fake_model = types.ModuleType("src.model")
         fake_model.build_model = FakeModel
+        fake_model.close_model = lambda model: model.close()
         fake_tools_common = types.ModuleType("src.tools.common")
         fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
         fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool
@@ -156,6 +163,9 @@ class RunAgentEntrypointTests(unittest.TestCase):
             def has_pending_interrupt(self, session_id):
                 return self.pending.get(session_id, False)
 
+            def pending_interrupt_kind(self, _session_id):
+                return "human"
+
             def run_turn(self, messages, *, session_id=None, max_iterations):
                 calls["run_turn"].append((messages, session_id, max_iterations))
                 if session_id == "feishu:chat_1":
@@ -187,6 +197,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         fake_channel.load_feishu_config = lambda: "config"
         fake_model = types.ModuleType("src.model")
         fake_model.build_model = FakeModel
+        fake_model.close_model = lambda model: model.close()
         fake_tools_common = types.ModuleType("src.tools.common")
         fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
         fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool

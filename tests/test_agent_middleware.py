@@ -80,6 +80,9 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 instance.func = kwargs["func"]
                 return instance
 
+        class BaseTool:
+            pass
+
         class SummarizationMiddleware(AgentMiddleware):
             def __init__(self, model):
                 self.model = model
@@ -111,6 +114,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         langchain_core_messages.BaseMessage = BaseMessage
         langchain_core_messages.ToolMessage = ToolMessage
         langchain_core_tools.StructuredTool = StructuredTool
+        langchain_core_tools.BaseTool = BaseTool
 
         sys.modules["langchain"] = langchain
         sys.modules["langchain.agents"] = langchain_agents
@@ -193,9 +197,10 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
         hitl = middleware.create_captcha_human_in_the_loop_middleware([FakeTool()])
         hitl._should_interrupt = lambda tool_call, config, state, runtime: True
+        captcha_module = importlib.import_module("middleware.captcha_human_in_loop")
         state = {
             "messages": [
-                sys.modules["langchain_core.messages"].AIMessage(),
+                captcha_module.AIMessage(content=""),
             ]
         }
         state["messages"][0].tool_calls = [

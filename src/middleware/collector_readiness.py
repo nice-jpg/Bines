@@ -13,12 +13,15 @@ from langchain.agents.middleware.types import (
     ToolCallRequest,
 )
 from langchain_core.messages import ToolMessage
+from langchain_core.tools import BaseTool
 
 try:
     from src.middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+    from src.middleware.tool_io import ToolInvocation, tool_definition_name
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+    from middleware.tool_io import ToolInvocation, tool_definition_name
     from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
@@ -74,7 +77,7 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         return rejection if rejection is not None else await handler(request)
 
     def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
-        state = _state(request)
+        state = request.state
         if not self._requires_training(state):
             return request
         allowed = set(UNTRAINED_VISIBLE_TOOLS)
@@ -83,16 +86,16 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         return request.override(tools=_tools_named(request.tools, allowed))
 
     def _rejection(self, request: ToolCallRequest) -> ToolMessage | None:
-        state = _state(request)
+        invocation = ToolInvocation.from_request(request)
+        state = invocation.state
         if not self._requires_training(state):
             return None
-        tool_name = _request_tool_name(request)
+        tool_name = invocation.name
         allowed = set(UNTRAINED_VISIBLE_TOOLS)
         if state.get(PAGE_CONTEXT_OVERLAY, False):
             allowed.add("tap_in_page")
         if tool_name in allowed:
             return None
-        call = request.tool_call if isinstance(request.tool_call, Mapping) else {}
         return ToolMessage(
             content=json.dumps(
                 {
@@ -105,7 +108,7 @@ class CollectorReadinessMiddleware(AgentMiddleware):
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            tool_call_id=str(call.get("id") or "collector-readiness"),
+            tool_call_id=invocation.call_id or "collector-readiness",
             name=tool_name or None,
             status="error",
         )
@@ -120,26 +123,8 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         )
 
 
-def _state(request: Any) -> Mapping[str, Any]:
-    state = getattr(request, "state", None)
-    return state if isinstance(state, Mapping) else {}
-
-
-def _request_tool_name(request: Any) -> str:
-    call = getattr(request, "tool_call", None)
-    if isinstance(call, Mapping):
-        return str(call.get("name") or "")
-    return str(getattr(getattr(request, "tool", None), "name", "") or "")
-
-
-def _tool_name(tool: Any) -> str:
-    if isinstance(tool, Mapping):
-        return str(tool.get("name") or tool.get("function", {}).get("name") or "")
-    return str(getattr(tool, "name", "") or "")
-
-
-def _tools_named(tools: Sequence[Any], names: set[str]) -> list[Any]:
-    return [tool for tool in tools if _tool_name(tool) in names]
+def _tools_named(tools: Sequence[BaseTool | dict[str, Any]], names: set[str]) -> list[BaseTool | dict[str, Any]]:
+    return [tool for tool in tools if tool_definition_name(tool) in names]
 
 
 __all__ = ["CollectorReadinessMiddleware", "UNTRAINED_VISIBLE_TOOLS"]

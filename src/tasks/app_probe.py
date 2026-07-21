@@ -70,5 +70,5 @@ def _message_content(message: Any) -> str | None:
     if isinstance(message, Mapping):
         content = message.get("content")
     else:
-        content = getattr(message, "content", None)
+        content = message.content
     return content if isinstance(content, str) else None

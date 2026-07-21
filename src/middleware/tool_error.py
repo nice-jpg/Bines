@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
+
+try:
+    from src.middleware.tool_io import ToolInvocation
+except ModuleNotFoundError:
+    from middleware.tool_io import ToolInvocation
 
 
 class ToolErrorMiddleware(AgentMiddleware):
@@ -14,8 +19,8 @@ class ToolErrorMiddleware(AgentMiddleware):
 
     def wrap_tool_call(
         self,
-        request: Any,
-        handler: Callable[[Any], ToolMessage | Any],
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Any],
     ) -> ToolMessage | Any:
         try:
             return handler(request)
@@ -26,8 +31,8 @@ class ToolErrorMiddleware(AgentMiddleware):
 
     async def awrap_tool_call(
         self,
-        request: Any,
-        handler: Callable[[Any], Awaitable[ToolMessage | Any]],
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Any]],
     ) -> ToolMessage | Any:
         try:
             return await handler(request)
@@ -37,14 +42,12 @@ class ToolErrorMiddleware(AgentMiddleware):
             return make_tool_error_message(request, error)
 
 
-def make_tool_error_message(request: Any, error: Exception) -> ToolMessage:
+def make_tool_error_message(request: ToolCallRequest, error: Exception) -> ToolMessage:
     """Build a concise error result associated with the original tool call."""
 
-    tool_call = getattr(request, "tool_call", None)
-    call = tool_call if isinstance(tool_call, Mapping) else {}
-    tool = getattr(request, "tool", None)
-    tool_name = str(call.get("name") or getattr(tool, "name", None) or "unknown_tool")
-    tool_call_id = str(call.get("id") or call.get("tool_call_id") or "")
+    invocation = ToolInvocation.from_request(request)
+    tool_name = invocation.name or "unknown_tool"
+    tool_call_id = invocation.call_id
     error_type = type(error).__name__
     error_message = str(error).strip() or "No error message was provided."
     content = (

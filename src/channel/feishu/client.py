@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Protocol
 
 import lark_oapi as lark
 from lark_oapi.api.im.v1 import (
@@ -14,6 +14,15 @@ from lark_oapi.api.im.v1 import (
 )
 
 from .config import FeishuConfig
+
+
+class FeishuApiResponse(Protocol):
+    code: Any
+    msg: Any
+
+    def success(self) -> bool: ...
+
+    def get_log_id(self) -> str: ...
 
 
 class FeishuMessenger:
@@ -59,11 +68,10 @@ def _text_content(text: str) -> str:
     return json.dumps({"text": str(text)}, ensure_ascii=False)
 
 
-def _check_response(response: Any, operation: str) -> None:
-    success = response.success() if hasattr(response, "success") else bool(response)
-    if success:
+def _check_response(response: FeishuApiResponse, operation: str) -> None:
+    if response.success():
         return
-    code = getattr(response, "code", "")
-    msg = getattr(response, "msg", "")
-    log_id = response.get_log_id() if hasattr(response, "get_log_id") else ""
-    raise RuntimeError(f"{operation} failed, code: {code}, msg: {msg}, log_id: {log_id}")
+    raise RuntimeError(
+        f"{operation} failed, code: {response.code}, msg: {response.msg}, "
+        f"log_id: {response.get_log_id()}"
+    )

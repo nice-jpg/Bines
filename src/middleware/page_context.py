@@ -18,15 +18,30 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     ToolCallRequest,
 )
-from langchain_core.messages import ToolMessage
-from langgraph.types import Command
+from langchain_core.messages import AIMessage, ToolMessage
 from typing_extensions import NotRequired
 
 try:
     from src.middleware.probe_state import reset_collection_state
+    from src.middleware.tool_io import (
+        ToolInvocation,
+        require_tool_result,
+        tool_definition_name,
+        tool_messages,
+        tool_succeeded,
+        with_state_update,
+    )
     from src.page_mechanism import PageMechanism, normalize_page_path
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.probe_state import reset_collection_state
+    from middleware.tool_io import (
+        ToolInvocation,
+        require_tool_result,
+        tool_definition_name,
+        tool_messages,
+        tool_succeeded,
+        with_state_update,
+    )
     from page_mechanism import PageMechanism, normalize_page_path
 
 
@@ -142,7 +157,7 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         return self._apply_transition(request, await handler(request))
 
     def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
-        state = _state(request)
+        state = request.state
         if not state.get(PAGE_CONTEXT_ACTIVE, False):
             return request
 
@@ -158,17 +173,18 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
                 state.get(PAGE_COLLECTION_STARTED, False)
                 or int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0)) >= policy.max_product_entry_taps
             ):
-                tools = [tool for tool in tools if _tool_name(tool) != "tap_in_page"]
+                tools = [tool for tool in tools if tool_definition_name(tool) != "tap_in_page"]
 
         model_settings = dict(request.model_settings or {})
         model_settings["parallel_tool_calls"] = False
         return request.override(tools=tools, model_settings=model_settings)
 
     def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
-        state = _state(request)
+        invocation = ToolInvocation.from_request(request)
+        state = invocation.state
         if not state.get(PAGE_CONTEXT_ACTIVE, False):
             return None
-        tool_name = _request_tool_name(request)
+        tool_name = invocation.name
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
 
         if state.get(PAGE_CONTEXT_OVERLAY, False) and tool_name in DEVICE_ACTION_TOOLS - {"tap_in_page", "close_package"}:
@@ -176,7 +192,7 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         if not current_path and tool_name in DEVICE_ACTION_TOOLS - {"run_package", "close_package"}:
             return _context_error(request, "application_not_open", "Call run_package before page operations.")
 
-        args = _request_args(request)
+        args = invocation.args
         if tool_name == "run_package":
             try:
                 self.mechanism.home_path_for_package(str(args.get("package_name") or ""))
@@ -221,7 +237,8 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         return ""
 
     def _claim_device_action(self, request: ToolCallRequest) -> ToolMessage | None:
-        tool_name = _request_tool_name(request)
+        invocation = ToolInvocation.from_request(request)
+        tool_name = invocation.name
         if tool_name not in DEVICE_ACTION_TOOLS:
             return None
         step_key = _device_step_key(request)
@@ -242,11 +259,13 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         return None
 
     def _apply_transition(self, request: ToolCallRequest, result: Any) -> Any:
-        state = _state(request)
-        if not state.get(PAGE_CONTEXT_ACTIVE, False) or not _tool_succeeded(result):
+        invocation = ToolInvocation.from_request(request)
+        state = invocation.state
+        typed_result = require_tool_result(result)
+        if not state.get(PAGE_CONTEXT_ACTIVE, False) or not tool_succeeded(typed_result):
             return result
-        tool_name = _request_tool_name(request)
-        args = _request_args(request)
+        tool_name = invocation.name
+        args = invocation.args
         update: dict[str, Any] = {}
 
         if tool_name == "run_package":
@@ -277,7 +296,7 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         elif tool_name == "uiautomate" and is_compact_popup_result(result):
             update = {PAGE_CONTEXT_OVERLAY: True}
 
-        return _with_state_update(result, update) if update else result
+        return with_state_update(typed_result, update) if update else result
 
 
 def initial_page_context_state() -> dict[str, Any]:
@@ -336,32 +355,8 @@ def is_compact_popup_result(result: Any) -> bool:
     )
 
 
-def _state(request: Any) -> Mapping[str, Any]:
-    state = getattr(request, "state", None)
-    return state if isinstance(state, Mapping) else {}
-
-
-def _tool_name(tool: Any) -> str:
-    if isinstance(tool, Mapping):
-        return str(tool.get("name") or tool.get("function", {}).get("name") or "")
-    return str(getattr(tool, "name", "") or "")
-
-
 def _tools_named(tools: Sequence[Any], names: set[str] | frozenset[str]) -> list[Any]:
-    return [tool for tool in tools if _tool_name(tool) in names]
-
-
-def _request_tool_name(request: Any) -> str:
-    call = getattr(request, "tool_call", None)
-    if isinstance(call, Mapping):
-        return str(call.get("name") or "")
-    return _tool_name(getattr(request, "tool", None))
-
-
-def _request_args(request: Any) -> Mapping[str, Any]:
-    call = getattr(request, "tool_call", None)
-    args = call.get("args") if isinstance(call, Mapping) else None
-    return args if isinstance(args, Mapping) else {}
+    return [tool for tool in tools if tool_definition_name(tool) in names]
 
 
 def _canonical_path(value: Any) -> str:
@@ -370,75 +365,52 @@ def _canonical_path(value: Any) -> str:
 
 
 def _device_step_key(request: Any) -> tuple[str, str] | None:
-    state = _state(request)
+    invocation = ToolInvocation.from_request(request)
+    state = invocation.state
     messages = state.get("messages") or []
     if not messages:
         return None
     latest = messages[-1]
-    message_id = getattr(latest, "id", None)
-    if message_id is None and isinstance(latest, Mapping):
-        message_id = latest.get("id")
+    message_id = latest.get("id") if isinstance(latest, Mapping) else latest.id
     if not message_id:
-        tool_calls = getattr(latest, "tool_calls", None)
-        if tool_calls is None and isinstance(latest, Mapping):
-            tool_calls = latest.get("tool_calls")
+        tool_calls = latest.get("tool_calls") if isinstance(latest, Mapping) else (
+            latest.tool_calls if isinstance(latest, AIMessage) else None
+        )
+        content = latest.get("content", "") if isinstance(latest, Mapping) else latest.content
         fingerprint_input = json.dumps(
-            tool_calls or {"message_index": len(messages) - 1, "content": str(getattr(latest, "content", ""))},
+            tool_calls or {"message_index": len(messages) - 1, "content": str(content)},
             ensure_ascii=False,
             sort_keys=True,
             default=str,
         )
         message_id = hashlib.sha256(fingerprint_input.encode("utf-8")).hexdigest()
-    runtime = getattr(request, "runtime", None)
-    config = getattr(runtime, "config", None)
-    configurable = config.get("configurable", {}) if isinstance(config, Mapping) else {}
+    configurable = request.runtime.config.get("configurable", {})
     thread_id = str(configurable.get("thread_id") or "default") if isinstance(configurable, Mapping) else "default"
     return thread_id, str(message_id)
 
 
 def _context_error(request: Any, error_type: str, detail: str) -> ToolMessage:
-    call = getattr(request, "tool_call", None)
-    call = call if isinstance(call, Mapping) else {}
+    invocation = ToolInvocation.from_request(request)
     payload = {
         "ok": False,
         "error_type": error_type,
         "detail": detail,
-        "page_path": str(_state(request).get(PAGE_CONTEXT_PATH) or ""),
+        "page_path": str(invocation.state.get(PAGE_CONTEXT_PATH) or ""),
     }
     return ToolMessage(
         content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-        tool_call_id=str(call.get("id") or call.get("tool_call_id") or ""),
-        name=str(call.get("name") or "unknown_tool"),
+        tool_call_id=invocation.call_id,
+        name=invocation.name or "unknown_tool",
         status="error",
         additional_kwargs={"error_type": error_type},
     )
 
 
-def _tool_succeeded(result: Any) -> bool:
-    messages = _result_messages(result)
-    if not messages:
-        return False
-    message = messages[-1]
-    if getattr(message, "status", "success") == "error":
-        return False
-    content = getattr(message, "content", None)
-    if isinstance(content, Mapping):
-        return not bool(content.get("error_type") or content.get("ok") is False)
-    if isinstance(content, str) and content.lstrip().startswith("{"):
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            return True
-        if isinstance(payload, Mapping):
-            return not bool(payload.get("error_type") or payload.get("ok") is False)
-    return True
-
-
 def _xml_from_result(result: Any) -> str:
-    messages = _result_messages(result)
+    messages = tool_messages(require_tool_result(result))
     if not messages:
         return ""
-    content = getattr(messages[-1], "content", None)
+    content = messages[-1].content
     if not isinstance(content, str):
         return ""
     if content.lstrip().startswith("{"):
@@ -448,25 +420,6 @@ def _xml_from_result(result: Any) -> str:
             return ""
         return str(payload.get("xml") or "") if isinstance(payload, Mapping) else ""
     return content if "<h" in content or "<hierarchy" in content else ""
-
-
-def _result_messages(result: Any) -> list[ToolMessage]:
-    if isinstance(result, ToolMessage):
-        return [result]
-    if isinstance(result, Command) and isinstance(result.update, Mapping):
-        messages = result.update.get("messages") or []
-        return [message for message in messages if isinstance(message, ToolMessage)]
-    return []
-
-
-def _with_state_update(result: Any, state_update: Mapping[str, Any]) -> Command:
-    if isinstance(result, ToolMessage):
-        return Command(update={"messages": [result], **state_update})
-    if isinstance(result, Command):
-        update = dict(result.update) if isinstance(result.update, Mapping) else {}
-        update.update(state_update)
-        return Command(graph=result.graph, update=update, resume=result.resume, goto=result.goto)
-    raise TypeError(f"Unsupported successful tool result: {type(result).__name__}")
 
 
 __all__ = [
