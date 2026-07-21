@@ -50,13 +50,13 @@ def _tool_request(name: str, state: dict):
     )
 
 
-def test_untrained_merchant_visit_only_exposes_collector_control_tools(tmp_path: Path) -> None:
+def test_untrained_merchant_visit_keeps_model_tool_contract_stable(tmp_path: Path) -> None:
     middleware, _registry = _middleware(tmp_path)
     tools = [SimpleNamespace(name=name) for name in ("prepare_collector", "swipe_up", "tap_in_page", "navigate_back")]
+    request = FakeModelRequest(state=_state(), tools=tools)
 
-    prepared = middleware._prepare_model_request(FakeModelRequest(state=_state(), tools=tools))
-
-    assert [tool.name for tool in prepared.tools] == ["prepare_collector", "navigate_back"]
+    assert "wrap_model_call" not in CollectorReadinessMiddleware.__dict__
+    assert request.tools is tools
 
 
 def test_untrained_visit_rejects_page_operation_but_overlay_close_is_allowed(tmp_path: Path) -> None:

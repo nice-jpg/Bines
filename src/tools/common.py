@@ -12,9 +12,11 @@ from langchain_core.tools import StructuredTool
 
 try:
     from src.tools.event_logger import WorkspaceEventLogger
+    from src.tools.operation_policy import OPERATION_NOTICE_SERVICE_METADATA_KEY
     from src.page_mechanism import PAGE_MECHANISM_DIR
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from tools.event_logger import WorkspaceEventLogger
+    from tools.operation_policy import OPERATION_NOTICE_SERVICE_METADATA_KEY
     from page_mechanism import PAGE_MECHANISM_DIR
 
 SHADOW_AUTH_URL = "http://139.224.44.6:9080"
@@ -361,6 +363,7 @@ def create_common_tools(
                 "will enter a lower-level page, include next_page and next_path. The returned "
                 "operation_log is context for later decisions."
             ),
+            metadata={OPERATION_NOTICE_SERVICE_METADATA_KEY: operation_notice},
         ),
         StructuredTool.from_function(
             func=captcha_authentication.authenticate_captcha,

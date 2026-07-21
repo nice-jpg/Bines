@@ -335,10 +335,10 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
 
     def _available_tools(self, state: Mapping[str, Any]) -> list[str]:
         if state.get(PAGE_CONTEXT_OVERLAY):
-            return ["tap_in_page", "notify_user"]
+            return ["tap_in_page"]
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         if not current_path:
-            return ["run_package", "notify_user"]
+            return ["run_package"]
         if self.mechanism.is_merchant_page(current_path):
             tools = [
                 "prepare_collector",
@@ -346,7 +346,6 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
                 "swipe_up",
                 "swipe_down",
                 "is_done",
-                "notify_user",
             ]
             if state.get(MERCHANT_COLLECTION_DONE) is True:
                 tools.append("navigate_back")

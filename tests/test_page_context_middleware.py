@@ -116,6 +116,30 @@ def test_model_request_keeps_base_system_prompt_stable(tmp_path: Path) -> None:
     assert prepared.model_settings["parallel_tool_calls"] is False
 
 
+def test_prelaunch_model_request_keeps_complete_tool_contract(tmp_path: Path) -> None:
+    middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
+    tools = [
+        SimpleNamespace(name=name)
+        for name in ("run_package", "uiautomate", "navigate_to", "prepare_collector")
+    ]
+    request = FakeModelRequest(
+        state=_state(path="", **{PAGE_CONTEXT_APP_ROOT: "", PAGE_VISIT_ID: ""}),
+        tools=tools,
+        system_message=SystemMessage(content="base"),
+    )
+
+    prepared = middleware._prepare_model_request(request)
+
+    assert prepared.tools is tools
+    assert [tool.name for tool in prepared.tools] == [
+        "run_package",
+        "uiautomate",
+        "navigate_to",
+        "prepare_collector",
+    ]
+    assert prepared.model_settings["parallel_tool_calls"] is False
+
+
 def test_run_package_sets_validated_home_path(tmp_path: Path) -> None:
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
     result = middleware.wrap_tool_call(
@@ -244,7 +268,7 @@ def test_overlay_close_does_not_consume_merchant_entry_tap(tmp_path: Path) -> No
     assert PAGE_PRODUCT_ENTRY_TAPS not in result.update
 
 
-def test_overlay_exposes_only_same_page_close_and_context_tools(tmp_path: Path) -> None:
+def test_overlay_keeps_model_tool_contract_stable(tmp_path: Path) -> None:
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
     tools = [SimpleNamespace(name=name) for name in ("tap_in_page", "navigate_to", "uiautomate", "notify_user")]
     request = FakeModelRequest(
@@ -255,7 +279,7 @@ def test_overlay_exposes_only_same_page_close_and_context_tools(tmp_path: Path) 
 
     prepared = middleware._prepare_model_request(request)
 
-    assert [tool.name for tool in prepared.tools] == ["tap_in_page", "notify_user"]
+    assert prepared.tools is tools
     assert prepared.system_message is request.system_message
 
 

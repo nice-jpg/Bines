@@ -21,6 +21,7 @@ from .page_context import (
     initial_page_context_state,
 )
 from .page_manual import PageManualMiddleware
+from .operation_notice import OperationNoticeMiddleware
 from .probe_lifecycle import ProbeLifecycleMiddleware
 from .probe_state import (
     COLLECTION_INITIALIZED,
@@ -55,6 +56,7 @@ __all__ = [
     "PAGE_VISIT_ID",
     "PageContextMiddleware",
     "PageManualMiddleware",
+    "OperationNoticeMiddleware",
     "ProbeLifecycleMiddleware",
     "COLLECTION_INITIALIZED",
     "COLLECTION_LATEST_NEW_COUNT",

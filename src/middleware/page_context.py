@@ -26,7 +26,6 @@ try:
     from src.middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
-        tool_definition_name,
         tool_messages,
         tool_succeeded,
         with_state_update,
@@ -37,7 +36,6 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
-        tool_definition_name,
         tool_messages,
         tool_succeeded,
         with_state_update,
@@ -83,26 +81,6 @@ DEVICE_ACTION_TOOLS = frozenset(
         "swipe_down",
         "uiautomate",
         "screenshot",
-    }
-)
-OVERLAY_VISIBLE_TOOLS = frozenset(
-    {
-        "tap_in_page",
-        "notify_user",
-        "think",
-        "authenticate_captcha",
-        "captcha_authenticated",
-        "close_package",
-    }
-)
-PRE_LAUNCH_VISIBLE_TOOLS = frozenset(
-    {
-        "run_package",
-        "close_package",
-        "notify_user",
-        "think",
-        "authenticate_captcha",
-        "captcha_authenticated",
     }
 )
 BOUNDS_RE = re.compile(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
@@ -161,23 +139,9 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         if not state.get(PAGE_CONTEXT_ACTIVE, False):
             return request
 
-        current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
-        if state.get(PAGE_CONTEXT_OVERLAY, False):
-            tools = _tools_named(request.tools, OVERLAY_VISIBLE_TOOLS)
-        elif not current_path:
-            tools = _tools_named(request.tools, PRE_LAUNCH_VISIBLE_TOOLS)
-        else:
-            tools = list(request.tools)
-            policy = self.mechanism.page_policy(current_path)
-            if policy.role == "merchant" and (
-                state.get(PAGE_COLLECTION_STARTED, False)
-                or int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0)) >= policy.max_product_entry_taps
-            ):
-                tools = [tool for tool in tools if tool_definition_name(tool) != "tap_in_page"]
-
         model_settings = dict(request.model_settings or {})
         model_settings["parallel_tool_calls"] = False
-        return request.override(tools=tools, model_settings=model_settings)
+        return request.override(model_settings=model_settings)
 
     def _validate_tool_call(self, request: ToolCallRequest) -> ToolMessage | None:
         invocation = ToolInvocation.from_request(request)
@@ -353,10 +317,6 @@ def is_compact_popup_result(result: Any) -> bool:
         max(0, right - left) / DEFAULT_VIEWPORT_WIDTH < 0.9
         or max(0, bottom - top) / DEFAULT_VIEWPORT_HEIGHT < 0.7
     )
-
-
-def _tools_named(tools: Sequence[Any], names: set[str] | frozenset[str]) -> list[Any]:
-    return [tool for tool in tools if tool_definition_name(tool) in names]
 
 
 def _canonical_path(value: Any) -> str:

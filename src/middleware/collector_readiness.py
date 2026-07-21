@@ -2,35 +2,31 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping
 import json
 from typing import Any
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    ModelRequest,
-    ModelResponse,
     ToolCallRequest,
 )
 from langchain_core.messages import ToolMessage
-from langchain_core.tools import BaseTool
 
 try:
     from src.middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-    from src.middleware.tool_io import ToolInvocation, tool_definition_name
+    from src.middleware.tool_io import ToolInvocation
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-    from middleware.tool_io import ToolInvocation, tool_definition_name
+    from middleware.tool_io import ToolInvocation
     from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
-UNTRAINED_VISIBLE_TOOLS = frozenset(
+UNTRAINED_ALLOWED_TOOLS = frozenset(
     {
         "prepare_collector",
         "navigate_back",
         "close_package",
-        "notify_user",
         "think",
         "authenticate_captcha",
         "captcha_authenticated",
@@ -50,20 +46,6 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         self.mechanism = mechanism
         self.training_registry = training_registry
 
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        return handler(self._prepare_model_request(request))
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        return await handler(self._prepare_model_request(request))
-
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Any]) -> Any:
         rejection = self._rejection(request)
         return rejection if rejection is not None else handler(request)
@@ -76,22 +58,13 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         rejection = self._rejection(request)
         return rejection if rejection is not None else await handler(request)
 
-    def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
-        state = request.state
-        if not self._requires_training(state):
-            return request
-        allowed = set(UNTRAINED_VISIBLE_TOOLS)
-        if state.get(PAGE_CONTEXT_OVERLAY, False):
-            allowed.add("tap_in_page")
-        return request.override(tools=_tools_named(request.tools, allowed))
-
     def _rejection(self, request: ToolCallRequest) -> ToolMessage | None:
         invocation = ToolInvocation.from_request(request)
         state = invocation.state
         if not self._requires_training(state):
             return None
         tool_name = invocation.name
-        allowed = set(UNTRAINED_VISIBLE_TOOLS)
+        allowed = set(UNTRAINED_ALLOWED_TOOLS)
         if state.get(PAGE_CONTEXT_OVERLAY, False):
             allowed.add("tap_in_page")
         if tool_name in allowed:
@@ -123,8 +96,4 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         )
 
 
-def _tools_named(tools: Sequence[BaseTool | dict[str, Any]], names: set[str]) -> list[BaseTool | dict[str, Any]]:
-    return [tool for tool in tools if tool_definition_name(tool) in names]
-
-
-__all__ = ["CollectorReadinessMiddleware", "UNTRAINED_VISIBLE_TOOLS"]
+__all__ = ["CollectorReadinessMiddleware", "UNTRAINED_ALLOWED_TOOLS"]

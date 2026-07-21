@@ -27,6 +27,7 @@ try:
         CollectorReadinessMiddleware,
         DangerousToolMiddleware,
         DeviceContextCompressionMiddleware,
+        OperationNoticeMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
         ProbeLifecycleMiddleware,
@@ -42,6 +43,7 @@ try:
     from src.tools.content_provider import CollectionWorkbookSink
     from src.tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
     from src.tools.navigation import NAVIGATION_TOOL_NAMES
+    from src.tools.operation_policy import operation_notice_service_from_metadata
     from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
@@ -50,6 +52,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
         CollectorReadinessMiddleware,
         DangerousToolMiddleware,
         DeviceContextCompressionMiddleware,
+        OperationNoticeMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
         ProbeLifecycleMiddleware,
@@ -65,6 +68,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from tools.content_provider import CollectionWorkbookSink
     from tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
     from tools.navigation import NAVIGATION_TOOL_NAMES
+    from tools.operation_policy import operation_notice_service_from_metadata
     from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 
@@ -274,6 +278,16 @@ def build_agent(
             *probe_lifecycle.create_tools(),
         ],
     )
+    operation_notice = OperationNoticeMiddleware(registered_tools)
+    if operation_notice.service is None:
+        raise ValueError(
+            "Conductor tools must include the typed internal operation notice service."
+        )
+    registered_tools = [
+        tool
+        for tool in registered_tools
+        if operation_notice_service_from_metadata(tool.metadata) is None
+    ]
     middlewares: list[AgentMiddleware] = []
     middlewares.append(ToolErrorMiddleware())
     middlewares.append(DangerousToolMiddleware())
@@ -285,6 +299,7 @@ def build_agent(
             training_registry=collector_manager.training_registry,
         )
     )
+    middlewares.append(operation_notice)
     middlewares.append(collection_persistence)
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))

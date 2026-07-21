@@ -19,6 +19,10 @@ try:
     from src.device.translator import check_actions
     from src.tools.event_logger import WorkspaceEventLogger
     from src.tools.optimize_xml import optimize
+    from src.tools.operation_policy import (
+        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
+        ExternalOperationPolicy,
+    )
     from src.tools.safety import DANGEROUS_TOOL_POLICY_METADATA_KEY
     from src.tools.tool_decorators import (
         dangerous_func,
@@ -32,6 +36,10 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from device.translator import check_actions
     from tools.event_logger import WorkspaceEventLogger
     from tools.optimize_xml import optimize
+    from tools.operation_policy import (
+        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
+        ExternalOperationPolicy,
+    )
     from tools.safety import DANGEROUS_TOOL_POLICY_METADATA_KEY
     from tools.tool_decorators import (
         dangerous_func,
@@ -49,6 +57,7 @@ class ToolSpec:
     description: str
     operation_name: str
     returns_xml: bool = False
+    notice_reason: str = "Execute an external device operation."
 
 
 TOOL_SPECS = (
@@ -56,11 +65,13 @@ TOOL_SPECS = (
         "run_package",
         "Open an Android application by package name. This dangerous action requires a structured justification.",
         "run_package",
+        notice_reason="Launch the configured application for the active probe.",
     ),
     ToolSpec(
         "close_package",
         "Force-stop an Android application by package name. This dangerous action requires a structured justification.",
         "close_package",
+        notice_reason="Close the configured application after probe completion.",
     ),
     ToolSpec(
         "tap",
@@ -261,11 +272,11 @@ def _build_tool(spec: ToolSpec, hub: EventHub) -> StructuredTool:
     operation = _resolve_operation(spec.operation_name, hub)
     tool_func = model_tool_callable(operation)
     safety_policy = dangerous_policy_for(operation)
-    metadata = (
-        {DANGEROUS_TOOL_POLICY_METADATA_KEY: safety_policy}
-        if safety_policy is not None
-        else None
-    )
+    metadata = {
+        EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(spec.notice_reason),
+    }
+    if safety_policy is not None:
+        metadata[DANGEROUS_TOOL_POLICY_METADATA_KEY] = safety_policy
     return StructuredTool.from_function(
         func=tool_func,
         name=spec.name,

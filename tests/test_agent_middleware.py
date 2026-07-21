@@ -78,6 +78,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 instance.name = kwargs["name"]
                 instance.description = kwargs["description"]
                 instance.func = kwargs["func"]
+                instance.metadata = kwargs.get("metadata")
                 return instance
 
         class BaseTool:
@@ -131,10 +132,19 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
         agent = importlib.import_module("agent")
         collect_calls = []
+        operation_policy = importlib.import_module("tools.operation_policy")
+        notice_service = object()
 
         def collect_conductor_tools(**kwargs):
             collect_calls.append(kwargs)
-            return []
+            return [
+                types.SimpleNamespace(
+                    name="notify_user",
+                    metadata={
+                        operation_policy.OPERATION_NOTICE_SERVICE_METADATA_KEY: notice_service,
+                    },
+                )
+            ]
 
         agent.collect_conductor_tools = collect_conductor_tools
 
@@ -149,6 +159,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 "ProbeLifecycleMiddleware",
                 "PageContextMiddleware",
                 "CollectorReadinessMiddleware",
+                "OperationNoticeMiddleware",
                 "CollectionPersistenceMiddleware",
                 "DeviceContextCompressionMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
@@ -156,17 +167,18 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 "PageManualMiddleware",
             ],
         )
-        hitl = captured["middleware"][7]
+        hitl = captured["middleware"][8]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
         self.assertIn("is_done", [tool.name for tool in captured["tools"]])
         self.assertIn("authorize_probe_completion", [tool.name for tool in captured["tools"]])
+        self.assertNotIn("notify_user", [tool.name for tool in captured["tools"]])
         self.assertTrue(any(call.get("model") == "model" for call in collect_calls))
         tool_runtime = collect_calls[0]
         self.assertIs(tool_runtime["collector_manager"].mechanism, tool_runtime["mechanism"])
         self.assertIs(tool_runtime["collector_manager"].event_hub, tool_runtime["event_hub"])
-        persistence = captured["middleware"][5]
+        persistence = captured["middleware"][6]
         self.assertIs(persistence.mechanism, tool_runtime["mechanism"])
         page_manual = captured["middleware"][-1]
         self.assertIs(page_manual.mechanism, tool_runtime["mechanism"])

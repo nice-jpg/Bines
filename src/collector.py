@@ -16,11 +16,19 @@ try:
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from src.prompts import COLLECTOR_PROMPT
     from src.tools.event_hub import EventHub
+    from src.tools.operation_policy import (
+        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
+        ExternalOperationPolicy,
+    )
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.tool_io import tool_definition_name
     from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from prompts import COLLECTOR_PROMPT
     from tools.event_hub import EventHub
+    from tools.operation_policy import (
+        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
+        ExternalOperationPolicy,
+    )
 
 
 class CollectorManager:
@@ -610,6 +618,11 @@ def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredT
                 "Inputs: page_path, page_description, merchant_schema, collection_schema. "
                 "Do not include task.md operation steps in page_description."
             ),
+            metadata={
+                EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(
+                    "Train the page-local collection script for this page visit."
+                )
+            },
         )
     ]
 
