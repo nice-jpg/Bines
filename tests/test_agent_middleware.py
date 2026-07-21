@@ -161,13 +161,14 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 "CollectorReadinessMiddleware",
                 "OperationNoticeMiddleware",
                 "CollectionPersistenceMiddleware",
+                "DeviceOperationReliabilityMiddleware",
                 "DeviceContextCompressionMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
                 "SummarizationMiddleware",
                 "PageManualMiddleware",
             ],
         )
-        hitl = captured["middleware"][8]
+        hitl = captured["middleware"][9]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)

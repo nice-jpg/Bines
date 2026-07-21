@@ -11,7 +11,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
 from pydantic import ValidationError
 
-try:
+if __package__ and __package__.startswith("src."):
     from src.middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
     from src.middleware.tool_io import ToolInvocation, require_tool_result, tool_messages
     from src.tools.event_logger import WorkspaceEventLogger
@@ -20,7 +20,7 @@ try:
         DangerousToolPolicy,
         dangerous_policy_from_metadata,
     )
-except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+else:  # Supports running tests and python src/run_agent.py with src on sys.path.
     from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
     from middleware.tool_io import ToolInvocation, require_tool_result, tool_messages
     from tools.event_logger import WorkspaceEventLogger

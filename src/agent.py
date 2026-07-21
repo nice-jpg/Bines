@@ -27,6 +27,7 @@ try:
         CollectorReadinessMiddleware,
         DangerousToolMiddleware,
         DeviceContextCompressionMiddleware,
+        DeviceOperationReliabilityMiddleware,
         OperationNoticeMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
@@ -52,6 +53,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
         CollectorReadinessMiddleware,
         DangerousToolMiddleware,
         DeviceContextCompressionMiddleware,
+        DeviceOperationReliabilityMiddleware,
         OperationNoticeMiddleware,
         PageContextMiddleware,
         PageManualMiddleware,
@@ -301,6 +303,7 @@ def build_agent(
     )
     middlewares.append(operation_notice)
     middlewares.append(collection_persistence)
+    middlewares.append(DeviceOperationReliabilityMiddleware(event_hub=event_hub))
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
     middlewares.append(SummarizationMiddleware(model=model))

@@ -8,7 +8,7 @@ from typing import Any
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.tools import BaseTool
 
-try:
+if __package__ and __package__.startswith("src."):
     from src.middleware.page_context import PAGE_CONTEXT_PATH
     from src.middleware.tool_io import ToolInvocation
     from src.tools.operation_policy import (
@@ -16,7 +16,7 @@ try:
         external_operation_policy_from_metadata,
         operation_notice_service_from_metadata,
     )
-except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+else:  # Supports running tests and python src/run_agent.py with src on sys.path.
     from middleware.page_context import PAGE_CONTEXT_PATH
     from middleware.tool_io import ToolInvocation
     from tools.operation_policy import (

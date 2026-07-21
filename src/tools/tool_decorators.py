@@ -7,50 +7,57 @@ from functools import wraps
 import inspect
 from typing import Any, TypeVar, cast
 
-try:
+if __package__ and __package__.startswith("src."):
     from src.tools.safety import DangerousActionJustification, DangerousToolPolicy
-except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+else:  # Supports running tests and python src/run_agent.py with src on sys.path.
     from tools.safety import DangerousActionJustification, DangerousToolPolicy
 
 
 F = TypeVar("F", bound=Callable[..., Any])
-_DANGEROUS_POLICIES: dict[Callable[..., Any], DangerousToolPolicy] = {}
-_TOOL_CALLABLE_ADAPTERS: dict[Callable[..., Any], Callable[..., Any]] = {}
+_DECLARATION_ATTRIBUTE = "__bines_tool_declaration__"
+_DANGEROUS_POLICY_ATTRIBUTE = "__bines_dangerous_policy__"
+_DANGEROUS_DECLARATION = "dangerous"
+_XY_DECLARATION = "xy"
 
 
 def dangerous_func(func: F) -> F:
     """Declare that a method needs structured justification as a model tool."""
 
     policy_id = f"{func.__module__}.{func.__qualname__}"
-    _DANGEROUS_POLICIES[func] = DangerousToolPolicy(policy_id=policy_id)
-    _TOOL_CALLABLE_ADAPTERS[func] = _dangerous_tool_callable
+    func.__dict__[_DANGEROUS_POLICY_ATTRIBUTE] = DangerousToolPolicy(policy_id=policy_id)
+    func.__dict__[_DECLARATION_ATTRIBUTE] = _DANGEROUS_DECLARATION
     return func
 
 
 def xy_operation(func: F) -> F:
     """Declare that a method is a coordinate-based page operation."""
 
-    _TOOL_CALLABLE_ADAPTERS[func] = _xy_tool_callable
+    func.__dict__[_DECLARATION_ATTRIBUTE] = _XY_DECLARATION
     return func
 
 
 def dangerous_policy_for(func: Callable[..., Any]) -> DangerousToolPolicy | None:
     """Read a policy attached by ``dangerous_func``."""
 
-    return _DANGEROUS_POLICIES.get(_declaration_target(func))
+    policy = _declaration_target(func).__dict__.get(_DANGEROUS_POLICY_ATTRIBUTE)
+    return policy if isinstance(policy, DangerousToolPolicy) else None
 
 
 def is_xy_operation(func: Callable[..., Any]) -> bool:
     """Return whether a method was declared with ``xy_operation``."""
 
-    return _TOOL_CALLABLE_ADAPTERS.get(_declaration_target(func)) is _xy_tool_callable
+    return _declaration_target(func).__dict__.get(_DECLARATION_ATTRIBUTE) == _XY_DECLARATION
 
 
 def model_tool_callable(func: Callable[..., Any]) -> Callable[..., Any]:
     """Build the model-facing callable while preserving direct method APIs."""
 
-    adapter = _TOOL_CALLABLE_ADAPTERS.get(_declaration_target(func))
-    return adapter(func) if callable(adapter) else func
+    declaration = _declaration_target(func).__dict__.get(_DECLARATION_ATTRIBUTE)
+    if declaration == _DANGEROUS_DECLARATION:
+        return _dangerous_tool_callable(func)
+    if declaration == _XY_DECLARATION:
+        return _xy_tool_callable(func)
+    return func
 
 
 def _dangerous_tool_callable(func: Callable[..., Any]) -> Callable[..., Any]:

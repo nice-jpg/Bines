@@ -7,6 +7,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tools import collect_conductor_tools, collect_tools
+from tools.operation_effect import (
+    NAVIGATION_PAGE_CHANGE_POLICY,
+    OPERATION_EFFECT_POLICY_METADATA_KEY,
+    SCROLL_PAGE_CHANGE_POLICY,
+)
 
 
 class FakeSubagentManager:
@@ -86,6 +91,21 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("kill_subagent", tool_names)
         self.assertIn("query_manual", tool_names)
         self.assertGreater(tool_names.index("spawn_subagent"), tool_names.index("append_excel_rows"))
+
+    def test_operation_effect_policies_are_typed_and_narrowly_exposed(self) -> None:
+        tools = {tool.name: tool for tool in collect_conductor_tools()}
+
+        self.assertIs(
+            tools["navigate_to"].metadata[OPERATION_EFFECT_POLICY_METADATA_KEY],
+            NAVIGATION_PAGE_CHANGE_POLICY,
+        )
+        for name in ("swipe_up", "swipe_down"):
+            self.assertIs(
+                tools[name].metadata[OPERATION_EFFECT_POLICY_METADATA_KEY],
+                SCROLL_PAGE_CHANGE_POLICY,
+            )
+        for name in ("tap_in_page", "navigate_back", "run_package", "close_package", "uiautomate"):
+            self.assertNotIn(OPERATION_EFFECT_POLICY_METADATA_KEY, tools[name].metadata)
 
 if __name__ == "__main__":
     unittest.main()

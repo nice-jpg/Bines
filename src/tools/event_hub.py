@@ -13,7 +13,7 @@ import time
 
 from langchain_core.tools import StructuredTool
 
-try:
+if __package__ and __package__.startswith("src."):
     from src.device.adapter import AndroidDevice
     from src.device.results import ErrorResult, is_error_result, make_error_result
     from src.device.translator import check_actions
@@ -23,6 +23,11 @@ try:
         EXTERNAL_OPERATION_POLICY_METADATA_KEY,
         ExternalOperationPolicy,
     )
+    from src.tools.operation_effect import (
+        OPERATION_EFFECT_POLICY_METADATA_KEY,
+        SCROLL_PAGE_CHANGE_POLICY,
+        OperationEffectPolicy,
+    )
     from src.tools.safety import DANGEROUS_TOOL_POLICY_METADATA_KEY
     from src.tools.tool_decorators import (
         dangerous_func,
@@ -30,7 +35,7 @@ try:
         model_tool_callable,
         xy_operation,
     )
-except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+else:  # Supports running as: python src/run_agent.py
     from device.adapter import AndroidDevice
     from device.results import ErrorResult, is_error_result, make_error_result
     from device.translator import check_actions
@@ -39,6 +44,11 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from tools.operation_policy import (
         EXTERNAL_OPERATION_POLICY_METADATA_KEY,
         ExternalOperationPolicy,
+    )
+    from tools.operation_effect import (
+        OPERATION_EFFECT_POLICY_METADATA_KEY,
+        SCROLL_PAGE_CHANGE_POLICY,
+        OperationEffectPolicy,
     )
     from tools.safety import DANGEROUS_TOOL_POLICY_METADATA_KEY
     from tools.tool_decorators import (
@@ -58,6 +68,7 @@ class ToolSpec:
     operation_name: str
     returns_xml: bool = False
     notice_reason: str = "Execute an external device operation."
+    effect_policy: OperationEffectPolicy | None = None
 
 
 TOOL_SPECS = (
@@ -84,12 +95,14 @@ TOOL_SPECS = (
         "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_up",
         True,
+        effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_down",
         "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_down",
         True,
+        effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_back",
@@ -277,6 +290,8 @@ def _build_tool(spec: ToolSpec, hub: EventHub) -> StructuredTool:
     }
     if safety_policy is not None:
         metadata[DANGEROUS_TOOL_POLICY_METADATA_KEY] = safety_policy
+    if spec.effect_policy is not None:
+        metadata[OPERATION_EFFECT_POLICY_METADATA_KEY] = spec.effect_policy
     return StructuredTool.from_function(
         func=tool_func,
         name=spec.name,

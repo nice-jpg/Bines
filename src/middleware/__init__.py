@@ -8,6 +8,7 @@ from .collection_persistence import CollectionPersistenceMiddleware
 from .collector_readiness import CollectorReadinessMiddleware
 from .dangerous_tool import DangerousToolMiddleware
 from .device_context_compression import DeviceContextCompressionMiddleware, compact_device_messages
+from .device_operation_reliability import DeviceOperationReliabilityMiddleware
 from .page_context import (
     PAGE_CONTEXT_ACTIVE,
     PAGE_CONTEXT_APP_ROOT,
@@ -46,6 +47,7 @@ __all__ = [
     "CollectorReadinessMiddleware",
     "DangerousToolMiddleware",
     "DeviceContextCompressionMiddleware",
+    "DeviceOperationReliabilityMiddleware",
     "PAGE_CONTEXT_ACTIVE",
     "PAGE_CONTEXT_APP_ROOT",
     "PAGE_CONTEXT_OVERLAY",

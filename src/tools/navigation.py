@@ -8,19 +8,27 @@ from typing import Any
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
-try:
+if __package__ and __package__.startswith("src."):
     from src.page_mechanism import PageMechanism, normalize_page_path
     from src.tools.event_hub import EventHub
     from src.tools.operation_policy import (
         EXTERNAL_OPERATION_POLICY_METADATA_KEY,
         ExternalOperationPolicy,
     )
-except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+    from src.tools.operation_effect import (
+        NAVIGATION_PAGE_CHANGE_POLICY,
+        OPERATION_EFFECT_POLICY_METADATA_KEY,
+    )
+else:  # Supports running tests with src on sys.path.
     from page_mechanism import PageMechanism, normalize_page_path
     from tools.event_hub import EventHub
     from tools.operation_policy import (
         EXTERNAL_OPERATION_POLICY_METADATA_KEY,
         ExternalOperationPolicy,
+    )
+    from tools.operation_effect import (
+        NAVIGATION_PAGE_CHANGE_POLICY,
+        OPERATION_EFFECT_POLICY_METADATA_KEY,
     )
 
 
@@ -104,7 +112,8 @@ def create_navigation_tools(
                 EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy(
                     "Navigate to the declared business page.",
                     next_path_argument="next_path",
-                )
+                ),
+                OPERATION_EFFECT_POLICY_METADATA_KEY: NAVIGATION_PAGE_CHANGE_POLICY,
             },
         ),
         StructuredTool.from_function(
