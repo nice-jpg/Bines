@@ -344,6 +344,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
                 "prepare_collector",
                 "uiautomate",
                 "swipe_up",
+                "swipe_up_long",
                 "swipe_down",
                 "is_done",
             ]

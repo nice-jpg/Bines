@@ -237,6 +237,18 @@ class CollectorToolbox:
             self._has_swiped = True
         return result
 
+    def collector_swipe_up_long(self, x: int, y: int) -> Any:
+        result = self._capture_xml(self.event_hub.swipe_up_long(x, y), after_swipe=True)
+        if isinstance(result, str):
+            self._has_swiped = True
+        return result
+
+    def collector_swipe_to_random(self, x: int, y: int) -> Any:
+        result = self._capture_xml(self.event_hub.swipe_to_random(x, y), after_swipe=True)
+        if isinstance(result, str):
+            self._has_swiped = True
+        return result
+
     def collector_swipe_down(self, x: int, y: int) -> Any:
         result = self._capture_xml(self.event_hub.swipe_down(x, y), after_swipe=True)
         if isinstance(result, str):
@@ -514,6 +526,16 @@ class CollectorToolbox:
                 func=self.collector_swipe_up,
                 name="collector_swipe_up",
                 description="Scroll to a different state on the current page; cannot navigate into another page.",
+            ),
+            StructuredTool.from_function(
+                func=self.collector_swipe_up_long,
+                name="collector_swipe_up_long",
+                description="Scroll upward a long distance to traverse a large collection region on the current page.",
+            ),
+            StructuredTool.from_function(
+                func=self.collector_swipe_to_random,
+                name="collector_swipe_to_random",
+                description="Select a random same-page state for collector training and compatibility verification.",
             ),
             StructuredTool.from_function(
                 func=self.collector_swipe_down,

@@ -78,6 +78,7 @@ DEVICE_ACTION_TOOLS = frozenset(
         "navigate_to",
         "navigate_back",
         "swipe_up",
+        "swipe_up_long",
         "swipe_down",
         "uiautomate",
         "screenshot",
@@ -254,7 +255,7 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
                 }
             elif self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
                 update = {PAGE_PRODUCT_ENTRY_TAPS: int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0)) + 1}
-        elif tool_name in {"swipe_up", "swipe_down"}:
+        elif tool_name in {"swipe_up", "swipe_up_long", "swipe_down"}:
             if self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
                 update = {PAGE_COLLECTION_STARTED: True}
         elif tool_name == "uiautomate" and is_compact_popup_result(result):

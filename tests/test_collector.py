@@ -30,6 +30,14 @@ class FakeEventHub:
         self.calls.append(("swipe_up", x, y))
         return self.xml
 
+    def swipe_up_long(self, x, y):
+        self.calls.append(("swipe_up_long", x, y))
+        return self.xml
+
+    def swipe_to_random(self, x, y):
+        self.calls.append(("swipe_to_random", x, y))
+        return self.xml
+
     def swipe_down(self, x, y):
         self.calls.append(("swipe_down", x, y))
         return self.xml
@@ -44,9 +52,10 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
     page_dir.mkdir()
     (page_dir / "run.agent.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
 
+    event_hub = FakeEventHub()
     tools = create_collector_tools(
         mechanism=PageMechanism(tmp_path),
-        event_hub=FakeEventHub(),
+        event_hub=event_hub,
         page_path="meituan",
     )
     names = [tool.name for tool in tools]
@@ -54,6 +63,8 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
     assert names == [
         "collector_uiautomate",
         "collector_swipe_up",
+        "collector_swipe_up_long",
+        "collector_swipe_to_random",
         "collector_swipe_down",
         "collector_tap",
         "read_run_agent_py",
@@ -65,6 +76,14 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
     assert "tap" not in names
     assert "swipe_back" not in names
     assert "eval_collection" not in names
+
+    by_name = {tool.name: tool for tool in tools}
+    by_name["collector_swipe_up_long"].invoke({"x": 100, "y": 1800})
+    by_name["collector_swipe_to_random"].invoke({"x": 200, "y": 1600})
+    assert event_hub.calls == [
+        ("swipe_up_long", 100, 1800),
+        ("swipe_to_random", 200, 1600),
+    ]
 
 
 def test_run_agent_py_reads_are_deduplicated_and_external_changes_refresh_content(tmp_path: Path) -> None:

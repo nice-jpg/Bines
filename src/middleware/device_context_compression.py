@@ -17,6 +17,7 @@ XML_DEVICE_TOOLS = {
     "navigate_to",
     "navigate_back",
     "swipe_up",
+    "swipe_up_long",
     "swipe_down",
 }
 BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
@@ -192,6 +193,8 @@ def _summarize_tool_result(result: XmlToolResult) -> str:
         return _summarize_tap(result)
     if result.tool_name == "swipe_up":
         return f"swipe up on {_format_xy(result.args)} to load more shops or content"
+    if result.tool_name == "swipe_up_long":
+        return f"swipe up a long distance on {_format_xy(result.args)} to traverse more content"
     if result.tool_name == "swipe_down":
         return f"swipe down on {_format_xy(result.args)} to reveal previous content or refresh"
     if result.tool_name == "navigate_back":

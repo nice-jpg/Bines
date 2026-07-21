@@ -48,6 +48,8 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("navigate_to", tool_names)
         self.assertIn("navigate_back", tool_names)
         self.assertIn("close_package", tool_names)
+        self.assertIn("swipe_up_long", tool_names)
+        self.assertNotIn("swipe_to_random", tool_names)
         self.assertIn("prepare_collector", tool_names)
         self.assertNotIn("create_excel_sheet", tool_names)
         self.assertNotIn("create_excel_file", tool_names)
@@ -90,6 +92,7 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("call_subagent", tool_names)
         self.assertIn("kill_subagent", tool_names)
         self.assertIn("query_manual", tool_names)
+        self.assertNotIn("swipe_to_random", tool_names)
         self.assertGreater(tool_names.index("spawn_subagent"), tool_names.index("append_excel_rows"))
 
     def test_operation_effect_policies_are_typed_and_narrowly_exposed(self) -> None:
@@ -99,7 +102,7 @@ class ToolsRegistryTests(unittest.TestCase):
             tools["navigate_to"].metadata[OPERATION_EFFECT_POLICY_METADATA_KEY],
             NAVIGATION_PAGE_CHANGE_POLICY,
         )
-        for name in ("swipe_up", "swipe_down"):
+        for name in ("swipe_up", "swipe_up_long", "swipe_down"):
             self.assertIs(
                 tools[name].metadata[OPERATION_EFFECT_POLICY_METADATA_KEY],
                 SCROLL_PAGE_CHANGE_POLICY,

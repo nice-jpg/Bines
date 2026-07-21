@@ -46,8 +46,8 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
-ITEM_APPEND_TOOLS = {"swipe_up", "swipe_down"}
-COLLECTION_XML_TOOL_NAMES = {"tap_in_page", "swipe_up", "swipe_down", "uiautomate"}
+ITEM_APPEND_TOOLS = {"swipe_up", "swipe_up_long", "swipe_down"}
+COLLECTION_XML_TOOL_NAMES = {"tap_in_page", "swipe_up", "swipe_up_long", "swipe_down", "uiautomate"}
 
 
 class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):

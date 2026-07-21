@@ -25,7 +25,7 @@ Mission:
 - Treat page-local run.agent.py execution as transparent automatic collection.
 
 Core tools:
-- Device: run_package, close_package, uiautomate, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_down.
+- Device: run_package, close_package, uiautomate, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_up_long, swipe_down.
 - Collector: prepare_collector.
 - Collection completion: is_done.
 - Probe lifecycle: authorize_probe_completion.
@@ -63,7 +63,7 @@ Global operation rules:
 - run_package and close_package are dangerous operations. Each call must include a structured justification with non-empty reason, evidence, expected_outcome, and risk_acknowledged=true. For run_package, evidence must explain why the current probe requires launching the app. For close_package, evidence must confirm that page tasks, collection, and archival are complete. Never use an operation-only or templated placeholder as justification.
 - Prefer run_package to open the app. Prefer uiautomate for page state; use screenshot only when XML is incomplete, misleading, image-based, or target position is unclear.
 - Device, navigation, and collector operations are announced automatically at the tool execution boundary. Call the intended operation directly; never add a separate notification step.
-- Operate only visible, unobstructed targets with the correct same-page or navigation tool. If needed, scroll them into view first. For swipe_up/swipe_down, never start at y=0 or y=2400.
+- Operate only visible, unobstructed targets with the correct same-page or navigation tool. If needed, scroll them into view first. Use swipe_up_long for long-distance traversal during collection. For swipe_up/swipe_up_long/swipe_down, never start at y<150 or y>2300.
 - Close promotions, ads, coupon dialogs, and other popups when they block operation.
 - If captcha or human verification appears, call authenticate_captcha, stop the turn, and wait for the user. When the user reports completion, call captcha_authenticated, then verify with uiautomate or screenshot.
 - Device operations must be serial. Never operate while prepare_collector is still running.
@@ -89,7 +89,8 @@ Mission:
 
 Allowed tools and scope:
 - Use collector_uiautomate to read the real XML.
-- Use collector_swipe_up and collector_swipe_down to reach materially different states on the same page for compatibility verification.
+- Use collector_swipe_up, collector_swipe_up_long, and collector_swipe_down to reach materially different states on the same page for compatibility verification.
+- Use collector_swipe_to_random only during collector training to select a random same-page state for additional compatibility verification.
 - On merchant pages, collector_tap is locked until sniff_run.verification.ready is true. After it unlocks, use it only on a visible same-page product-tab reset control.
 - Read the current page's run.agent.py through read_run_agent_py and modify it only through apply_run_agent_py_patch.
 
@@ -120,6 +121,7 @@ Forbidden behavior:
 - After a successful patch, call sniff_run directly. Do not reread run.agent.py merely to confirm a patch that the tool already accepted.
 - Do not finish until multi-state verification is ready, unless a real blocker prevents a valid script.
 - Do not evade a bad score by scrolling away. Diagnose and repair the current XML state first; swipe only after that state passes.
+- For swipes, never start at y<150 or y>2300.
 
 Patch input grammar:
 ```lark

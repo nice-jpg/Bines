@@ -98,6 +98,20 @@ TOOL_SPECS = (
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
+        "swipe_up_long",
+        "Swipe up from (x, y) for a long distance. Use this tool to traverse a large collection region efficiently. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
+        "swipe_up_long",
+        True,
+        effect_policy=SCROLL_PAGE_CHANGE_POLICY,
+    ),
+    ToolSpec(
+        "swipe_to_random",
+        "Swipe from (x, y) to a recorded random page state. This operation is reserved for collector training. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
+        "swipe_to_random",
+        True,
+        effect_policy=SCROLL_PAGE_CHANGE_POLICY,
+    ),
+    ToolSpec(
         "swipe_down",
         "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
         "swipe_down",
@@ -114,12 +128,16 @@ TOOL_SPECS = (
     ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot"),
 )
 
-EVENT_HUB_TOOL_NAMES = tuple(spec.name for spec in TOOL_SPECS)
+COLLECTOR_ONLY_EVENT_HUB_TOOL_NAMES = frozenset({"swipe_to_random"})
+EVENT_HUB_TOOL_NAMES = tuple(
+    spec.name for spec in TOOL_SPECS if spec.name not in COLLECTOR_ONLY_EVENT_HUB_TOOL_NAMES
+)
 XML_RESULT_TOOL_NAMES = frozenset(spec.name for spec in TOOL_SPECS if spec.returns_xml)
 CONDUCTOR_EVENT_HUB_TOOL_NAMES = (
     "run_package",
     "close_package",
     "swipe_up",
+    "swipe_up_long",
     "swipe_down",
     "uiautomate",
     "screenshot",
@@ -151,6 +169,18 @@ class EventHub:
         """Replay the recorded upward swipe action."""
 
         return self._replay_recorded_action("swipe_up", x, y)
+
+    @xy_operation
+    def swipe_up_long(self, x: int, y: int) -> str | ErrorResult:
+        """Replay the recorded long upward swipe action."""
+
+        return self._replay_recorded_action("swipe_up_long", x, y)
+
+    @xy_operation
+    def swipe_to_random(self, x: int, y: int) -> str | ErrorResult:
+        """Replay the recorded swipe used to select a random training state."""
+
+        return self._replay_recorded_action("swipe_to_random", x, y)
 
     @xy_operation
     def swipe_down(self, x: int, y: int) -> str | ErrorResult:
@@ -311,6 +341,10 @@ def _resolve_operation(operation_name: str, hub: EventHub) -> Callable[..., obje
         return hub.tap
     if operation_name == "swipe_up":
         return hub.swipe_up
+    if operation_name == "swipe_up_long":
+        return hub.swipe_up_long
+    if operation_name == "swipe_to_random":
+        return hub.swipe_to_random
     if operation_name == "swipe_down":
         return hub.swipe_down
     if operation_name == "swipe_back":

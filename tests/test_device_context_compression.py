@@ -64,6 +64,21 @@ class DeviceContextCompressionTests(unittest.TestCase):
 
         self.assertEqual(compacted[3]["content"], "tap '美食' on (320, 620) to load a subpage")
 
+    def test_long_swipe_result_is_compressed_as_device_xml(self) -> None:
+        messages = [
+            assistant_tool_call("call_1", "swipe_up_long", {"x": 200, "y": 1800}),
+            tool_message("call_1", "swipe_up_long", AFTER_TAP_XML),
+            assistant_tool_call("call_2", "uiautomate", {}),
+            tool_message("call_2", "uiautomate", LATEST_XML),
+        ]
+
+        compacted = compact_device_messages(messages)
+
+        self.assertEqual(
+            compacted[1]["content"],
+            "swipe up a long distance on (200, 1800) to traverse more content",
+        )
+
     def test_tap_summary_uses_target_from_json_wrapped_prior_xml(self) -> None:
         messages = [
             assistant_tool_call("call_1", "uiautomate", {}),

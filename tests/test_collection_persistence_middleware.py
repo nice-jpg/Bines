@@ -124,6 +124,19 @@ def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) ->
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
 
 
+def test_long_swipe_uses_the_same_collection_persistence_path(tmp_path: Path) -> None:
+    middleware, registry, workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+
+    result = middleware.wrap_tool_call(
+        _request("swipe_up_long"),
+        lambda _request: _tool_message("swipe_up_long", "cup"),
+    )
+
+    assert _payload(result)["persistence"]["appended_items"] == 1
+    assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
+
+
 def test_is_done_uses_latest_persisted_item_delta(tmp_path: Path) -> None:
     middleware, registry, _workbook_path = _middleware(tmp_path)
     _mark_trained(registry)

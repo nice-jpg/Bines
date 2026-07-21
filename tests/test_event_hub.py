@@ -51,6 +51,8 @@ class EventHubTests(unittest.TestCase):
     def test_event_hub_methods_declare_tool_behavior_with_decorators(self) -> None:
         self.assertTrue(is_xy_operation(EventHub.tap))
         self.assertTrue(is_xy_operation(EventHub.swipe_up))
+        self.assertTrue(is_xy_operation(EventHub.swipe_up_long))
+        self.assertTrue(is_xy_operation(EventHub.swipe_to_random))
         self.assertTrue(is_xy_operation(EventHub.swipe_down))
         self.assertIsNotNone(dangerous_policy_for(EventHub.run_package))
         self.assertIsNotNone(dangerous_policy_for(EventHub.close_package))
@@ -85,6 +87,24 @@ class EventHubTests(unittest.TestCase):
         self.assertEqual(sleeper.calls, [])
         self.assertEqual(hub.device.calls, [("act", "swipe_up", (10, 100))])
         self.assertEqual(logger.records, [("command_error", "adb failed", {"args": ["adb"]})])
+
+    def test_new_swipe_actions_use_recorded_action_replay(self) -> None:
+        hub = EventHub(sleep_func=lambda _seconds: None)
+        hub.device = FakeDevice()
+        hub._actions_checked = True
+
+        hub.swipe_up_long(20, 1800)
+        hub.swipe_to_random(30, 1600)
+
+        self.assertEqual(
+            hub.device.calls,
+            [
+                ("act", "swipe_up_long", (20, 1800)),
+                ("dump_ui",),
+                ("act", "swipe_to_random", (30, 1600)),
+                ("dump_ui",),
+            ],
+        )
 
     def test_uiautomate_does_not_sleep_when_called_directly(self) -> None:
         sleeper = FakeSleeper()

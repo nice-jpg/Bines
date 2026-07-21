@@ -12,7 +12,7 @@ from prompts import COLLECTOR_PROMPT, RUN_AGENT_PY_PATCH_GRAMMAR, SYSTEM_PROMPT
 class SystemPromptTests(unittest.TestCase):
     def test_conductor_prompt_exposes_new_tool_contract(self) -> None:
         self.assertIn(
-            "Device: run_package, close_package, uiautomate, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_down",
+            "Device: run_package, close_package, uiautomate, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_up_long, swipe_down",
             SYSTEM_PROMPT,
         )
         self.assertNotIn("Page docs:", SYSTEM_PROMPT)
@@ -49,6 +49,8 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Keep your own context", COLLECTOR_PROMPT)
         self.assertIn("collector_uiautomate", COLLECTOR_PROMPT)
         self.assertIn("collector_swipe_up", COLLECTOR_PROMPT)
+        self.assertIn("collector_swipe_up_long", COLLECTOR_PROMPT)
+        self.assertIn("collector_swipe_to_random", COLLECTOR_PROMPT)
         self.assertIn("modify it only through apply_run_agent_py_patch", COLLECTOR_PROMPT)
         self.assertNotIn("write_run_agent_py", COLLECTOR_PROMPT)
         self.assertIn("Never replace the full run.agent.py", COLLECTOR_PROMPT)

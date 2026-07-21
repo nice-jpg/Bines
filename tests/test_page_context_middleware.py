@@ -241,8 +241,8 @@ def test_merchant_allows_one_entry_tap_before_scrolling_then_blocks_taps(tmp_pat
     assert json.loads(second_tap.content)["error_type"] == "merchant_entry_tap_limit"
 
     scrolling = middleware.wrap_tool_call(
-        _request("swipe_up", merchant_state, x=500, y=1200),
-        lambda _: _message("swipe_up"),
+        _request("swipe_up_long", merchant_state, x=500, y=1200),
+        lambda _: _message("swipe_up_long"),
     )
     after_scroll = {**merchant_state, **scrolling.update}
     blocked = middleware.wrap_tool_call(
