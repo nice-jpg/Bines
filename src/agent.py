@@ -15,7 +15,6 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 
-from langchain.agents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, Interrupt
@@ -306,7 +305,6 @@ def build_agent(
     middlewares.append(DeviceOperationReliabilityMiddleware(event_hub=event_hub))
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
-    middlewares.append(SummarizationMiddleware(model=model))
     middlewares.append(PageManualMiddleware(mechanism=mechanism))
 
     return create_agent(

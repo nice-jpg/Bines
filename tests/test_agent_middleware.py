@@ -42,7 +42,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
             else:
                 sys.modules[name] = module
 
-    def test_build_agent_registers_context_compression_before_summarization(self) -> None:
+    def test_build_agent_registers_request_compression_without_summarization(self) -> None:
         captured = {}
 
         langchain = types.ModuleType("langchain")
@@ -164,7 +164,6 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 "DeviceOperationReliabilityMiddleware",
                 "DeviceContextCompressionMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
-                "SummarizationMiddleware",
                 "PageManualMiddleware",
             ],
         )
@@ -185,7 +184,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertIs(page_manual.mechanism, tool_runtime["mechanism"])
 
     def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:
-        self.test_build_agent_registers_context_compression_before_summarization()
+        self.test_build_agent_registers_request_compression_without_summarization()
         middleware = importlib.import_module("middleware")
 
         hitl = middleware.create_captcha_human_in_the_loop_middleware()
@@ -196,7 +195,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertEqual(middleware.CAPTCHA_AUTHENTICATION_TOOL_NAME, "authenticate_captcha")
 
     def test_captcha_middleware_starts_authentication_tool_once_before_interrupt(self) -> None:
-        self.test_build_agent_registers_context_compression_before_summarization()
+        self.test_build_agent_registers_request_compression_without_summarization()
         middleware = importlib.import_module("middleware")
 
         calls = []
