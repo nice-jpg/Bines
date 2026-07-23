@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 import websockets
+from websockets.exceptions import ConnectionClosed
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -85,6 +86,7 @@ class OpenAICodexModel(BaseChatModel):
     wait_seconds: float = 600.0
     connect_timeout_seconds: float = 20.0
     max_connection_age_seconds: float = 55.0 * 60.0
+    stream_max_retries: int = Field(default=5, ge=0)
     instructions: str = "You are a helpful assistant."
     reasoning_effort: str | None = "medium"
     store_responses: bool = False
@@ -202,32 +204,48 @@ class OpenAICodexModel(BaseChatModel):
             raise RuntimeError("Codex WebSocket transport is not initialized.")
         request = self._build_request(messages, **kwargs)
         payload = json.dumps(request, ensure_ascii=False)
+        request_id = str(uuid4())
         _write_protocol_log("request", request)
 
         async with self._request_lock:
-            ws = await self._ensure_connection()
+            try:
+                ws = await self._ensure_connection()
+            except Exception as error:
+                self._log_transport_failure(request_id, "connect", error)
+                raise
             try:
                 await ws.send(payload)
             except asyncio.CancelledError:
                 await self._invalidate_connection()
                 raise
-            except Exception:
+            except Exception as error:
+                self._log_transport_failure(request_id, "send", error)
                 await self._invalidate_connection()
-                ws = await self._ensure_connection()
+                try:
+                    ws = await self._ensure_connection()
+                except Exception as reconnect_error:
+                    self._log_transport_failure(request_id, "connect", reconnect_error)
+                    raise
                 try:
                     await ws.send(payload)
                 except asyncio.CancelledError:
                     await self._invalidate_connection()
                     raise
-                except Exception:
+                except Exception as retry_error:
+                    self._log_transport_failure(request_id, "send", retry_error)
                     await self._invalidate_connection()
                     raise
 
             try:
                 message = await self._read_response(ws)
             except RuntimeError:
+                await self._invalidate_connection()
                 raise
-            except BaseException:
+            except asyncio.CancelledError:
+                await self._invalidate_connection()
+                raise
+            except Exception as error:
+                self._log_transport_failure(request_id, "receive", error)
                 await self._invalidate_connection()
                 raise
 
@@ -239,7 +257,7 @@ class OpenAICodexModel(BaseChatModel):
         if (
             _connection_is_open(self._ws)
             and self._connected_at is not None
-            and loop.time() - self._connected_at < self.max_connection_age_seconds
+            and loop.time() - self._connected_at < self._connection_reuse_seconds()
         ):
             return self._ws
 
@@ -261,10 +279,49 @@ class OpenAICodexModel(BaseChatModel):
             additional_headers=headers,
             open_timeout=self.connect_timeout_seconds,
             close_timeout=5,
+            ping_interval=20,
+            ping_timeout=60,
             max_size=16 * 1024 * 1024,
         )
         self._connected_at = loop.time()
         return self._ws
+
+    def _connection_reuse_seconds(self) -> float:
+        return max(0.0, self.max_connection_age_seconds - self.wait_seconds)
+
+    def _connection_age_seconds(self) -> float | None:
+        if self._connected_at is None:
+            return None
+        return max(0.0, asyncio.get_running_loop().time() - self._connected_at)
+
+    def _log_transport_failure(
+        self,
+        request_id: str,
+        phase: str,
+        error: Exception,
+    ) -> None:
+        close_code: int | None = None
+        close_reason: str | None = None
+        if isinstance(error, ConnectionClosed):
+            close_frame = error.rcvd or error.sent
+            if close_frame is not None:
+                close_code = close_frame.code
+                close_reason = close_frame.reason or None
+        try:
+            _write_protocol_log(
+                "transport_error",
+                {
+                    "request_id": request_id,
+                    "phase": phase,
+                    "connection_age_seconds": self._connection_age_seconds(),
+                    "error_type": type(error).__name__,
+                    "close_code": close_code,
+                    "close_reason": close_reason,
+                },
+            )
+        except OSError:
+            # Audit logging must not replace the transport exception being recovered.
+            pass
 
     async def _invalidate_connection(self) -> None:
         ws = self._ws
@@ -903,6 +960,7 @@ def create_chat_model(
     base_url: str | None = None,
     reasoning_effort: str | None = "medium",
     prompt_cache_key: str | None = None,
+    stream_max_retries: int = 5,
 ) -> OpenAICodexModel:
     provider = token_provider or CodexOAuthTokenProvider()
     model_kwargs: dict[str, Any] = {
@@ -911,6 +969,7 @@ def create_chat_model(
         "ws_url": base_url
         or os.getenv("CODEX_WS_URL", "wss://chatgpt.com/backend-api/codex/responses"),
         "reasoning_effort": reasoning_effort,
+        "stream_max_retries": stream_max_retries,
     }
     if prompt_cache_key is not None:
         model_kwargs["prompt_cache_key"] = prompt_cache_key

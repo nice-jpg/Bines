@@ -17,6 +17,7 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
 
 CAPTCHA_RESUME_TEXT = "done"
 LIVENESS_RESUME_TEXT = "继续"
+MODEL_TRANSPORT_RESUME_TEXT = "继续"
 
 
 class MutableNotifier:
@@ -60,7 +61,13 @@ def main() -> None:
         session_id = f"feishu:{message.chat_id}"
         if runtime.has_pending_interrupt(session_id):
             interrupt_kind = runtime.pending_interrupt_kind(session_id)
-            expected_text = LIVENESS_RESUME_TEXT if interrupt_kind == "liveness" else CAPTCHA_RESUME_TEXT
+            expected_text = (
+                MODEL_TRANSPORT_RESUME_TEXT
+                if interrupt_kind == "model_transport"
+                else LIVENESS_RESUME_TEXT
+                if interrupt_kind == "liveness"
+                else CAPTCHA_RESUME_TEXT
+            )
             if message.text != expected_text:
                 channel.send_text(
                     message.target,

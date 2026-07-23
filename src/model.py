@@ -28,6 +28,7 @@ class ModelConfig:
     api_key: str | None = None
     reasoning_effort: str | None = None
     prompt_cache_key: str | None = None
+    stream_max_retries: int = 5
 
 
 def build_model(
@@ -43,6 +44,7 @@ def build_model(
             model=config.model,
             reasoning_effort=config.reasoning_effort,
             prompt_cache_key=config.prompt_cache_key,
+            stream_max_retries=config.stream_max_retries,
         )
 
     return ChatOpenAI(
@@ -71,6 +73,7 @@ def load_model_config(env_path: Path = WORKSPACE_ENV_PATH) -> ModelConfig:
             model=_required_env("CODEX_MODEL"),
             reasoning_effort=_optional_env("CODEX_REASONING_EFFORT") or "medium",
             prompt_cache_key=_optional_env("CODEX_PROMPT_CACHE_KEY"),
+            stream_max_retries=_optional_non_negative_int("CODEX_STREAM_MAX_RETRIES", default=5),
         )
     if provider == "deepseek":
         return ModelConfig(
@@ -104,3 +107,16 @@ def _required_env(*names: str) -> str:
 def _optional_env(name: str) -> str | None:
     value = os.getenv(name)
     return value if value else None
+
+
+def _optional_non_negative_int(name: str, *, default: int) -> int:
+    value = _optional_env(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be a non-negative integer.") from error
+    if parsed < 0:
+        raise RuntimeError(f"{name} must be a non-negative integer.")
+    return parsed

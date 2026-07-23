@@ -90,6 +90,7 @@ class ModelConfigTests(unittest.TestCase):
                 "CODEX_MODEL": "gpt-configured",
                 "CODEX_REASONING_EFFORT": "high",
                 "CODEX_PROMPT_CACHE_KEY": "cache-key",
+                "CODEX_STREAM_MAX_RETRIES": "7",
             },
             clear=True,
         ), patch.object(model, "create_chat_model", create_chat_model):
@@ -100,7 +101,22 @@ class ModelConfigTests(unittest.TestCase):
             model="gpt-configured",
             reasoning_effort="high",
             prompt_cache_key="cache-key",
+            stream_max_retries=7,
         )
+
+    def test_load_model_config_rejects_invalid_codex_retry_count(self) -> None:
+        model = importlib.import_module("model")
+        with patch.dict(
+            os.environ,
+            {
+                "MODEL_PROVIDER": "codex",
+                "CODEX_MODEL": "gpt-configured",
+                "CODEX_STREAM_MAX_RETRIES": "-1",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "non-negative integer"):
+                model.load_model_config()
 
     def test_load_model_config_rejects_unknown_provider(self) -> None:
         model = importlib.import_module("model")

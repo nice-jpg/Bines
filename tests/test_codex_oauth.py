@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -11,9 +12,17 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
+from codex.model_retry import (
+    create_codex_model_retry_middleware,
+    is_retryable_model_transport_error,
+)
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langchain_openai import custom_tool
+from websockets.exceptions import ConnectionClosedError
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 
 def sample_lookup(city: str) -> str:
@@ -777,19 +786,141 @@ class CodexOAuthModelTests(unittest.TestCase):
         finally:
             model.close()
 
+    def test_model_retry_reconnects_after_receive_disconnect(self) -> None:
+        failed_ws = PersistentFakeWebSocket(
+            [[
+                {"type": "response.output_text.delta", "delta": "discard me"},
+                ConnectionClosedError(None, None, None),
+            ]]
+        )
+        working_ws = PersistentFakeWebSocket([completed_events("recovered")])
+        sockets = iter([failed_ws, working_ws])
+        model = OpenAICodexModel(
+            model="test-model",
+            token_provider=FakeTokenProvider(),
+            stream_max_retries=1,
+        )
+
+        async def connect(*args, **kwargs):
+            return next(sockets)
+
+        middleware = create_codex_model_retry_middleware(model)[0]
+        try:
+            with (
+                patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect,
+                patch("langchain.agents.middleware.model_retry.time.sleep"),
+            ):
+                message = middleware.wrap_model_call(
+                    None,
+                    lambda _request: model.invoke([HumanMessage(content="retry receive")]),
+                )
+
+            self.assertEqual(message.content, "recovered")
+            self.assertEqual(mocked_connect.call_count, 2)
+            self.assertEqual(len(failed_ws.sent), 1)
+            self.assertEqual(len(working_ws.sent), 1)
+            self.assertNotIn("discard me", message.content)
+        finally:
+            model.close()
+
+    def test_codex_retry_policy_only_accepts_transient_transport_errors(self) -> None:
+        self.assertTrue(is_retryable_model_transport_error(ConnectionClosedError(None, None, None)))
+        self.assertTrue(is_retryable_model_transport_error(EOFError()))
+        self.assertTrue(is_retryable_model_transport_error(OSError()))
+        self.assertTrue(is_retryable_model_transport_error(TimeoutError()))
+        self.assertFalse(is_retryable_model_transport_error(RuntimeError("response.failed")))
+        self.assertFalse(is_retryable_model_transport_error(json.JSONDecodeError("bad", "", 0)))
+        self.assertTrue(
+            is_retryable_model_transport_error(
+                InvalidStatus(Response(503, "Unavailable", Headers()))
+            )
+        )
+        self.assertFalse(
+            is_retryable_model_transport_error(
+                InvalidStatus(Response(401, "Unauthorized", Headers()))
+            )
+        )
+
+    def test_codex_retry_middleware_exhausts_five_retries_and_reraises(self) -> None:
+        model = OpenAICodexModel(model="test-model", stream_max_retries=5)
+        middleware = create_codex_model_retry_middleware(model)[0]
+        attempts = 0
+
+        def fail(_request):
+            nonlocal attempts
+            attempts += 1
+            raise ConnectionClosedError(None, None, None)
+
+        with (
+            patch("langchain.agents.middleware.model_retry.time.sleep") as sleep,
+            self.assertRaises(ConnectionClosedError),
+        ):
+            middleware.wrap_model_call(None, fail)
+
+        self.assertEqual(attempts, 6)
+        self.assertEqual(sleep.call_count, 5)
+
+    def test_codex_retry_middleware_async_path_retries(self) -> None:
+        model = OpenAICodexModel(model="test-model", stream_max_retries=1)
+        middleware = create_codex_model_retry_middleware(model)[0]
+        attempts = 0
+
+        async def scenario() -> str:
+            async def handler(_request):
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise OSError("temporary")
+                return "recovered"
+
+            with patch("langchain.agents.middleware.model_retry.asyncio.sleep"):
+                return await middleware.awrap_model_call(None, handler)
+
+        self.assertEqual(asyncio.run(scenario()), "recovered")
+        self.assertEqual(attempts, 2)
+
+    def test_connection_configuration_has_heartbeat_and_response_time_margin(self) -> None:
+        ws = PersistentFakeWebSocket([completed_events("first")])
+        model = OpenAICodexModel(
+            model="test-model",
+            token_provider=FakeTokenProvider(),
+            max_connection_age_seconds=3300,
+            wait_seconds=600,
+        )
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+                model.invoke([HumanMessage(content="first")])
+
+            connect_kwargs = mocked_connect.call_args.kwargs
+            self.assertEqual(connect_kwargs["ping_interval"], 20)
+            self.assertEqual(connect_kwargs["ping_timeout"], 60)
+            self.assertEqual(model._connection_reuse_seconds(), 2700)
+        finally:
+            model.close()
+
     def test_expired_connection_is_replaced_and_close_is_idempotent(self) -> None:
         first_ws = PersistentFakeWebSocket([completed_events("first")])
         second_ws = PersistentFakeWebSocket([completed_events("second")])
         sockets = iter([first_ws, second_ws])
         provider = FakeTokenProvider()
-        model = OpenAICodexModel(model="test-model", token_provider=provider)
+        model = OpenAICodexModel(
+            model="test-model",
+            token_provider=provider,
+            store_responses=True,
+        )
 
         async def connect(*args, **kwargs):
             return next(sockets)
 
         with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
             first = model.invoke([HumanMessage(content="first")])
-            model._connected_at = float("-inf")
+            # The socket is younger than its hard lease, but too old to fit a
+            # complete wait_seconds response window.
+            model._connected_at = time.monotonic() - 2800
             model.invoke(
                 [
                     HumanMessage(content="first"),
@@ -837,13 +968,13 @@ class FakeConnectionState:
 class PersistentFakeWebSocket:
     def __init__(
         self,
-        response_batches: list[list[dict] | BaseException],
+        response_batches: list[list[dict | BaseException] | BaseException],
         *,
         send_error: BaseException | None = None,
         block_first_response: bool = False,
     ) -> None:
         self._response_batches = list(response_batches)
-        self._current_messages: list[str] = []
+        self._current_messages: list[str | BaseException] = []
         self._send_error = send_error
         self._block_first_response = block_first_response
         self._response_number = 0
@@ -861,9 +992,12 @@ class PersistentFakeWebSocket:
         self.sent.append(payload)
         batch = self._response_batches.pop(0)
         if isinstance(batch, BaseException):
-            self._current_messages = [batch]  # type: ignore[list-item]
+            self._current_messages = [batch]
         else:
-            self._current_messages = [json.dumps(event, ensure_ascii=False) for event in batch]
+            self._current_messages = [
+                event if isinstance(event, BaseException) else json.dumps(event, ensure_ascii=False)
+                for event in batch
+            ]
         self._response_number += 1
 
     async def recv(self) -> str:

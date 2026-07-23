@@ -12,6 +12,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
 try:
+    from src.codex.model_retry import create_codex_model_retry_middleware
     from src.middleware.tool_io import tool_definition_name
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from src.prompts import COLLECTOR_PROMPT
@@ -21,6 +22,7 @@ try:
         ExternalOperationPolicy,
     )
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+    from codex.model_retry import create_codex_model_retry_middleware
     from middleware.tool_io import tool_definition_name
     from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from prompts import COLLECTOR_PROMPT
@@ -155,7 +157,10 @@ class CollectorManager:
             tools=toolbox.create_tools(),
             system_prompt=COLLECTOR_PROMPT,
             name="collector",
-            middleware=[CollectorTapAvailabilityMiddleware(toolbox)],
+            middleware=[
+                *create_codex_model_retry_middleware(self.model),
+                CollectorTapAvailabilityMiddleware(toolbox),
+            ],
         )
 
 

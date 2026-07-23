@@ -21,6 +21,10 @@ from langgraph.types import Command, Interrupt
 from langgraph.errors import GraphRecursionError
 
 try:
+    from src.codex.model_retry import (
+        create_codex_model_retry_middleware,
+        is_retryable_model_transport_error,
+    )
     from src.middleware import (
         CollectionPersistenceMiddleware,
         CollectorReadinessMiddleware,
@@ -47,6 +51,10 @@ try:
     from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+    from codex.model_retry import (
+        create_codex_model_retry_middleware,
+        is_retryable_model_transport_error,
+    )
     from middleware import (
         CollectionPersistenceMiddleware,
         CollectorReadinessMiddleware,
@@ -132,17 +140,24 @@ class AgentRuntime:
         if probe_requested:
             input_state.update(initial_page_context_state())
             input_state.update(initial_probe_state(probe_task_spec().target_leaf_paths))
+        config = _invoke_config(max_iterations, thread_id)
         try:
-            state = self.agent.invoke(
-                input_state,
-                config=_invoke_config(max_iterations, thread_id),
-            )
+            state = self.agent.invoke(input_state, config=config)
         except GraphRecursionError:
             return AgentRunResult(
                 output="Agent达到运行递归上限，任务状态已保留但尚未完成。",
                 state={},
                 stopped_by="recursion_limit",
             )
+        except Exception as error:
+            if is_retryable_model_transport_error(error):
+                return self._model_transport_interrupted(
+                    error,
+                    session_id=session_id,
+                    thread_id=thread_id,
+                    config=config,
+                )
+            raise
         return self._normalize_result(
             state,
             prepared_messages=prepared_messages,
@@ -165,23 +180,34 @@ class AgentRuntime:
         if not pending:
             raise ValueError(f"No interrupted agent workflow is pending for session: {session_id}")
 
-        resume_message = "Human captcha authentication completed." if user_input is None else str(user_input)
-        resume_payload = (
-            {"action": "continue", "message": resume_message}
-            if pending.kind == "liveness"
-            else {"decisions": [{"type": "respond", "message": resume_message}]}
-        )
-        try:
-            state = self.agent.invoke(
-                Command(resume=resume_payload),
-                config=_invoke_config(max_iterations, pending.thread_id),
+        if pending.kind == "model_transport":
+            resume_command: Command[Any] | None = None
+        else:
+            resume_message = "Human captcha authentication completed." if user_input is None else str(user_input)
+            resume_payload = (
+                {"action": "continue", "message": resume_message}
+                if pending.kind == "liveness"
+                else {"decisions": [{"type": "respond", "message": resume_message}]}
             )
+            resume_command = Command(resume=resume_payload)
+        config = _invoke_config(max_iterations, pending.thread_id)
+        try:
+            state = self.agent.invoke(resume_command, config=config)
         except GraphRecursionError:
             return AgentRunResult(
                 output="Agent达到运行递归上限，任务状态已保留但尚未完成。",
                 state={},
                 stopped_by="recursion_limit",
             )
+        except Exception as error:
+            if is_retryable_model_transport_error(error):
+                return self._model_transport_interrupted(
+                    error,
+                    session_id=session_id,
+                    thread_id=pending.thread_id,
+                    config=config,
+                )
+            raise
         return self._normalize_result(
             state,
             prepared_messages=self.sessions.get(session_id, []),
@@ -241,6 +267,37 @@ class AgentRuntime:
             return session_id
         return f"stateless:{id(self)}:{next(self._stateless_counter)}"
 
+    def _model_transport_interrupted(
+        self,
+        error: Exception,
+        *,
+        session_id: str | None,
+        thread_id: str,
+        config: Mapping[str, Any],
+    ) -> AgentRunResult:
+        snapshot = self.agent.get_state(config)
+        state = snapshot.values if isinstance(snapshot.values, Mapping) else {}
+        detail = {
+            "type": "model_transport",
+            "error_type": type(error).__name__,
+            "retryable": session_id is not None,
+        }
+        if session_id is None:
+            return AgentRunResult(
+                output="模型连接中断且自动重试已耗尽；当前调用没有会话，无法从 checkpoint 恢复。",
+                state=state,
+                stopped_by="model_transport_error",
+                interrupts=[detail],
+            )
+        self._pending_interrupts[session_id] = _PendingInterrupt(thread_id, "model_transport")
+        return AgentRunResult(
+            output="模型连接暂时中断，自动重试已耗尽。请回复“继续”从当前 checkpoint 恢复。",
+            state=state,
+            stopped_by="model_transport_interrupt",
+            interrupted=True,
+            interrupts=[detail],
+        )
+
 
 def build_agent(
     *,
@@ -289,7 +346,9 @@ def build_agent(
         for tool in registered_tools
         if operation_notice_service_from_metadata(tool.metadata) is None
     ]
-    middlewares: list[AgentMiddleware] = []
+    middlewares: list[AgentMiddleware] = [
+        *create_codex_model_retry_middleware(model),
+    ]
     middlewares.append(ToolErrorMiddleware())
     middlewares.append(DangerousToolMiddleware())
     middlewares.append(probe_lifecycle)
@@ -341,6 +400,7 @@ def build_collector_runtime(
         tools=list(tools),
         system_prompt=COLLECTOR_PROMPT,
         name=name,
+        middleware=create_codex_model_retry_middleware(model),
     )
 
 
