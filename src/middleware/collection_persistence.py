@@ -24,6 +24,7 @@ try:
         COLLECTION_INITIALIZED,
         COLLECTION_LATEST_NEW_COUNT,
         COLLECTION_PAGE_VISIT_ID,
+        COLLECTION_VISIT_SUMMARIES,
         MERCHANT_COLLECTION_DONE,
         ProbeState,
     )
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         COLLECTION_INITIALIZED,
         COLLECTION_LATEST_NEW_COUNT,
         COLLECTION_PAGE_VISIT_ID,
+        COLLECTION_VISIT_SUMMARIES,
         MERCHANT_COLLECTION_DONE,
         ProbeState,
     )
@@ -200,12 +202,19 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
                 sort_keys=True,
             ),
         )
-        progress_update = self._progress_update(tool_name, visit_id, persistence, state)
+        progress_update = self._progress_update(
+            tool_name,
+            current_path,
+            visit_id,
+            persistence,
+            state,
+        )
         return Command(update={"messages": [wrapped], **progress_update}) if progress_update else wrapped
 
     def _progress_update(
         self,
         tool_name: str,
+        current_path: str,
         visit_id: str,
         persistence: Mapping[str, Any],
         state: Mapping[str, Any],
@@ -225,12 +234,27 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         )
         new_count = max(0, appended_items)
         consecutive_empty_swipes = previous_empty_swipes + 1 if new_count == 0 else 0
+        summaries = _collection_summaries(state)
+        previous_summary = summaries.get(visit_id, {})
+        record = self.training_registry.record_for(visit_id)
+        merchant_profile = (
+            dict(record.merchant_profile)
+            if record is not None and record.merchant_profile
+            else dict(previous_summary.get("merchant_profile") or {})
+        )
+        summaries[visit_id] = {
+            "page_path": current_path,
+            "merchant_profile": merchant_profile,
+            "collected_items": _non_negative_int(previous_summary.get("collected_items")) + new_count,
+            "is_leaf": self.mechanism.is_merchant_page(current_path),
+        }
         return {
             COLLECTION_INITIALIZED: True,
             COLLECTION_LATEST_NEW_COUNT: new_count,
             COLLECTION_CONSECUTIVE_EMPTY_SWIPES: consecutive_empty_swipes,
             COLLECTION_PAGE_VISIT_ID: visit_id,
             MERCHANT_COLLECTION_DONE: False,
+            COLLECTION_VISIT_SUMMARIES: summaries,
         }
 
     def _persist(
@@ -293,7 +317,33 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         if not isinstance(payload, dict):
             payload = {"collector_result": payload}
         payload["persistence"] = persistence
-        return _replace_tool_message_content(result, json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        wrapped = _replace_tool_message_content(
+            result,
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
+        record = self.training_registry.record_for(visit_id)
+        if (
+            record is None
+            or not record.merchant_profile
+            or not current_path
+            or not visit_id
+            or not self.training_registry.is_trained(visit_id, current_path)
+        ):
+            return wrapped
+        summaries = _collection_summaries(state)
+        previous_summary = summaries.get(visit_id, {})
+        summaries[visit_id] = {
+            "page_path": current_path,
+            "merchant_profile": dict(record.merchant_profile),
+            "collected_items": _non_negative_int(previous_summary.get("collected_items")),
+            "is_leaf": self.mechanism.is_merchant_page(current_path),
+        }
+        return Command(
+            update={
+                "messages": [wrapped],
+                COLLECTION_VISIT_SUMMARIES: summaries,
+            }
+        )
 
 
 def _replace_tool_message_content(message: ToolMessage, content: str) -> ToolMessage:
@@ -319,3 +369,20 @@ def _merge_merchant_profile(
     result["merchant"] = dict(merchant_profile)
     merged["result"] = result
     return merged
+
+
+def _collection_summaries(state: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    raw = state.get(COLLECTION_VISIT_SUMMARIES)
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        str(visit_id): dict(summary)
+        for visit_id, summary in raw.items()
+        if isinstance(summary, Mapping)
+    }
+
+
+def _non_negative_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)

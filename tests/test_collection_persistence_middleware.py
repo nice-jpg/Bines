@@ -14,9 +14,8 @@ from middleware.collection_persistence import CollectionPersistenceMiddleware
 from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
 from middleware.probe_state import (
     COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
-    COLLECTION_INITIALIZED,
     COLLECTION_LATEST_NEW_COUNT,
-    COLLECTION_PAGE_VISIT_ID,
+    COLLECTION_VISIT_SUMMARIES,
     MERCHANT_COLLECTION_DONE,
 )
 from page_mechanism import CollectorTrainingRegistry, PageMechanism
@@ -280,7 +279,64 @@ def test_prepare_collector_initializes_merchant_sheet_from_registry(tmp_path: Pa
 
     assert payload["persistence"]["ok"] is True
     assert payload["persistence"]["merchant_sheet"] == "商家A"
+    assert result.update[COLLECTION_VISIT_SUMMARIES] == {
+        "visit-a": {
+            "page_path": "meituan/美食/商家",
+            "merchant_profile": {"name": "商家A", "distance": "1km"},
+            "collected_items": 0,
+            "is_leaf": True,
+        }
+    }
     assert _read_xlsx(workbook_path) == [["name", "distance"], ["商家A", "1km"]]
+
+
+def test_collection_summary_accumulates_new_items_for_each_page_visit(tmp_path: Path) -> None:
+    middleware, registry, _workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    state = _request("prepare_collector").state
+    prepared_request = _request("prepare_collector")
+    prepared_request.state = state
+    prepared = middleware.wrap_tool_call(
+        prepared_request,
+        lambda _request: _tool_message("prepare_collector", '{"trained": true}'),
+    )
+    _apply_state(state, prepared)
+
+    for content in ("cup", "plate", "cup"):
+        request = _request("swipe_up")
+        request.state = state
+        result = middleware.wrap_tool_call(
+            request,
+            lambda _request, value=content: _tool_message("swipe_up", value),
+        )
+        _apply_state(state, result)
+
+    assert state[COLLECTION_VISIT_SUMMARIES]["visit-a"] == {
+        "page_path": "meituan/美食/商家",
+        "merchant_profile": {"name": "商家A", "distance": "1km"},
+        "collected_items": 2,
+        "is_leaf": True,
+    }
+
+
+def test_collection_summary_keeps_separate_visit_totals(tmp_path: Path) -> None:
+    middleware, registry, _workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    _mark_trained(registry, page_visit_id="visit-b")
+    state = {}
+
+    for visit_id, content in (("visit-a", "cup"), ("visit-b", "plate")):
+        request = _request("swipe_up", page_visit_id=visit_id)
+        request.state.update(state)
+        result = middleware.wrap_tool_call(
+            request,
+            lambda _request, value=content: _tool_message("swipe_up", value),
+        )
+        _apply_state(state, result)
+
+    summaries = state[COLLECTION_VISIT_SUMMARIES]
+    assert summaries["visit-a"]["collected_items"] == 1
+    assert summaries["visit-b"]["collected_items"] == 1
 
 
 def test_wrap_tool_call_initializes_sheet_but_does_not_append_for_same_page_reads(tmp_path: Path) -> None:

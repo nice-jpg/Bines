@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, TypedDict
 
 from langchain.agents.middleware.types import AgentState
 from typing_extensions import NotRequired
@@ -30,6 +30,16 @@ COLLECTION_LATEST_NEW_COUNT = "collection_latest_new_count"
 COLLECTION_CONSECUTIVE_EMPTY_SWIPES = "collection_consecutive_empty_swipes"
 MERCHANT_COLLECTION_DONE = "merchant_collection_done"
 COLLECTION_PAGE_VISIT_ID = "collection_page_visit_id"
+COLLECTION_VISIT_SUMMARIES = "collection_visit_summaries"
+
+
+class CollectionVisitSummary(TypedDict):
+    """Collection facts retained after the active page context changes."""
+
+    page_path: str
+    merchant_profile: dict[str, Any]
+    collected_items: int
+    is_leaf: bool
 
 
 class ProbeState(AgentState):
@@ -45,6 +55,9 @@ class ProbeState(AgentState):
     collection_consecutive_empty_swipes: NotRequired[Annotated[int, replace_state_value]]
     merchant_collection_done: NotRequired[Annotated[bool, replace_state_value]]
     collection_page_visit_id: NotRequired[Annotated[str, replace_state_value]]
+    collection_visit_summaries: NotRequired[
+        Annotated[dict[str, CollectionVisitSummary], replace_state_value]
+    ]
 
 
 def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> dict[str, Any]:
@@ -56,6 +69,7 @@ def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> dict[str, Any]:
         PROBE_TARGET_LEAF_PATHS: tuple(dict.fromkeys(target_leaf_paths)),
         PROBE_VISITED_LEAF_PATHS: (),
         PROBE_CONTINUATION_REASON: "probe_started",
+        COLLECTION_VISIT_SUMMARIES: {},
         **reset_collection_state(),
     }
 
@@ -77,6 +91,8 @@ __all__ = [
     "COLLECTION_CONSECUTIVE_EMPTY_SWIPES",
     "COLLECTION_LATEST_NEW_COUNT",
     "COLLECTION_PAGE_VISIT_ID",
+    "COLLECTION_VISIT_SUMMARIES",
+    "CollectionVisitSummary",
     "MERCHANT_COLLECTION_DONE",
     "PROBE_COMPLETED",
     "PROBE_COMPLETION_AUTHORIZED",

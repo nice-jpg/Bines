@@ -14,6 +14,11 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
+try:
+    from src.middleware.probe_state import COLLECTION_VISIT_SUMMARIES
+except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+    from middleware.probe_state import COLLECTION_VISIT_SUMMARIES
+
 
 MANUAL_CONTEXT_KIND = "page_manual"
 MANUAL_PLACEHOLDER_CONTEXT_KIND = "page_manual_placeholder"
@@ -41,14 +46,28 @@ class DeviceContextCompressionMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        return handler(request.override(messages=compact_device_messages(request.messages)))
+        summaries = _request_collection_summaries(request.state)
+        return handler(
+            request.override(
+                messages=compact_device_messages(
+                    request.messages,
+                    collection_summaries=summaries,
+                )
+            )
+        )
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        projected = request.override(messages=compact_device_messages(request.messages))
+        summaries = _request_collection_summaries(request.state)
+        projected = request.override(
+            messages=compact_device_messages(
+                request.messages,
+                collection_summaries=summaries,
+            )
+        )
         return await handler(projected)
 
 
@@ -60,18 +79,27 @@ class ToolCallInfo:
 
 
 @dataclass
+class ManualOutputSlot:
+    messages: list[Any]
+
+
+@dataclass
 class ManualFrame:
     path: str
     visit_id: str
     manual: Any
     body: list[Any] = field(default_factory=list)
+    output_slot: ManualOutputSlot | None = None
+    inherited_output_slot: bool = False
 
     def without_tool_call(self, call_id: str) -> "ManualFrame":
         return ManualFrame(
             path=self.path,
             visit_id=self.visit_id,
             manual=self.manual,
-            body=_remove_tool_calls(self.body, {call_id}) if call_id else list(self.body),
+            body=_remove_tool_call_turns(self.body, {call_id}) if call_id else list(self.body),
+            output_slot=self.output_slot,
+            inherited_output_slot=self.inherited_output_slot,
         )
 
 
@@ -82,7 +110,11 @@ class NavigationTransition:
     next_path: str
 
 
-def compact_device_messages(messages: Sequence[Any]) -> list[Any]:
+def compact_device_messages(
+    messages: Sequence[Any],
+    *,
+    collection_summaries: Mapping[str, Mapping[str, Any]] | None = None,
+) -> list[Any]:
     """Build the conductor model input from immutable conversation history."""
 
     prefix, user_blocks = _split_user_blocks(messages)
@@ -91,6 +123,7 @@ def compact_device_messages(messages: Sequence[Any]) -> list[Any]:
     active_path = ""
     active_visit_id = ""
     active_manual: Any | None = None
+    active_output_slot: ManualOutputSlot | None = None
 
     for block_index, block in enumerate(user_blocks):
         block_output, active = _project_user_block(
@@ -99,17 +132,20 @@ def compact_device_messages(messages: Sequence[Any]) -> list[Any]:
             active_path=active_path,
             active_visit_id=active_visit_id,
             active_manual=active_manual,
+            active_output_slot=active_output_slot,
             page_stack=page_stack,
+            collection_summaries=collection_summaries or {},
         )
         projected.extend(block_output)
         if active is not None:
             active_path = active.path
             active_visit_id = active.visit_id
             active_manual = active.manual
+            active_output_slot = active.output_slot
 
     if not user_blocks:
         return _limit_short_lived_tools(projected)
-    return projected
+    return _expand_manual_slots(projected)
 
 
 def _split_user_blocks(messages: Sequence[Any]) -> tuple[list[Any], list[list[Any]]]:
@@ -134,7 +170,9 @@ def _project_user_block(
     active_path: str,
     active_visit_id: str,
     active_manual: Any | None,
+    active_output_slot: ManualOutputSlot | None,
     page_stack: list[ManualFrame],
+    collection_summaries: Mapping[str, Mapping[str, Any]],
 ) -> tuple[list[Any], ManualFrame | None]:
     if not messages:
         return [], None
@@ -145,6 +183,8 @@ def _project_user_block(
             path=active_path,
             visit_id=active_visit_id,
             manual=_copy_manual_anchor(active_manual, block_index),
+            output_slot=active_output_slot,
+            inherited_output_slot=active_output_slot is not None,
         )
         if active_manual is not None and active_path
         else None
@@ -169,9 +209,21 @@ def _project_user_block(
             continue
 
         transition = _latest_navigation(active.body)
-        committed.append(_manual_placeholder(active, block_index, placeholder_index))
+        placeholder = _manual_placeholder(
+            active,
+            block_index,
+            placeholder_index,
+            collection_summaries,
+        )
+        output_slot = _collapse_manual_frame(
+            committed,
+            active,
+            placeholder,
+        )
         placeholder_index += 1
         stored = active.without_tool_call(transition.call_id) if transition is not None else active
+        stored.output_slot = output_slot
+        stored.inherited_output_slot = False
 
         if transition is not None and transition.name == "navigate_to":
             page_stack.append(stored)
@@ -184,6 +236,8 @@ def _project_user_block(
                 visit_id=visit_id,
                 manual=message,
                 body=list(restored.body) if restored is not None else [],
+                output_slot=restored.output_slot if restored is not None else None,
+                inherited_output_slot=False,
             )
             continue
 
@@ -192,7 +246,37 @@ def _project_user_block(
 
     if active is None:
         return _limit_short_lived_tools(committed), None
-    return [*committed, active.manual, *_limit_short_lived_tools(active.body)], active
+    active_messages = [active.manual, *_limit_short_lived_tools(active.body)]
+    if active.output_slot is not None and not active.inherited_output_slot:
+        active.output_slot.messages = active_messages
+        return committed, active
+    active.output_slot = ManualOutputSlot(messages=active_messages)
+    active.inherited_output_slot = False
+    committed.append(active.output_slot)
+    return committed, active
+
+
+def _collapse_manual_frame(
+    committed: list[Any],
+    frame: ManualFrame,
+    placeholder: SystemMessage,
+) -> ManualOutputSlot:
+    if frame.output_slot is not None:
+        frame.output_slot.messages = [placeholder]
+        return frame.output_slot
+    output_slot = ManualOutputSlot(messages=[placeholder])
+    committed.append(output_slot)
+    return output_slot
+
+
+def _expand_manual_slots(messages: Sequence[Any]) -> list[Any]:
+    expanded: list[Any] = []
+    for message in messages:
+        if isinstance(message, ManualOutputSlot):
+            expanded.extend(message.messages)
+        else:
+            expanded.append(message)
+    return expanded
 
 
 def _manual_identity(message: Any) -> tuple[str, str] | None:
@@ -231,18 +315,62 @@ def _copy_manual_anchor(message: Any, block_index: int) -> Any:
     raise TypeError(f"Unsupported manual message type: {type(message).__name__}")
 
 
-def _manual_placeholder(frame: ManualFrame, block_index: int, placeholder_index: int) -> SystemMessage:
+def _manual_placeholder(
+    frame: ManualFrame,
+    block_index: int,
+    placeholder_index: int,
+    collection_summaries: Mapping[str, Mapping[str, Any]],
+) -> SystemMessage:
+    summary = collection_summaries.get(frame.visit_id, {})
+    display_path = _placeholder_path(frame.path, summary)
+    collected_items = _non_negative_int(summary.get("collected_items"))
     return SystemMessage(
-        content=f"Entered {frame.path} and worked.",
+        content=f"worked at {display_path} and collected {collected_items} items.",
         id=f"page-manual-placeholder:{block_index}:{placeholder_index}:{frame.visit_id or frame.path}",
         additional_kwargs={
             "bines_context": {
                 "kind": MANUAL_PLACEHOLDER_CONTEXT_KIND,
                 "canonical_path": frame.path,
                 "page_visit_id": frame.visit_id,
+                "display_path": display_path,
+                "collected_items": collected_items,
             }
         },
     )
+
+
+def _request_collection_summaries(state: Mapping[str, Any]) -> Mapping[str, Mapping[str, Any]]:
+    summaries = state.get(COLLECTION_VISIT_SUMMARIES)
+    if not isinstance(summaries, Mapping):
+        return {}
+    return {
+        str(visit_id): summary
+        for visit_id, summary in summaries.items()
+        if isinstance(summary, Mapping)
+    }
+
+
+def _placeholder_path(canonical_path: str, summary: Mapping[str, Any]) -> str:
+    parts = [part for part in canonical_path.strip("/").split("/") if part]
+    profile = summary.get("merchant_profile")
+    merchant_name = ""
+    if summary.get("is_leaf") is True and isinstance(profile, Mapping):
+        merchant_name = _path_segment(profile.get("name"))
+    if merchant_name and parts:
+        parts[-1] = merchant_name
+    return "/" + "/".join(parts)
+
+
+def _path_segment(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().replace("/", "-").replace("\\", "-")
+
+
+def _non_negative_int(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
 
 
 def _latest_navigation(messages: Sequence[Any]) -> NavigationTransition | None:
@@ -277,58 +405,26 @@ def _limit_short_lived_tools(messages: Sequence[Any]) -> list[Any]:
         if call.call_id and call.name in SHORT_LIVED_PAGE_TOOLS
     ]
     removed = set(short_lived_ids[:-RECENT_PAGE_TOOL_LIMIT])
-    return _remove_tool_calls(messages, removed) if removed else list(messages)
+    return _remove_tool_call_turns(messages, removed) if removed else list(messages)
 
 
-def _remove_tool_calls(messages: Sequence[Any], removed_ids: set[str]) -> list[Any]:
+def _remove_tool_call_turns(messages: Sequence[Any], removed_ids: set[str]) -> list[Any]:
     if not removed_ids:
         return list(messages)
+    removed_turn_ids: set[str] = set()
+    for message in messages:
+        calls = _tool_calls(message)
+        if any(call.call_id in removed_ids for call in calls):
+            removed_turn_ids.update(call.call_id for call in calls if call.call_id)
     filtered: list[Any] = []
     for message in messages:
-        tool_call_id = _tool_message_call_id(message)
-        if tool_call_id in removed_ids:
+        if any(call.call_id in removed_turn_ids for call in _tool_calls(message)):
             continue
-        rewritten = _rewrite_assistant_tool_calls(message, removed_ids)
-        if rewritten is not None:
-            filtered.append(rewritten)
+        tool_call_id = _tool_message_call_id(message)
+        if tool_call_id in removed_turn_ids:
+            continue
+        filtered.append(message)
     return filtered
-
-
-def _rewrite_assistant_tool_calls(message: Any, removed_ids: set[str]) -> Any | None:
-    if isinstance(message, AIMessage):
-        calls = list(message.tool_calls)
-        raw_calls = _additional_raw_tool_calls(message.additional_kwargs)
-        if not calls and not raw_calls:
-            return message
-        kept_calls = [call for call in calls if _raw_call_id(call) not in removed_ids]
-        additional_kwargs = dict(message.additional_kwargs)
-        if raw_calls:
-            additional_kwargs["tool_calls"] = [
-                call for call in raw_calls if _raw_call_id(call) not in removed_ids
-            ]
-        if not kept_calls and not additional_kwargs.get("tool_calls") and not _has_content(message.content):
-            return None
-        return message.model_copy(
-            update={"tool_calls": kept_calls, "additional_kwargs": additional_kwargs}
-        )
-
-    if not isinstance(message, Mapping) or _message_role(message) != "assistant":
-        return message
-    calls = message.get("tool_calls")
-    additional_kwargs = message.get("additional_kwargs")
-    raw_calls = list(calls) if isinstance(calls, Sequence) and not isinstance(calls, (str, bytes)) else []
-    nested_calls = _additional_raw_tool_calls(additional_kwargs)
-    if not raw_calls and not nested_calls:
-        return message
-    rewritten = dict(message)
-    if raw_calls:
-        rewritten["tool_calls"] = [call for call in raw_calls if _raw_call_id(call) not in removed_ids]
-    if isinstance(additional_kwargs, Mapping) and nested_calls:
-        nested = dict(additional_kwargs)
-        nested["tool_calls"] = [call for call in nested_calls if _raw_call_id(call) not in removed_ids]
-        rewritten["additional_kwargs"] = nested
-    remaining = rewritten.get("tool_calls") or _additional_raw_tool_calls(rewritten.get("additional_kwargs"))
-    return rewritten if remaining or _has_content(rewritten.get("content")) else None
 
 
 def _tool_calls(message: Any) -> list[ToolCallInfo]:
@@ -406,14 +502,6 @@ def _is_user_message(message: Any) -> bool:
 
 def _message_role(message: Mapping[str, Any]) -> str:
     return str(message.get("role") or message.get("type") or "").lower()
-
-
-def _has_content(content: Any) -> bool:
-    if isinstance(content, str):
-        return bool(content.strip())
-    if isinstance(content, Sequence):
-        return bool(content)
-    return content is not None
 
 
 __all__ = [

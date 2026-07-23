@@ -14,6 +14,7 @@ from middleware.device_context_compression import (
     DeviceContextCompressionMiddleware,
     compact_device_messages,
 )
+from middleware.probe_state import COLLECTION_VISIT_SUMMARIES
 
 
 def user(content: str) -> dict:
@@ -138,6 +139,50 @@ def test_navigate_to_collapses_parent_and_keeps_child_manual_full() -> None:
     assert "read-1" in str(compacted)
 
 
+def test_leaf_placeholder_uses_merchant_name_and_collected_item_total() -> None:
+    messages = [
+        user("probe"),
+        manual("meituan/外卖/美食/商家", "merchant-1", "MERCHANT MANUAL"),
+        *call_pair("back", "navigate_back", next_path="meituan/外卖/美食"),
+        manual("meituan/外卖/美食", "list-2", "LIST MANUAL"),
+    ]
+    summaries = {
+        "merchant-1": {
+            "page_path": "meituan/外卖/美食/商家",
+            "merchant_profile": {"name": "老王/炒面"},
+            "collected_items": 17,
+            "is_leaf": True,
+        }
+    }
+
+    compacted = compact_device_messages(messages, collection_summaries=summaries)
+    placeholder = next(
+        message
+        for message in compacted
+        if isinstance(message, SystemMessage)
+        and message.additional_kwargs.get("bines_context", {}).get("kind")
+        == MANUAL_PLACEHOLDER_CONTEXT_KIND
+    )
+
+    assert placeholder.content == "worked at /meituan/外卖/美食/老王-炒面 and collected 17 items."
+    assert placeholder.additional_kwargs["bines_context"]["canonical_path"] == "meituan/外卖/美食/商家"
+    assert placeholder.additional_kwargs["bines_context"]["collected_items"] == 17
+
+
+def test_non_leaf_placeholder_keeps_canonical_path() -> None:
+    messages = [
+        user("probe"),
+        manual("meituan", "home", "HOME"),
+        *call_pair("next", "navigate_to", next_path="meituan/外卖"),
+        manual("meituan/外卖", "takeout", "TAKEOUT"),
+    ]
+
+    compacted = compact_device_messages(messages)
+    placeholder = next(message for message in compacted if isinstance(message, SystemMessage))
+
+    assert placeholder.content == "worked at /meituan and collected 0 items."
+
+
 def test_navigate_back_discards_child_and_restores_parent_frame() -> None:
     messages = [
         user("probe"),
@@ -153,7 +198,7 @@ def test_navigate_back_discards_child_and_restores_parent_frame() -> None:
 
     compacted = compact_device_messages(messages)
 
-    assert placeholder_paths(compacted) == ["meituan", "meituan/外卖"]
+    assert placeholder_paths(compacted) == ["meituan/外卖"]
     assert "CHILD MANUAL" not in str(compacted)
     assert "collector ready" not in str(compacted)
     assert "HOME MANUAL CURRENT" in str(compacted)
@@ -161,6 +206,19 @@ def test_navigate_back_discards_child_and_restores_parent_frame() -> None:
     assert "nav-child" not in str(compacted)
     assert "nav-back" not in str(compacted)
     assert "home-current" in str(compacted)
+    parent_manual_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if isinstance(message, dict) and message.get("content") == "HOME MANUAL CURRENT"
+    )
+    child_placeholder_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if isinstance(message, SystemMessage)
+        and message.additional_kwargs.get("bines_context", {}).get("canonical_path")
+        == "meituan/外卖"
+    )
+    assert parent_manual_index < child_placeholder_index
 
 
 def test_multilevel_page_stack_restores_declared_parent() -> None:
@@ -179,12 +237,25 @@ def test_multilevel_page_stack_restores_declared_parent() -> None:
 
     compacted = compact_device_messages(messages)
 
-    assert placeholder_paths(compacted) == ["app", "app/b", "app/b/c"]
+    assert placeholder_paths(compacted) == ["app", "app/b/c"]
     assert "A OLD" not in str(compacted)
     assert "C MANUAL" not in str(compacted)
     assert "B CURRENT" in str(compacted)
     assert "B WORK" in str(compacted)
     assert "b-to-c" not in str(compacted)
+    b_manual_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if isinstance(message, dict) and message.get("content") == "B CURRENT"
+    )
+    c_placeholder_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if isinstance(message, SystemMessage)
+        and message.additional_kwargs.get("bines_context", {}).get("canonical_path")
+        == "app/b/c"
+    )
+    assert b_manual_index < c_placeholder_index
 
 
 def test_page_stack_survives_user_block_boundary() -> None:
@@ -203,12 +274,28 @@ def test_page_stack_survives_user_block_boundary() -> None:
     ]
 
     compacted = compact_device_messages(messages)
-    first_projection = compact_device_messages(first_block)
 
-    assert compacted[: len(first_projection)] == first_projection
-    assert placeholder_paths(compacted) == ["app", "app/child"]
+    assert placeholder_paths(compacted) == ["app/child"]
     assert "PARENT CURRENT" in str(compacted)
     assert "PARENT WORK" in str(compacted)
+    parent_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if isinstance(message, dict) and message.get("content") == "PARENT CURRENT"
+    )
+    child_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if isinstance(message, SystemMessage)
+        and message.additional_kwargs.get("bines_context", {}).get("canonical_path")
+        == "app/child"
+    )
+    second_user_index = next(
+        index
+        for index, message in enumerate(compacted)
+        if isinstance(message, dict) and message.get("content") == "second"
+    )
+    assert parent_index < child_index < second_user_index
 
 
 def test_new_user_block_reanchors_manual_without_changing_prior_block() -> None:
@@ -231,7 +318,7 @@ def test_new_user_block_reanchors_manual_without_changing_prior_block() -> None:
     assert anchor["id"].startswith("page-manual-anchor:1:")
 
 
-def test_mixed_ai_tool_calls_remove_only_expired_page_calls() -> None:
+def test_expired_tool_call_removes_its_entire_ai_turn_and_all_results() -> None:
     calls = (
         ("old-read", "uiautomate", {}),
         ("keep-collector", "prepare_collector", {}),
@@ -248,10 +335,9 @@ def test_mixed_ai_tool_calls_remove_only_expired_page_calls() -> None:
 
     compacted = compact_device_messages(messages)
 
-    assert tool_call_ids(compacted) == ["keep-collector", "tap", "up", "screen"]
-    assert "result:old-read" not in str(compacted)
-    assert "result:keep-collector" in str(compacted)
-    assert "running tools" in str(compacted)
+    assert tool_call_ids(compacted) == []
+    assert all(f"result:{call_id}" not in str(compacted) for call_id, _name, _args in calls)
+    assert "running tools" not in str(compacted)
 
 
 def test_filters_openai_raw_tool_calls_and_keeps_matching_results() -> None:
@@ -324,6 +410,35 @@ def test_supports_langchain_message_objects() -> None:
     assert not any(isinstance(message, ToolMessage) and message.tool_call_id == "call-0" for message in compacted)
 
 
+def test_removes_langchain_ai_message_together_with_expired_tool_result() -> None:
+    messages = [HumanMessage(content="probe"), SystemMessage(
+        content="HOME MANUAL",
+        additional_kwargs={
+            "bines_context": {
+                "kind": "page_manual",
+                "canonical_path": "meituan",
+                "page_visit_id": "home",
+            }
+        },
+    )]
+    for index in range(4):
+        messages.extend(
+            [
+                AIMessage(
+                    content=f"device operation {index}",
+                    tool_calls=[{"id": f"call-{index}", "name": "uiautomate", "args": {}}],
+                ),
+                ToolMessage(content=f"xml-{index}", tool_call_id=f"call-{index}", name="uiautomate"),
+            ]
+        )
+
+    compacted = compact_device_messages(messages)
+
+    assert "device operation 0" not in str(compacted)
+    assert "xml-0" not in str(compacted)
+    assert "device operation 1" in str(compacted)
+
+
 @dataclass
 class FakeRequest:
     messages: list
@@ -349,6 +464,34 @@ def test_middleware_projects_only_request_messages_and_does_not_mutate_state() -
     assert tool_call_ids(projected.messages) == ["call-1", "call-2", "call-3"]
     assert state["messages"] == messages
     assert request.messages == messages
+
+
+def test_middleware_reads_collection_summaries_from_graph_state() -> None:
+    middleware = DeviceContextCompressionMiddleware()
+    messages = [
+        user("probe"),
+        manual("meituan/美食/商家", "merchant-1"),
+        *call_pair("back", "navigate_back", next_path="meituan/美食"),
+        manual("meituan/美食", "list-2"),
+    ]
+    state = {
+        "messages": messages,
+        COLLECTION_VISIT_SUMMARIES: {
+            "merchant-1": {
+                "page_path": "meituan/美食/商家",
+                "merchant_profile": {"name": "炒面"},
+                "collected_items": 9,
+                "is_leaf": True,
+            }
+        },
+    }
+
+    projected = middleware.wrap_model_call(
+        FakeRequest(messages=messages, state=state),
+        lambda prepared: prepared,
+    )
+
+    assert "worked at /meituan/美食/炒面 and collected 9 items." in str(projected.messages)
 
 
 def test_async_middleware_matches_sync_projection() -> None:
