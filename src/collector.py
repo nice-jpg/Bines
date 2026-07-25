@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Mapping
+from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
 try:
     from src.codex.model_retry import create_codex_model_retry_middleware
-    from src.middleware.tool_io import tool_definition_name
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from src.prompts import COLLECTOR_PROMPT
     from src.tools.event_hub import EventHub
@@ -23,7 +21,6 @@ try:
     )
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from codex.model_retry import create_codex_model_retry_middleware
-    from middleware.tool_io import tool_definition_name
     from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from prompts import COLLECTOR_PROMPT
     from tools.event_hub import EventHub
@@ -157,38 +154,7 @@ class CollectorManager:
             tools=toolbox.create_tools(),
             system_prompt=COLLECTOR_PROMPT,
             name="collector",
-            middleware=[
-                *create_codex_model_retry_middleware(self.model),
-                CollectorTapAvailabilityMiddleware(toolbox),
-            ],
-        )
-
-
-class CollectorTapAvailabilityMiddleware(AgentMiddleware):
-    """Expose the reset tap only after merchant script verification is ready."""
-
-    def __init__(self, toolbox: CollectorToolbox) -> None:
-        self.toolbox = toolbox
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        return handler(self._prepare_model_request(request))
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        return await handler(self._prepare_model_request(request))
-
-    def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
-        if self.toolbox.reset_tap_available():
-            return request
-        return request.override(
-            tools=[tool for tool in request.tools if _tool_name(tool) != "collector_tap"]
+            middleware=create_codex_model_retry_middleware(self.model),
         )
 
 
@@ -228,7 +194,6 @@ class CollectorToolbox:
         self._last_sniff_script_fingerprint: str | None = None
         self._last_sniff_state_fingerprint = ""
         self._exposed_script_fingerprint: str | None = None
-        self._has_swiped = False
         self._reset_tap_attempted = False
         self._reset_tap_succeeded = False
         self._reset_tap_error: Any = None
@@ -238,26 +203,18 @@ class CollectorToolbox:
 
     def collector_swipe_up(self, x: int, y: int) -> Any:
         result = self._capture_xml(self.event_hub.swipe_up(x, y), after_swipe=True)
-        if isinstance(result, str):
-            self._has_swiped = True
         return result
 
     def collector_swipe_up_long(self, x: int, y: int) -> Any:
         result = self._capture_xml(self.event_hub.swipe_up_long(x, y), after_swipe=True)
-        if isinstance(result, str):
-            self._has_swiped = True
         return result
 
     def collector_swipe_to_random(self, x: int, y: int) -> Any:
         result = self._capture_xml(self.event_hub.swipe_to_random(x, y), after_swipe=True)
-        if isinstance(result, str):
-            self._has_swiped = True
         return result
 
     def collector_swipe_down(self, x: int, y: int) -> Any:
         result = self._capture_xml(self.event_hub.swipe_down(x, y), after_swipe=True)
-        if isinstance(result, str):
-            self._has_swiped = True
         return result
 
     def collector_tap(self, x: int, y: int) -> Any:
@@ -315,15 +272,6 @@ class CollectorToolbox:
                     "saved": False,
                     "error_type": "MerchantProfileStateError",
                     "error": "Read the initial top-state XML before saving the merchant profile.",
-                }
-            )
-        if self._has_swiped:
-            return _json_result(
-                {
-                    "ok": False,
-                    "saved": False,
-                    "error_type": "MerchantProfileStateError",
-                    "error": "Merchant profile must be saved from the initial top state before any swipe.",
                 }
             )
         try:
@@ -661,10 +609,6 @@ def _latest_text(state: Mapping[str, Any]) -> str:
     latest = messages[-1]
     content = latest.get("content") if isinstance(latest, Mapping) else latest.content
     return content if isinstance(content, str) else str(content or "")
-
-
-def _tool_name(tool: Any) -> str:
-    return tool_definition_name(tool)
 
 
 def _escape_text(value: Any) -> str:

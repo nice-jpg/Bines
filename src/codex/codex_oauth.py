@@ -97,6 +97,7 @@ class OpenAICodexModel(BaseChatModel):
     _ws: Any | None = PrivateAttr(default=None)
     _request_lock: asyncio.Lock | None = PrivateAttr(default=None)
     _connected_at: float | None = PrivateAttr(default=None)
+    _connection_response_id: str | None = PrivateAttr(default=None)
     _transport_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
     _transport_thread: threading.Thread | None = PrivateAttr(default=None)
     _transport_guard: threading.Lock = PrivateAttr(default_factory=threading.Lock)
@@ -202,10 +203,7 @@ class OpenAICodexModel(BaseChatModel):
     async def _request(self, messages: list[BaseMessage], **kwargs: Any) -> AIMessage:
         if self._request_lock is None:
             raise RuntimeError("Codex WebSocket transport is not initialized.")
-        request = self._build_request(messages, **kwargs)
-        payload = json.dumps(request, ensure_ascii=False)
         request_id = str(uuid4())
-        _write_protocol_log("request", request)
 
         async with self._request_lock:
             try:
@@ -213,6 +211,9 @@ class OpenAICodexModel(BaseChatModel):
             except Exception as error:
                 self._log_transport_failure(request_id, "connect", error)
                 raise
+            request = self._build_request_for_connection(messages, kwargs)
+            payload = json.dumps(request, ensure_ascii=False)
+            _write_protocol_log("request", request)
             try:
                 await ws.send(payload)
             except asyncio.CancelledError:
@@ -226,6 +227,9 @@ class OpenAICodexModel(BaseChatModel):
                 except Exception as reconnect_error:
                     self._log_transport_failure(request_id, "connect", reconnect_error)
                     raise
+                request = self._build_request_for_connection(messages, kwargs)
+                payload = json.dumps(request, ensure_ascii=False)
+                _write_protocol_log("request", request)
                 try:
                     await ws.send(payload)
                 except asyncio.CancelledError:
@@ -250,7 +254,33 @@ class OpenAICodexModel(BaseChatModel):
                 raise
 
             self._record_usage(message)
+            response_id = _message_response_id(message)
+            if response_id is not None:
+                self._connection_response_id = response_id
             return message
+
+    def _build_request_for_connection(
+        self,
+        messages: list[BaseMessage],
+        kwargs: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        explicit_continuation = "previous_response_id" in kwargs
+        return self._build_request(
+            messages,
+            auto_previous_response=(
+                not explicit_continuation
+                and self._can_continue_from_history(messages)
+            ),
+            **kwargs,
+        )
+
+    def _can_continue_from_history(self, messages: Sequence[BaseMessage]) -> bool:
+        anchor_index, response_id = _latest_response_anchor(messages)
+        if anchor_index is None or response_id is None:
+            return False
+        if response_id == self._connection_response_id:
+            return True
+        return _message_response_is_stored(messages[anchor_index])
 
     async def _ensure_connection(self) -> Any:
         loop = asyncio.get_running_loop()
@@ -327,6 +357,7 @@ class OpenAICodexModel(BaseChatModel):
         ws = self._ws
         self._ws = None
         self._connected_at = None
+        self._connection_response_id = None
         if ws is None:
             return
         try:
@@ -433,6 +464,7 @@ class OpenAICodexModel(BaseChatModel):
         parallel_tool_calls: bool = True,
         previous_response_id: str | None = None,
         store: bool | None = None,
+        auto_previous_response: bool = True,
         **kwargs: Any,
     ) -> dict[str, Any]:
         instructions = self.instructions
@@ -449,7 +481,7 @@ class OpenAICodexModel(BaseChatModel):
             previous_response_id = str(previous_response_id).strip() or None
             if previous_response_id is not None:
                 anchor_index = _response_anchor_index(messages, previous_response_id)
-        elif should_store:
+        elif auto_previous_response:
             anchor_index, previous_response_id = _latest_response_anchor(messages)
 
         input_start = leading_system_count
@@ -831,12 +863,18 @@ def _message_response_id(message: BaseMessage) -> str | None:
     metadata = message.response_metadata
     if not isinstance(metadata, Mapping):
         return None
-    if metadata.get("response_store") is False:
-        return None
     response_id = metadata.get("response_id")
     if not isinstance(response_id, str) or not response_id.strip():
         return None
     return response_id
+
+
+def _message_response_is_stored(message: BaseMessage) -> bool:
+    return bool(
+        isinstance(message, AIMessage)
+        and isinstance(message.response_metadata, Mapping)
+        and message.response_metadata.get("response_store") is True
+    )
 
 
 def _usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, Any] | None:

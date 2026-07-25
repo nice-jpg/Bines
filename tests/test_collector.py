@@ -9,7 +9,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from collector import (
     CollectorManager,
-    CollectorTapAvailabilityMiddleware,
     CollectorToolbox,
     create_collector_tools,
 )
@@ -410,6 +409,7 @@ def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Pa
     assert manager.training_registry.is_trained("visit-merchant", "meituan/美食/商家") is True
     assert result["restoration"]["restored"] is True
     assert captured["kwargs"]["name"] == "collector"
+    assert captured["kwargs"]["middleware"] == []
     assert captured["config"]["recursion_limit"] == 80
     assert "merchant page" in captured["payload"]["messages"][0]["content"]
 
@@ -561,7 +561,7 @@ def test_collector_tap_is_locked_until_multi_state_verification_is_ready(tmp_pat
     assert "top_state_fingerprint" not in restoration
 
 
-def test_collector_tap_becomes_model_visible_only_after_verification_ready(tmp_path: Path) -> None:
+def test_collector_tap_stays_visible_and_rejects_calls_until_verification_ready(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan" / "美食" / "商家"
     page_dir.mkdir(parents=True)
     (page_dir / "run.agent.py").write_text(
@@ -580,17 +580,12 @@ def test_collector_tap_becomes_model_visible_only_after_verification_ready(tmp_p
         collection_schema='{"items": [{"name": ""}]}',
         requires_merchant_profile=True,
     )
-    middleware = CollectorTapAvailabilityMiddleware(toolbox)
+    tools = toolbox.create_tools()
+    tool_names = [tool.name for tool in tools]
+    assert "collector_tap" in tool_names
+    locked = json.loads(toolbox.collector_tap(500, 300))
+    assert locked["error_type"] == "CollectorTapLocked"
 
-    class Request:
-        def __init__(self, tools):
-            self.tools = tools
-
-        def override(self, **changes):
-            return Request(changes.get("tools", self.tools))
-
-    request = Request(toolbox.create_tools())
-    before = middleware._prepare_model_request(request)
     toolbox.collector_uiautomate()
     toolbox.save_merchant_profile('{"name": "商家A"}')
     toolbox.save_baseline('{"items": [{"name": "cup"}]}')
@@ -600,16 +595,13 @@ def test_collector_tap_becomes_model_visible_only_after_verification_ready(tmp_p
     toolbox.collector_uiautomate()
     toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
     toolbox.sniff_run()
-    after = middleware._prepare_model_request(request)
-    toolbox.collector_tap(500, 300)
-    after_tap = middleware._prepare_model_request(request)
-
-    assert "collector_tap" not in [tool.name for tool in before.tools]
-    assert "collector_tap" in [tool.name for tool in after.tools]
-    assert "collector_tap" not in [tool.name for tool in after_tap.tools]
+    assert toolbox.collector_tap(500, 300) == event_hub.xml
+    already_used = json.loads(toolbox.collector_tap(500, 300))
+    assert already_used["error_type"] == "CollectorTapAlreadyUsed"
+    assert [tool.name for tool in toolbox.create_tools()] == tool_names
 
 
-def test_collector_tap_is_not_available_on_non_merchant_pages(tmp_path: Path) -> None:
+def test_collector_tap_rejects_non_merchant_page_calls_without_being_hidden(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
     (page_dir / "run.agent.py").write_text(
@@ -623,6 +615,7 @@ def test_collector_tap_is_not_available_on_non_merchant_pages(tmp_path: Path) ->
         page_path="meituan",
     )
 
+    assert "collector_tap" in [tool.name for tool in toolbox.create_tools()]
     result = json.loads(toolbox.collector_tap(500, 300))
 
     assert result["ok"] is False

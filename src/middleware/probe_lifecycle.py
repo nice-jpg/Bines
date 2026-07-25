@@ -185,7 +185,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
                 "page_visit_id": details["page_visit_id"],
                 "attempts": count,
                 "reason": reason,
-                "available_tools": self._available_tools(state),
+                "permitted_tools": self._permitted_tools(state),
             }
             self._logger.log("liveness_interrupted", "Probe liveness interrupt created.", payload)
             interrupt(payload)
@@ -333,7 +333,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
             return "configured_leaf_pages_unvisited"
         return "completion_not_authorized"
 
-    def _available_tools(self, state: Mapping[str, Any]) -> list[str]:
+    def _permitted_tools(self, state: Mapping[str, Any]) -> list[str]:
         if state.get(PAGE_CONTEXT_OVERLAY):
             return ["tap_in_page"]
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")

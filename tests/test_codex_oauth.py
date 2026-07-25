@@ -121,7 +121,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         self.assertEqual(request["prompt_cache_key"], "cache-key")
         self.assertEqual(request["reasoning"], {"effort": "high", "summary": "detailed"})
         self.assertEqual(request["include"], ["reasoning.encrypted_content"])
-        self.assertTrue(request["store"])
+        self.assertFalse(request["store"])
         self.assertNotIn("previous_response_id", request)
         self.assertNotIn("stream", request)
 
@@ -353,7 +353,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             ],
         )
 
-    def test_build_request_does_not_chain_unstored_response(self) -> None:
+    def test_build_request_chains_unstored_response_for_websocket_incremental_input(self) -> None:
         model = OpenAICodexModel(model="test-model", store_responses=False)
         previous = model._completed_message(
             {
@@ -380,8 +380,12 @@ class CodexOAuthModelTests(unittest.TestCase):
         )
 
         self.assertFalse(request["store"])
-        self.assertNotIn("previous_response_id", request)
-        self.assertEqual(len(request["input"]), 3)
+        self.assertEqual(request["previous_response_id"], "resp_unstored")
+        self.assertEqual(len(request["input"]), 1)
+        self.assertEqual(
+            request["input"][0]["content"][0]["text"],
+            "follow-up question",
+        )
 
     def test_build_request_uses_response_id_from_its_own_history(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -717,6 +721,79 @@ class CodexOAuthModelTests(unittest.TestCase):
         finally:
             model.close()
 
+    def test_unstored_response_restarts_with_full_context_after_reconnect(self) -> None:
+        first_ws = PersistentFakeWebSocket(
+            [completed_events("first", response_id="resp_first", stored=False)]
+        )
+        second_ws = PersistentFakeWebSocket(
+            [completed_events("second", response_id="resp_second", stored=False)]
+        )
+        sockets = iter([first_ws, second_ws])
+        model = OpenAICodexModel(
+            model="test-model",
+            token_provider=FakeTokenProvider(),
+            store_responses=False,
+        )
+
+        async def connect(*args, **kwargs):
+            return next(sockets)
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect):
+                first = model.invoke([HumanMessage(content="first question")])
+                model._connected_at = time.monotonic() - 2800
+                model.invoke(
+                    [
+                        HumanMessage(content="first question"),
+                        first,
+                        HumanMessage(content="follow-up question"),
+                    ]
+                )
+
+            second_payload = json.loads(second_ws.sent[0])
+            self.assertNotIn("previous_response_id", second_payload)
+            self.assertEqual(len(second_payload["input"]), 3)
+        finally:
+            model.close()
+
+    def test_send_reconnect_rebuilds_unstored_incremental_request_as_full_context(self) -> None:
+        first_ws = PersistentFakeWebSocket(
+            [
+                completed_events("first", response_id="resp_first", stored=False),
+                completed_events("unused", stored=False),
+            ]
+        )
+        second_ws = PersistentFakeWebSocket(
+            [completed_events("second", response_id="resp_second", stored=False)]
+        )
+        sockets = iter([first_ws, second_ws])
+        model = OpenAICodexModel(
+            model="test-model",
+            token_provider=FakeTokenProvider(),
+            store_responses=False,
+        )
+
+        async def connect(*args, **kwargs):
+            return next(sockets)
+
+        try:
+            with patch("codex.codex_oauth.websockets.connect", side_effect=connect):
+                first = model.invoke([HumanMessage(content="first question")])
+                first_ws._send_error = ConnectionError("socket dropped before send")
+                model.invoke(
+                    [
+                        HumanMessage(content="first question"),
+                        first,
+                        HumanMessage(content="follow-up question"),
+                    ]
+                )
+
+            second_payload = json.loads(second_ws.sent[0])
+            self.assertNotIn("previous_response_id", second_payload)
+            self.assertEqual(len(second_payload["input"]), 3)
+        finally:
+            model.close()
+
     def test_async_requests_share_transport_and_are_serialized(self) -> None:
         ws = PersistentFakeWebSocket(
             [completed_events("first"), completed_events("second")],
@@ -1017,13 +1094,18 @@ class PersistentFakeWebSocket:
         self.state.name = "CLOSED"
 
 
-def completed_events(text: str, response_id: str | None = None) -> list[dict]:
+def completed_events(
+    text: str,
+    response_id: str | None = None,
+    *,
+    stored: bool = True,
+) -> list[dict]:
     return [
         {
             "type": "response.completed",
             "response": {
                 "id": response_id or f"resp_{text}",
-                "store": True,
+                "store": stored,
                 "output": [
                     {
                         "type": "message",

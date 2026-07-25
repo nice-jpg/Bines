@@ -90,7 +90,7 @@ DEFAULT_VIEWPORT_HEIGHT = 2400
 
 
 class PageContextMiddleware(AgentMiddleware[PageContextState]):
-    """Apply page-scoped tool visibility and explicit navigation transitions."""
+    """Validate page-scoped tool calls and apply explicit navigation transitions."""
 
     state_schema = PageContextState
 

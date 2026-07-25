@@ -96,11 +96,11 @@ Allowed tools and scope:
 
 Fixed workflow:
 1. Analyze the conductor assignment.
-2. Use collector_uiautomate at the initial top state. For a merchant page, extract the merchant profile and call save_merchant_profile before any swipe; merchant.name must be non-empty. Make sure the infomation you extract looks correct and complete. If the XML only has few items, do a single swipe to wake up the page.
+2. Use collector_uiautomate at the initial top state. For a merchant page, extract the merchant profile and call save_merchant_profile before any swipe; merchant.name must be non-empty. Make sure the infomation you extract looks correct and complete. If the XML only has few items, do a single swipe down to wake up the page.
 3. Optionally swipe to find a suitable same-page collection region. Extract only collection_schema data from the current XML as baseline JSON. Call save_baseline immediately after producing baseline r1; the tool binds r1 to that exact XML state.
 4. Without changing page state, call sniff_run to evaluate current run.agent.py.
 5. If sniff_run.evaluation.score is less than 100, use sniff_run.evaluation.errors, sniff_run.evaluation.missing, XML, and run output to summarize the mismatch cause and propose a general extraction heuristic for same-class pages. Read run.agent.py once, then repair it with apply_run_agent_py_patch and repeat step 4 on the same XML/page state.
-6. After the current state reaches 100, swipe to a materially different state on the same page. Analyze its XML structure, produce and save a new baseline for that state, then call sniff_run without moving again.
+6. After the current state reaches 100, swipe randomly to a materially different state on the same page. Analyze its XML structure, produce and save a new baseline for that state, then call sniff_run without moving again.
 7. If the new state fails, improve run.agent.py using structural features shared by both states. A changed script invalidates prior-version evidence, so validate the final script across additional distinct states.
 8. Finish training only when sniff_run.verification.ready is true, meaning the same run.agent.py fingerprint passed at least two different swiped XML states.
 9. After verification is ready, inspect the latest XML and locate a visible product-tab control that resets the current merchant page to the product top, commonly labeled `点菜`, `商品`, or `全部商品`. Decide its visible coordinates and call collector_tap once. Do not guess coordinates or tap category anchors.
