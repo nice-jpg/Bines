@@ -8,7 +8,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import itertools
+from pathlib import Path
+import sys
 from typing import Any, Iterable, Mapping, Sequence
+
+try:
+    from nTrace import NTrace, createNTraceEndMiddleware, createNTraceStartMiddleware
+except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from nTrace import NTrace, createNTraceEndMiddleware, createNTraceStartMiddleware
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -136,6 +144,10 @@ class AgentRuntime:
         probe_requested = messages_request_app_probe(turn_messages)
         prepared_messages = self._prepare_messages(turn_messages, session_id=session_id)
         thread_id = self._thread_id_for_turn(session_id)
+        _trace_for(self.agent).update(
+            session_id=thread_id,
+            user_input_boundary=True,
+        )
         input_state: dict[str, Any] = {"messages": prepared_messages}
         if probe_requested:
             input_state.update(initial_page_context_state())
@@ -191,6 +203,8 @@ class AgentRuntime:
             )
             resume_command = Command(resume=resume_payload)
         config = _invoke_config(max_iterations, pending.thread_id)
+        self.agent._ntrace.update(session_id=session_id, resume=True)
+        _trace_for(self.agent).update(session_id=session_id, resume=True)
         try:
             state = self.agent.invoke(resume_command, config=config)
         except GraphRecursionError:
@@ -315,7 +329,12 @@ def build_agent(
     except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
         from collector import CollectorManager
 
-    collector_manager = CollectorManager(model=model, mechanism=mechanism, event_hub=event_hub)
+    trace = NTrace(agent_name=name or "conductor", system_prompt=system_prompt)
+    collector_manager = CollectorManager(
+        model=model,
+        mechanism=mechanism,
+        event_hub=event_hub,
+    )
     workbook_sink = CollectionWorkbookSink()
     collection_persistence = CollectionPersistenceMiddleware(
         mechanism=mechanism,
@@ -347,6 +366,7 @@ def build_agent(
         if operation_notice_service_from_metadata(tool.metadata) is None
     ]
     middlewares: list[AgentMiddleware] = [
+        createNTraceStartMiddleware(trace),
         *create_codex_model_retry_middleware(model),
     ]
     middlewares.append(ToolErrorMiddleware())
@@ -365,8 +385,9 @@ def build_agent(
     middlewares.append(DeviceContextCompressionMiddleware())
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
     middlewares.append(PageManualMiddleware(mechanism=mechanism))
+    middlewares.append(createNTraceEndMiddleware(trace))
 
-    return create_agent(
+    agent = create_agent(
         model=model,
         tools=registered_tools,
         system_prompt=system_prompt,
@@ -374,6 +395,7 @@ def build_agent(
         middleware=middlewares,
         checkpointer=InMemorySaver(),
     )
+    return _attach_trace(agent, trace)
 
 
 def build_conductor_runtime(
@@ -394,14 +416,31 @@ def build_collector_runtime(
     name: str | None = "collector",
 ) -> Any:
     """Build a collector agent with caller-provided page-scoped tools."""
-
-    return create_agent(
+    trace = NTrace(agent_name=name or "collector", system_prompt=COLLECTOR_PROMPT)
+    middleware = [
+        createNTraceStartMiddleware(trace),
+        *create_codex_model_retry_middleware(model),
+        createNTraceEndMiddleware(trace),
+    ]
+    agent = create_agent(
         model=model,
         tools=list(tools),
         system_prompt=COLLECTOR_PROMPT,
         name=name,
-        middleware=create_codex_model_retry_middleware(model),
+        middleware=middleware,
     )
+    return _attach_trace(agent, trace)
+
+
+def _attach_trace(agent: Any, trace: NTrace) -> Any:
+    """Keep trace ownership private to the compiled agent without wrapping it."""
+
+    agent._ntrace = trace
+    return agent
+
+
+def _trace_for(agent: Any) -> NTrace:
+    return agent._ntrace
 
 
 def _invoke_config(max_iterations: int, thread_id: str) -> dict[str, Any]:

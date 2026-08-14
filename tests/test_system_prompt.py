@@ -6,7 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prompts import COLLECTOR_PROMPT, RUN_AGENT_PY_PATCH_GRAMMAR, SYSTEM_PROMPT
+from prompts import (
+    COLLECTOR_CODER_PROMPT,
+    COLLECTOR_PROMPT,
+    RUN_AGENT_PY_PATCH_GRAMMAR,
+    SYSTEM_PROMPT,
+)
 
 
 class SystemPromptTests(unittest.TestCase):
@@ -46,34 +51,39 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Never use an operation-only or templated placeholder", SYSTEM_PROMPT)
 
     def test_collector_prompt_has_isolated_fixed_loop(self) -> None:
-        self.assertIn("Keep your own context", COLLECTOR_PROMPT)
+        self.assertIn("keeping isolated context", COLLECTOR_PROMPT)
         self.assertIn("collector_uiautomate", COLLECTOR_PROMPT)
         self.assertIn("collector_swipe_up", COLLECTOR_PROMPT)
         self.assertIn("collector_swipe_up_long", COLLECTOR_PROMPT)
         self.assertIn("collector_swipe_to_random", COLLECTOR_PROMPT)
-        self.assertIn("modify it only through apply_run_agent_py_patch", COLLECTOR_PROMPT)
+        self.assertIn("consult_coder", COLLECTOR_PROMPT)
+        self.assertIn("multiple materially different (XML, r1) training pairs", COLLECTOR_PROMPT)
+        self.assertIn("evaluates the current script against every recorded pair", COLLECTOR_PROMPT)
+        self.assertIn("same persistent coder agent", COLLECTOR_PROMPT)
         self.assertNotIn("write_run_agent_py", COLLECTOR_PROMPT)
-        self.assertIn("Never replace the full run.agent.py", COLLECTOR_PROMPT)
-        self.assertIn("Patch input grammar:", COLLECTOR_PROMPT)
-        self.assertIn(RUN_AGENT_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)
-        self.assertIn("start: begin_patch update_hunk+ end_patch", COLLECTOR_PROMPT)
-        self.assertIn('change_line: ("+" | "-" | " ") /(.*)/ LF', COLLECTOR_PROMPT)
-        self.assertIn("exactly one update_hunk with filename `run.agent.py`", COLLECTOR_PROMPT)
-        self.assertIn("Call save_baseline immediately after producing baseline r1", COLLECTOR_PROMPT)
-        self.assertIn("sniff_run.evaluation as the only per-state pass/fail signal", COLLECTOR_PROMPT)
-        self.assertIn("sniff_run.verification.ready is true", COLLECTOR_PROMPT)
-        self.assertIn("Do not decide pass/fail yourself", COLLECTOR_PROMPT)
-        self.assertIn("only training-completion signal", COLLECTOR_PROMPT)
-        self.assertIn("same run.agent.py fingerprint passed at least two different swiped XML states", COLLECTOR_PROMPT)
-        self.assertIn("collector_tap is locked until sniff_run.verification.ready is true", COLLECTOR_PROMPT)
-        self.assertIn("commonly labeled `点菜`, `商品`, or `全部商品`", COLLECTOR_PROMPT)
-        self.assertIn("does not compare page XML fingerprints", COLLECTOR_PROMPT)
-        self.assertIn("Do not evade a bad score by scrolling away", COLLECTOR_PROMPT)
-        self.assertIn("general extraction heuristic for same-class pages", COLLECTOR_PROMPT)
-        self.assertIn("Define run(xml: str) -> dict", COLLECTOR_PROMPT)
+        self.assertNotIn("Patch grammar:", COLLECTOR_PROMPT)
+        self.assertNotIn(RUN_AGENT_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)
+        self.assertIn("immediately call save_baseline", COLLECTOR_PROMPT)
+        self.assertIn("batch evaluation as authoritative", COLLECTOR_PROMPT)
+        self.assertIn("sniff_run.verification.ready=true", COLLECTOR_PROMPT)
+        self.assertIn("only completion signal", COLLECTOR_PROMPT)
+        self.assertIn("collector_tap is locked until verification.ready=true", COLLECTOR_PROMPT)
+        self.assertIn("commonly labeled 点菜, 商品, or 全部商品", COLLECTOR_PROMPT)
+        self.assertIn("Do not evade a failed batch score by scrolling elsewhere", COLLECTOR_PROMPT)
+        self.assertNotIn("Define run(xml: str) -> dict", COLLECTOR_PROMPT)
         self.assertNotIn("Call eval_collection", COLLECTOR_PROMPT)
-        self.assertIn("Never use it to enter another page", COLLECTOR_PROMPT)
         self.assertIn("Do not enter a lower-level page", COLLECTOR_PROMPT)
+
+    def test_collector_coder_prompt_owns_code_and_patch_contract(self) -> None:
+        self.assertIn("persistent coding subagent", COLLECTOR_CODER_PROMPT)
+        self.assertIn("all XML/r1 pairs", COLLECTOR_CODER_PROMPT)
+        self.assertIn("read_run_agent_py", COLLECTOR_CODER_PROMPT)
+        self.assertIn("apply_run_agent_py_patch", COLLECTOR_CODER_PROMPT)
+        self.assertIn("no device", COLLECTOR_CODER_PROMPT)
+        self.assertIn("Define run(xml: str) -> dict", COLLECTOR_CODER_PROMPT)
+        self.assertIn("Patch grammar:", COLLECTOR_CODER_PROMPT)
+        self.assertIn(RUN_AGENT_PY_PATCH_GRAMMAR, COLLECTOR_CODER_PROMPT)
+        self.assertIn("exactly one update_hunk with filename run.agent.py", COLLECTOR_CODER_PROMPT)
 
 
 if __name__ == "__main__":

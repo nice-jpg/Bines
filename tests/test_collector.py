@@ -8,6 +8,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from collector import (
+    CollectorCoderSession,
+    CollectorCoderToolbox,
     CollectorManager,
     CollectorToolbox,
     create_collector_tools,
@@ -66,8 +68,7 @@ def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> No
         "collector_swipe_to_random",
         "collector_swipe_down",
         "collector_tap",
-        "read_run_agent_py",
-        "apply_run_agent_py_patch",
+        "consult_coder",
         "sniff_run",
         "save_baseline",
         "save_merchant_profile",
@@ -91,9 +92,8 @@ def test_run_agent_py_reads_are_deduplicated_and_external_changes_refresh_conten
     run_path = page_dir / "run.agent.py"
     original = "def run(xml: str):\n    return {'items': []}\n"
     run_path.write_text(original, encoding="utf-8")
-    toolbox = CollectorToolbox(
+    toolbox = CollectorCoderToolbox(
         mechanism=PageMechanism(tmp_path),
-        event_hub=FakeEventHub(),
         page_path="meituan",
     )
 
@@ -126,9 +126,8 @@ def test_run_agent_py_reads_are_deduplicated_and_external_changes_refresh_conten
 
 def test_read_run_agent_py_reports_missing_script_without_fake_content(tmp_path: Path) -> None:
     (tmp_path / "meituan").mkdir()
-    toolbox = CollectorToolbox(
+    toolbox = CollectorCoderToolbox(
         mechanism=PageMechanism(tmp_path),
-        event_hub=FakeEventHub(),
         page_path="meituan",
     )
 
@@ -137,6 +136,158 @@ def test_read_run_agent_py_reports_missing_script_without_fake_content(tmp_path:
     assert result["ok"] is False
     assert result["error_type"] == "MissingRunAgentPy"
     assert "content" not in result
+
+
+def test_collector_coder_exposes_only_page_script_file_tools(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml: str):\n    return {'items': []}\n",
+        encoding="utf-8",
+    )
+
+    toolbox = CollectorCoderToolbox(
+        mechanism=PageMechanism(tmp_path),
+        page_path="meituan",
+    )
+
+    assert [tool.name for tool in toolbox.create_tools()] == [
+        "read_run_agent_py",
+        "apply_run_agent_py_patch",
+    ]
+
+
+def test_collector_coder_reuses_agent_thread_and_sends_only_new_cases(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml: str):\n    return {'items': []}\n",
+        encoding="utf-8",
+    )
+    built = []
+    invocations = []
+
+    class FakeCoderAgent:
+        def invoke(self, payload, config=None):
+            invocations.append((payload, config))
+            return {"messages": [{"role": "assistant", "content": "patched"}]}
+
+    def create_agent(**kwargs):
+        built.append(kwargs)
+        return FakeCoderAgent()
+
+    session = CollectorCoderSession(
+        model="model",
+        mechanism=PageMechanism(tmp_path),
+        page_path="meituan",
+        page_visit_id="visit-1",
+        page_description="merchant page",
+        collection_schema={"items": [{"name": ""}]},
+        create_agent_factory=create_agent,
+    )
+    first_case = {
+        "case_id": "case-1",
+        "xml": "<page><item text='cup'/></page>",
+        "r1": {"items": [{"name": "cup"}]},
+    }
+    second_case = {
+        "case_id": "case-2",
+        "xml": "<page><item text='bowl'/></page>",
+        "r1": {"items": [{"name": "bowl"}]},
+    }
+
+    first = json.loads(
+        session.implement(training_cases=[first_case], evaluation={"score": 0})
+    )
+    second = json.loads(
+        session.implement(
+            training_cases=[first_case, second_case],
+            evaluation={"score": 50, "errors": ["cases[1].result.items[0].name"]},
+        )
+    )
+
+    assert len(built) == 1
+    assert [tool.name for tool in built[0]["tools"]] == [
+        "read_run_agent_py",
+        "apply_run_agent_py_patch",
+    ]
+    assert first["turn"] == 1
+    assert second["turn"] == 2
+    assert first["new_training_cases"] == 1
+    assert second["new_training_cases"] == 1
+    first_payload = json.loads(invocations[0][0]["messages"][0]["content"])
+    second_payload = json.loads(invocations[1][0]["messages"][0]["content"])
+    assert first_payload["new_training_cases"] == [first_case]
+    assert second_payload["new_training_cases"] == [second_case]
+    assert second_payload["page_description"] is None
+    assert invocations[0][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
+    assert invocations[1][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
+
+
+def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml: str):\n    return {'items': []}\n",
+        encoding="utf-8",
+    )
+    received = []
+
+    class FakeCoderSession:
+        def implement(self, **kwargs):
+            received.append(kwargs)
+            return json.dumps({"ok": True})
+
+    event_hub = FakeEventHub()
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=event_hub,
+        page_path="meituan",
+        collection_schema='{"items": []}',
+        coder_session=FakeCoderSession(),
+    )
+    toolbox.collector_uiautomate()
+    toolbox.save_baseline('{"items": []}')
+    event_hub.xml = "<h><n t=\"bowl\"/></h>"
+    toolbox.collector_swipe_up(100, 1000)
+    toolbox.save_baseline('{"items": []}')
+    toolbox.sniff_run()
+
+    result = json.loads(toolbox.consult_coder("handle repeated card variants"))
+
+    assert result["ok"] is True
+    assert len(received) == 1
+    assert len(received[0]["training_cases"]) == 2
+    assert received[0]["training_cases"][1]["xml"] == event_hub.xml
+    assert received[0]["training_cases"][0]["r1"] == {"items": []}
+    assert received[0]["evaluation"]["score"] == 100
+    assert received[0]["instruction"] == "handle repeated card variants"
+
+
+def test_collector_rejects_coder_consultation_before_two_distinct_pairs(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml: str):\n    return {'items': []}\n",
+        encoding="utf-8",
+    )
+
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=FakeEventHub(),
+        page_path="meituan",
+        collection_schema='{"items": []}',
+        coder_session=SimpleNamespace(implement=lambda **_: "must not run"),
+    )
+    toolbox.collector_uiautomate()
+    toolbox.save_baseline('{"items": []}')
+
+    result = json.loads(toolbox.consult_coder())
+
+    assert result["ok"] is False
+    assert result["error_type"] == "CollectorTrainingCasesInsufficient"
+    assert result["recorded_cases"] == 1
+    assert result["required_cases"] == 2
 
 
 def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> None:
@@ -161,7 +312,10 @@ def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> Non
     assert result["ok"] is True
     assert result["run"]["ok"] is True
     assert result["run"]["result"] == {"items": [{"name": "cup"}]}
-    assert result["evaluation"] == {"score": 100, "errors": [], "missing": []}
+    assert result["evaluation"]["score"] == 100
+    assert result["evaluation"]["errors"] == []
+    assert result["evaluation"]["missing"] == []
+    assert len(result["evaluation"]["cases"]) == 1
     assert result["verification"]["ready"] is False
     assert result["verification"]["validated_states"] == 1
 
@@ -197,10 +351,10 @@ def test_sniff_run_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
     assert saved["baseline_saved"] is True
     assert matched["evaluation"]["score"] == 100
     assert replaced["evaluation"]["score"] < 100
-    assert replaced["evaluation"]["errors"] == ["result.items[0].name"]
+    assert replaced["evaluation"]["errors"] == ["cases[0].result.items[0].name"]
 
 
-def test_sniff_run_rejects_baseline_from_another_xml_state(tmp_path: Path) -> None:
+def test_sniff_run_keeps_evaluating_saved_pairs_after_page_moves(tmp_path: Path) -> None:
     class MovingEventHub(FakeEventHub):
         def swipe_up(self, x, y):
             self.xml = '<h><n t="bowl"/></h>'
@@ -223,8 +377,9 @@ def test_sniff_run_rejects_baseline_from_another_xml_state(tmp_path: Path) -> No
     tools["collector_swipe_up"].func(100, 1000)
     result = json.loads(tools["sniff_run"].func())
 
-    assert result["ok"] is False
-    assert result["evaluation"]["errors"] == ["baseline_state_mismatch"]
+    assert result["ok"] is True
+    assert result["evaluation"]["score"] == 100
+    assert result["evaluated_cases"] == 1
 
 
 def test_same_script_must_pass_two_distinct_swiped_states(tmp_path: Path) -> None:
@@ -263,8 +418,12 @@ def test_same_script_must_pass_two_distinct_swiped_states(tmp_path: Path) -> Non
     assert second["verification"]["ready"] is True
     assert second["verification"]["validated_states"] == 2
 
+    coder_toolbox = CollectorCoderToolbox(
+        mechanism=toolbox.mechanism,
+        page_path="meituan",
+    )
     patched = json.loads(
-        toolbox.apply_run_agent_py_patch(
+        coder_toolbox.apply_run_agent_py_patch(
             (
                 "*** Begin Patch\n*** Update File: run.agent.py\n@@\n"
                 " from xml.etree import ElementTree as ET\n"
@@ -307,7 +466,7 @@ def test_hardcoded_current_state_script_fails_cross_state_verification(tmp_path:
 
     assert first["evaluation"]["score"] == 100
     assert second["evaluation"]["score"] < 100
-    assert second["evaluation"]["errors"] == ["result.items[0].name"]
+    assert second["evaluation"]["errors"] == ["cases[1].result.items[0].name"]
     assert toolbox.training_result()["ready"] is False
 
 
@@ -409,7 +568,7 @@ def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Pa
     assert manager.training_registry.is_trained("visit-merchant", "meituan/美食/商家") is True
     assert result["restoration"]["restored"] is True
     assert captured["kwargs"]["name"] == "collector"
-    assert captured["kwargs"]["middleware"] == []
+    assert captured["kwargs"]["system_prompt"]
     assert captured["config"]["recursion_limit"] == 80
     assert "merchant page" in captured["payload"]["messages"][0]["content"]
 

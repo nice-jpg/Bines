@@ -1,4 +1,4 @@
-"""Collector agent manager and page-collection tools."""
+"""Collector page-probing manager and tools."""
 
 from __future__ import annotations
 
@@ -7,10 +7,13 @@ import json
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence
 
+from nTrace import NTrace, createNTraceEndMiddleware, createNTraceStartMiddleware
+
 from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
 try:
+    from src.collector.coder import CollectorCoderSession
     from src.codex.model_retry import create_codex_model_retry_middleware
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from src.prompts import COLLECTOR_PROMPT
@@ -20,6 +23,7 @@ try:
         ExternalOperationPolicy,
     )
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+    from collector.coder import CollectorCoderSession
     from codex.model_retry import create_codex_model_retry_middleware
     from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from prompts import COLLECTOR_PROMPT
@@ -40,6 +44,7 @@ class CollectorManager:
         mechanism: PageMechanism | None = None,
         event_hub: EventHub | None = None,
         create_agent_factory: Callable[..., Any] | None = None,
+        coder_create_agent_factory: Callable[..., Any] | None = None,
         max_iterations: int = 80,
     ) -> None:
         self.model = model
@@ -47,6 +52,7 @@ class CollectorManager:
         self.event_hub = event_hub or EventHub()
         self.training_registry = CollectorTrainingRegistry()
         self.create_agent_factory = create_agent_factory
+        self.coder_create_agent_factory = coder_create_agent_factory
         self.max_iterations = max(1, int(max_iterations))
 
     def prepare_collector(
@@ -71,15 +77,27 @@ class CollectorManager:
             raise ValueError("prepare_collector requires the current page_visit_id.")
         self.training_registry.register_visit(visit_id, canonical_path)
 
+        parsed_collection_schema = _require_json_object(collection_schema, "collection_schema")
+        coder_session = CollectorCoderSession(
+            model=self.model,
+            mechanism=self.mechanism,
+            page_path=canonical_path,
+            page_visit_id=visit_id,
+            page_description=page_description,
+            collection_schema=parsed_collection_schema,
+            create_agent_factory=self.coder_create_agent_factory,
+        )
         toolbox = CollectorToolbox(
             mechanism=self.mechanism,
             event_hub=self.event_hub,
             page_path=canonical_path,
             merchant_schema=merchant_schema,
-            collection_schema=collection_schema,
+            collection_schema=parsed_collection_schema,
             requires_merchant_profile=self.mechanism.page_policy(canonical_path).role == "merchant",
+            coder_session=coder_session,
         )
         agent = self._build_agent(toolbox)
+        agent._ntrace.update(session_id=f"collector:{visit_id}")
         message = "\n".join(
             [
                 "<collector_assignment>",
@@ -91,11 +109,11 @@ class CollectorManager:
                 "<workflow>",
                 "1. Call collector_uiautomate to inspect the real page XML.",
                 "2. Before any swipe, extract the merchant profile from the top XML and call save_merchant_profile.",
-                "3. Scroll only if needed to find a suitable same-page item collection region before baseline creation.",
-                "4. Produce r1 matching collection_schema directly from the current XML and call save_baseline.",
-                "5. Call sniff_run without changing page state to get r2 and deterministic evaluation.",
-                "6. If the score is below 100, repair run.agent.py for the current XML before moving the page.",
-                "7. After the state passes, swipe to a materially different state, save its baseline, and verify again.",
+                "3. Record at least two materially different XML/r1 pairs with save_baseline before requesting code.",
+                "4. Call consult_coder; coder alone reads and modifies run.agent.py using all recorded pairs.",
+                "5. Call sniff_run to evaluate the current script against every recorded pair.",
+                "6. Return failed batch evaluation to the same coder with consult_coder and repeat until score is 100.",
+                "7. Add further distinct state pairs when needed to improve same-class compatibility.",
                 "8. Continue until sniff_run.verification.ready is true for the same run.agent.py version.",
                 "9. After verification is ready, inspect the current XML and use collector_tap on a visible "
                 "same-page product-tab reset control when available.",
@@ -149,18 +167,27 @@ class CollectorManager:
         if create_agent is None:
             from langchain.agents import create_agent as create_agent  # noqa: PLC0415
 
-        return create_agent(
+        trace = NTrace(agent_name="collector", system_prompt=COLLECTOR_PROMPT)
+        middleware = [
+            createNTraceStartMiddleware(trace),
+            *create_codex_model_retry_middleware(self.model),
+            createNTraceEndMiddleware(trace),
+        ]
+        agent = create_agent(
             model=self.model,
             tools=toolbox.create_tools(),
             system_prompt=COLLECTOR_PROMPT,
             name="collector",
-            middleware=create_codex_model_retry_middleware(self.model),
+            middleware=middleware,
         )
+        agent._ntrace = trace
+        return agent
 
 
 class CollectorToolbox:
     """Page-scoped tool implementations exposed only to collector."""
 
+    REQUIRED_TRAINING_CASES = 2
     REQUIRED_VALIDATION_STATES = 2
 
     def __init__(
@@ -172,6 +199,7 @@ class CollectorToolbox:
         merchant_schema: str = "{}",
         collection_schema: str = "{}",
         requires_merchant_profile: bool = False,
+        coder_session: CollectorCoderSession | None = None,
     ) -> None:
         self.mechanism = mechanism
         self.event_hub = event_hub
@@ -179,10 +207,9 @@ class CollectorToolbox:
         self.merchant_schema = _require_json_object(merchant_schema, "merchant_schema")
         self.collection_schema = _require_json_object(collection_schema, "collection_schema")
         self.requires_merchant_profile = requires_merchant_profile
+        self.coder_session = coder_session
         self._merchant_profile: dict[str, Any] = {}
-        self._baseline: Any | None = None
-        self._baseline_state_fingerprint = ""
-        self._baseline_state_revision = -1
+        self._training_cases: dict[str, dict[str, Any]] = {}
         self._last_xml: str | None = None
         self._state_revision = 0
         self._passing_states: dict[str, dict[str, int]] = {}
@@ -193,7 +220,12 @@ class CollectorToolbox:
         }
         self._last_sniff_script_fingerprint: str | None = None
         self._last_sniff_state_fingerprint = ""
-        self._exposed_script_fingerprint: str | None = None
+        self._last_batch_evaluation: dict[str, Any] = {
+            "score": 0,
+            "errors": ["not_evaluated"],
+            "missing": ["result"],
+            "cases": [],
+        }
         self._reset_tap_attempted = False
         self._reset_tap_succeeded = False
         self._reset_tap_error: Any = None
@@ -265,13 +297,13 @@ class CollectorToolbox:
         )
 
     def save_merchant_profile(self, merchant: str) -> str:
-        if self._last_xml is None:
+        if self._last_xml is None or self._state_revision != 0:
             return _json_result(
                 {
                     "ok": False,
                     "saved": False,
                     "error_type": "MerchantProfileStateError",
-                    "error": "Read the initial top-state XML before saving the merchant profile.",
+                    "error": "Save the merchant profile from the initial top-state XML before any swipe.",
                 }
             )
         try:
@@ -295,33 +327,32 @@ class CollectorToolbox:
     def merchant_profile(self) -> dict[str, Any]:
         return dict(self._merchant_profile)
 
-    def read_run_agent_py(self) -> str:
-        snapshot = self.mechanism.read_run_agent_py_snapshot(self.page_path)
-        if snapshot["ok"] is not True:
-            return _json_result(snapshot)
-        content = str(snapshot["content"])
-        fingerprint = _fingerprint(content)
-        content_omitted = fingerprint == self._exposed_script_fingerprint
-        result = {
-            "ok": True,
-            "canonical_path": snapshot["canonical_path"],
-            "path": snapshot["path"],
-            "script_fingerprint": fingerprint,
-            "content_omitted": content_omitted,
-            "bytes": len(content.encode("utf-8")),
-            "lines": len(content.splitlines()),
-        }
-        if not content_omitted:
-            result["content"] = content
-            self._exposed_script_fingerprint = fingerprint
-        return _json_result(result)
+    def consult_coder(self, instruction: str = "") -> str:
+        """Send accumulated evidence and the latest deterministic result to one coder session."""
 
-    def apply_run_agent_py_patch(self, patch: str) -> str:
-        result = self.mechanism.apply_run_agent_py_patch(self.page_path, patch)
-        payload = json.loads(result)
-        if payload.get("ok") is True:
-            self._exposed_script_fingerprint = str(payload["script_fingerprint"])
-        return result
+        if self.coder_session is None:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorCoderUnavailable",
+                    "error": "This toolbox was created without a collector-coder session.",
+                }
+            )
+        if len(self._training_cases) < self.REQUIRED_TRAINING_CASES:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorTrainingCasesInsufficient",
+                    "error": "Record at least two distinct XML/r1 pairs before consulting coder.",
+                    "recorded_cases": len(self._training_cases),
+                    "required_cases": self.REQUIRED_TRAINING_CASES,
+                }
+            )
+        return self.coder_session.implement(
+            training_cases=list(self._training_cases.values()),
+            evaluation=self._last_batch_evaluation,
+            instruction=instruction,
+        )
 
     def sniff_run(self) -> str:
         xml = self.collector_uiautomate()
@@ -339,30 +370,49 @@ class CollectorToolbox:
 
         state_fingerprint = _fingerprint(xml)
         script_fingerprint = self._script_fingerprint()
-        run_result = json.loads(self.mechanism.sniff_run(self.page_path, xml))
-        if self._baseline is None:
+        if not self._training_cases:
             evaluation = {
                 "score": 0,
                 "errors": ["missing_baseline"],
                 "missing": ["result"],
+                "cases": [],
             }
-        elif self._baseline_state_revision != self._state_revision:
-            evaluation = {
-                "score": 0,
-                "errors": ["baseline_state_mismatch"],
-                "missing": ["result"],
-            }
+            run_result: Any = None
         else:
-            evaluation = eval_collection(self._baseline, run_result)
-        passed = run_result.get("ok") is True and evaluation["score"] == 100
-        if passed:
-            self._passing_states.setdefault(script_fingerprint, {})[state_fingerprint] = self._state_revision
+            case_results: list[dict[str, Any]] = []
+            for case in self._training_cases.values():
+                case_run = json.loads(self.mechanism.sniff_run(self.page_path, str(case["xml"])))
+                case_evaluation = eval_collection(case["r1"], case_run)
+                passed = case_run.get("ok") is True and case_evaluation["score"] == 100
+                if passed:
+                    self._passing_states.setdefault(script_fingerprint, {})[
+                        str(case["state_fingerprint"])
+                    ] = int(case["state_revision"])
+                case_results.append(
+                    {
+                        "case_id": case["case_id"],
+                        "state_fingerprint": case["state_fingerprint"],
+                        "state_revision": case["state_revision"],
+                        "run": case_run,
+                        "evaluation": case_evaluation,
+                        "passed": passed,
+                    }
+                )
+            evaluation = _batch_evaluation(case_results)
+            current_case = self._training_cases.get(state_fingerprint)
+            run_result = next(
+                (item["run"] for item in case_results if item["case_id"] == current_case["case_id"]),
+                None,
+            ) if current_case is not None else None
+        passed = evaluation["score"] == 100
+        self._last_batch_evaluation = evaluation
         self._record_evaluation(evaluation, script_fingerprint, state_fingerprint)
         return _json_result(
             {
                 "ok": passed,
                 "run": run_result,
                 "evaluation": evaluation,
+                "evaluated_cases": len(self._training_cases),
                 "verification": self.training_result(),
             },
         )
@@ -401,16 +451,24 @@ class CollectorToolbox:
             return _json_result(
                 {"ok": False, "baseline_saved": False, "error_type": "SchemaError", "errors": schema_errors}
             )
-        self._baseline = baseline
-        self._baseline_state_fingerprint = _fingerprint(self._last_xml)
-        self._baseline_state_revision = self._state_revision
+        state_fingerprint = _fingerprint(self._last_xml)
+        state_revision = self._state_revision
+        case_id = state_fingerprint
+        self._training_cases[case_id] = {
+            "case_id": case_id,
+            "xml": self._last_xml,
+            "r1": baseline,
+            "state_fingerprint": state_fingerprint,
+            "state_revision": state_revision,
+        }
         return _json_result(
             {
                 "ok": True,
                 "baseline_saved": True,
-                "baseline": self._baseline,
-                "state_fingerprint": self._baseline_state_fingerprint,
-                "state_revision": self._state_revision,
+                "baseline": baseline,
+                "state_fingerprint": state_fingerprint,
+                "state_revision": state_revision,
+                "training_case_count": len(self._training_cases),
             }
         )
 
@@ -505,32 +563,27 @@ class CollectorToolbox:
                 ),
             ),
             StructuredTool.from_function(
-                func=self.read_run_agent_py,
-                name="read_run_agent_py",
-                description="Read the current page's run.agent.py.",
-            ),
-            StructuredTool.from_function(
-                func=self.apply_run_agent_py_patch,
-                name="apply_run_agent_py_patch",
+                func=self.consult_coder,
+                name="consult_coder",
                 description=(
-                    "Incrementally update run.agent.py with a patch matching the grammar in the collector system prompt. "
-                    "It must contain exactly one update_hunk named run.agent.py and no add, delete, move, or other file."
+                    "Ask the persistent collector-coder to implement or repair run.agent.py. "
+                    "The runtime automatically supplies every recorded XML/r1 pair and the latest sniff_run batch result."
                 ),
             ),
             StructuredTool.from_function(
                 func=self.sniff_run,
                 name="sniff_run",
                 description=(
-                    "Capture unchanged current XML, run run.agent.py, compare against the baseline bound to that XML, "
-                    "and return deterministic evaluation plus multi-state verification status."
+                    "Capture unchanged current XML, run run.agent.py against every recorded XML/r1 pair, "
+                    "and return deterministic batch evaluation plus multi-state verification status."
                 ),
             ),
             StructuredTool.from_function(
                 func=self.save_baseline,
                 name="save_baseline",
                 description=(
-                    "Store baseline r1 for the most recently read XML state. Replaces the prior baseline. "
-                    "Input: r1 JSON string."
+                    "Record baseline r1 with the most recently read XML as a persistent training pair. "
+                    "A baseline for the same XML replaces that pair; distinct XML states accumulate."
                 ),
             ),
             StructuredTool.from_function(
@@ -650,6 +703,38 @@ def _schema_shape_errors(schema: Any, value: Any, path: str) -> list[str]:
             for index, item in enumerate(value):
                 errors.extend(_schema_shape_errors(schema[0], item, f"{path}[{index}]"))
     return errors
+
+
+def _batch_evaluation(case_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    if not case_results:
+        return {"score": 0, "errors": ["missing_baseline"], "missing": ["result"], "cases": []}
+    errors: list[str] = []
+    missing: list[str] = []
+    scores: list[int] = []
+    summaries: list[dict[str, Any]] = []
+    for index, result in enumerate(case_results):
+        evaluation = result["evaluation"]
+        score = int(evaluation.get("score", 0))
+        scores.append(score)
+        errors.extend(f"cases[{index}].{path}" for path in evaluation.get("errors", []))
+        missing.extend(f"cases[{index}].{path}" for path in evaluation.get("missing", []))
+        summaries.append(
+            {
+                "case_id": result["case_id"],
+                "state_fingerprint": result["state_fingerprint"],
+                "state_revision": result["state_revision"],
+                "score": score,
+                "errors": list(evaluation.get("errors", [])),
+                "missing": list(evaluation.get("missing", [])),
+                "run": result["run"],
+            }
+        )
+    return {
+        "score": min(scores),
+        "errors": errors,
+        "missing": missing,
+        "cases": summaries,
+    }
 
 
 def _fingerprint(value: str) -> str:
