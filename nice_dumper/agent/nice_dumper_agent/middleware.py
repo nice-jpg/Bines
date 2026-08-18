@@ -168,6 +168,12 @@ class SubagentLifecycleMiddleware(_base_middleware()):
             ]
             for xml_ref, candidates in sorted(self.runtime.hidden_analysis_store.items())
         }
+        compaction = {
+            xml_ref: metrics
+            for xml_ref, metrics in sorted(
+                getattr(self.runtime, "compaction_store", {}).items()
+            )[-4:]
+        }
         messages.insert(
             0,
             {
@@ -178,6 +184,7 @@ class SubagentLifecycleMiddleware(_base_middleware()):
                         "active": active,
                         "recognitions": calls,
                         "hidden_subtree_analysis": hidden_analyses,
+                        "xml_compaction_metrics": compaction,
                     },
                     ensure_ascii=False,
                 ),

@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .compaction import analyze_xml_compaction
 from .dumper import DumperConfig, dump_full_xml
 from .middleware import OptimizerTrace
 from .models import OptimizationRound, RecognizerResult, ScoreResult
@@ -73,6 +74,7 @@ class OptimizerRuntime:
         self.optimizer_error_store: dict[str, dict[str, str]] = {}
         self.optimizer_error_score_refs: dict[str, str] = {}
         self.hidden_analysis_store: dict[str, list[HiddenSubtreeCandidate]] = {}
+        self.compaction_store: dict[str, dict[str, Any]] = {}
         self.subagents: dict[str, Any] = {}
         self._subagent_roles: dict[str, str] = {}
         self._next_subagent_id = 1
@@ -108,7 +110,16 @@ class OptimizerRuntime:
         xml = dump_full_xml(self.dumper_config)
         ref = "XML0"
         self.xml_store[ref] = xml
-        return _json({"xml_ref": ref, "length": len(xml), "preview": xml[:500]})
+        metrics = analyze_xml_compaction(xml)
+        self.compaction_store[ref] = metrics
+        return _json(
+            {
+                "xml_ref": ref,
+                "length": len(xml),
+                "compaction_metrics": metrics,
+                "preview": xml[:500],
+            }
+        )
 
     def spawn_subagent_tool(self, role: str) -> str:
         """Spawn a subagent. Supported role: recognizer."""
@@ -206,11 +217,14 @@ class OptimizerRuntime:
         self._next_xml_id += 1
         out_ref = f"XML{self._next_xml_id}"
         self.xml_store[out_ref] = optimized
+        metrics = analyze_xml_compaction(optimized)
+        self.compaction_store[out_ref] = metrics
         return _json(
             {
                 "ok": True,
                 "xml_ref": out_ref,
                 "length": len(optimized),
+                "compaction_metrics": metrics,
                 "preview": optimized[:500],
             }
         )
@@ -358,6 +372,7 @@ class OptimizerRuntime:
         self._next_xml_id += 1
         xml_ref = f"XML{self._next_xml_id}"
         self.xml_store[xml_ref] = ""
+        self.compaction_store[xml_ref] = analyze_xml_compaction("")
         error_type = type(exc).__name__
         message = str(exc).strip() or repr(exc)
         error_text = f"{error_type}: {message}"

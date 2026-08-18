@@ -162,6 +162,23 @@ def test_runtime_score_round_returns_score_ref(tmp_path: Path) -> None:
     assert '"score_ref": "S1"' in scored
 
 
+def test_optimize_xml_reports_remaining_compaction_work(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path, min_growth=1.0, stale_rounds=3)
+    runtime.xml_store["XML0"] = """<hierarchy>
+      <node index="0" package="demo" text="" clickable="false"
+            enabled="true" bounds="[0,0][10,10]" />
+    </hierarchy>"""
+
+    result = json.loads(runtime.optimize_xml_tool("XML0"))
+
+    metrics = result["compaction_metrics"]
+    assert metrics["whitespace_text_tail_characters"] > 0
+    assert metrics["empty_attribute_count"] == 1
+    assert metrics["identity_attribute_count"] == 2
+    assert metrics["default_state_attribute_count"] == 2
+    assert runtime.compaction_store["XML1"] == metrics
+
+
 def test_optimizer_execution_error_is_supervised_and_scored_minus_1000(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, min_growth=1.0, stale_rounds=3)
     runtime.output.write_text(
