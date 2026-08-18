@@ -110,9 +110,9 @@ class CollectorManager:
                 "1. Call collector_uiautomate to inspect the real page XML.",
                 "2. Before any swipe, extract the merchant profile from the top XML and call save_merchant_profile.",
                 "3. Record at least two materially different XML/r1 pairs with save_baseline before requesting code.",
-                "4. Call consult_coder; coder alone reads and modifies run.agent.py using all recorded pairs.",
-                "5. Call sniff_run to evaluate the current script against every recorded pair.",
-                "6. Return failed batch evaluation to the same coder with consult_coder and repeat until score is 100.",
+                "4. Call sniff_run first to evaluate the existing run.agent.py against every recorded pair.",
+                "5. If the batch score is already 100, do not call coder. Otherwise call consult_coder; coder alone reads and modifies run.agent.py.",
+                "6. Call sniff_run after each coder change, then return failed batch evaluation to the same coder until score is 100.",
                 "7. Add further distinct state pairs when needed to improve same-class compatibility.",
                 "8. Continue until sniff_run.verification.ready is true for the same run.agent.py version.",
                 "9. After verification is ready, inspect the current XML and use collector_tap on a visible "
@@ -210,6 +210,7 @@ class CollectorToolbox:
         self.coder_session = coder_session
         self._merchant_profile: dict[str, Any] = {}
         self._training_cases: dict[str, dict[str, Any]] = {}
+        self._training_case_revision = 0
         self._last_xml: str | None = None
         self._state_revision = 0
         self._passing_states: dict[str, dict[str, int]] = {}
@@ -219,6 +220,8 @@ class CollectorToolbox:
             "missing": ["result"],
         }
         self._last_sniff_script_fingerprint: str | None = None
+        self._last_sniff_training_case_revision = -1
+        self._last_sniff_valid = False
         self._last_sniff_state_fingerprint = ""
         self._last_batch_evaluation: dict[str, Any] = {
             "score": 0,
@@ -330,14 +333,6 @@ class CollectorToolbox:
     def consult_coder(self, instruction: str = "") -> str:
         """Send accumulated evidence and the latest deterministic result to one coder session."""
 
-        if self.coder_session is None:
-            return _json_result(
-                {
-                    "ok": False,
-                    "error_type": "CollectorCoderUnavailable",
-                    "error": "This toolbox was created without a collector-coder session.",
-                }
-            )
         if len(self._training_cases) < self.REQUIRED_TRAINING_CASES:
             return _json_result(
                 {
@@ -346,6 +341,36 @@ class CollectorToolbox:
                     "error": "Record at least two distinct XML/r1 pairs before consulting coder.",
                     "recorded_cases": len(self._training_cases),
                     "required_cases": self.REQUIRED_TRAINING_CASES,
+                }
+            )
+        preflight: dict[str, Any] | None = None
+        if not self._sniff_result_is_current():
+            preflight = json.loads(self.sniff_run())
+        if not self._last_sniff_valid:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorSniffPreflightFailed",
+                    "error": "The existing script could not be evaluated; coder was not called.",
+                    "preflight": preflight,
+                }
+            )
+        if self._last_batch_evaluation.get("score") == 100:
+            return _json_result(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "existing_script_already_optimal",
+                    "evaluation": self._last_batch_evaluation,
+                    "verification": self.training_result(),
+                }
+            )
+        if self.coder_session is None:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorCoderUnavailable",
+                    "error": "This toolbox was created without a collector-coder session.",
                 }
             )
         return self.coder_session.implement(
@@ -358,7 +383,7 @@ class CollectorToolbox:
         xml = self.collector_uiautomate()
         if not isinstance(xml, str):
             evaluation = {"score": 0, "errors": ["uiautomate_error"], "missing": ["result"]}
-            self._record_evaluation(evaluation, self._script_fingerprint(), "")
+            self._record_evaluation(evaluation, self._script_fingerprint(), "", valid=False)
             return _json_result(
                 {
                     "ok": False,
@@ -406,7 +431,7 @@ class CollectorToolbox:
             ) if current_case is not None else None
         passed = evaluation["score"] == 100
         self._last_batch_evaluation = evaluation
-        self._record_evaluation(evaluation, script_fingerprint, state_fingerprint)
+        self._record_evaluation(evaluation, script_fingerprint, state_fingerprint, valid=True)
         return _json_result(
             {
                 "ok": passed,
@@ -461,6 +486,7 @@ class CollectorToolbox:
             "state_fingerprint": state_fingerprint,
             "state_revision": state_revision,
         }
+        self._training_case_revision += 1
         return _json_result(
             {
                 "ok": True,
@@ -567,7 +593,8 @@ class CollectorToolbox:
                 name="consult_coder",
                 description=(
                     "Ask the persistent collector-coder to implement or repair run.agent.py. "
-                    "The runtime automatically supplies every recorded XML/r1 pair and the latest sniff_run batch result."
+                    "The runtime first ensures the existing script has a current sniff_run result, skips coder when "
+                    "the batch score is already 100, and otherwise supplies every recorded XML/r1 pair and failure."
                 ),
             ),
             StructuredTool.from_function(
@@ -611,10 +638,20 @@ class CollectorToolbox:
         evaluation: dict[str, Any],
         script_fingerprint: str,
         state_fingerprint: str,
+        *,
+        valid: bool,
     ) -> None:
         self._last_evaluation = evaluation
         self._last_sniff_script_fingerprint = script_fingerprint
+        self._last_sniff_training_case_revision = self._training_case_revision
+        self._last_sniff_valid = valid
         self._last_sniff_state_fingerprint = state_fingerprint
+
+    def _sniff_result_is_current(self) -> bool:
+        return bool(
+            self._last_sniff_script_fingerprint == self._script_fingerprint()
+            and self._last_sniff_training_case_revision == self._training_case_revision
+        )
 
 
 def create_collector_tools(

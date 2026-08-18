@@ -243,14 +243,14 @@ def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp
         mechanism=PageMechanism(tmp_path),
         event_hub=event_hub,
         page_path="meituan",
-        collection_schema='{"items": []}',
+        collection_schema='{"items": [{"name": ""}]}',
         coder_session=FakeCoderSession(),
     )
     toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": []}')
+    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
     event_hub.xml = "<h><n t=\"bowl\"/></h>"
     toolbox.collector_swipe_up(100, 1000)
-    toolbox.save_baseline('{"items": []}')
+    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
     toolbox.sniff_run()
 
     result = json.loads(toolbox.consult_coder("handle repeated card variants"))
@@ -259,9 +259,48 @@ def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp
     assert len(received) == 1
     assert len(received[0]["training_cases"]) == 2
     assert received[0]["training_cases"][1]["xml"] == event_hub.xml
-    assert received[0]["training_cases"][0]["r1"] == {"items": []}
-    assert received[0]["evaluation"]["score"] == 100
+    assert received[0]["training_cases"][0]["r1"] == {"items": [{"name": "cup"}]}
+    assert received[0]["evaluation"]["score"] < 100
     assert received[0]["instruction"] == "handle repeated card variants"
+    assert [call[0] for call in event_hub.calls].count("uiautomate") == 2
+
+
+def test_collector_skips_coder_when_existing_script_already_scores_100(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "from xml.etree import ElementTree as ET\n"
+        "def run(xml: str):\n"
+        "    return {'items': [{'name': ET.fromstring(xml).find('n').attrib['t']}]}\n",
+        encoding="utf-8",
+    )
+
+    class CoderMustNotRun:
+        def implement(self, **kwargs):
+            raise AssertionError("coder must be skipped for an already optimal script")
+
+    event_hub = FakeEventHub()
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=event_hub,
+        page_path="meituan",
+        collection_schema='{"items": [{"name": ""}]}',
+        coder_session=CoderMustNotRun(),
+    )
+    toolbox.collector_uiautomate()
+    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
+    event_hub.xml = '<h><n t="bowl"/></h>'
+    toolbox.collector_swipe_up(100, 1000)
+    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
+
+    result = json.loads(toolbox.consult_coder())
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["reason"] == "existing_script_already_optimal"
+    assert result["evaluation"]["score"] == 100
+    assert result["verification"]["ready"] is True
+    assert [call[0] for call in event_hub.calls].count("uiautomate") == 2
 
 
 def test_collector_rejects_coder_consultation_before_two_distinct_pairs(tmp_path: Path) -> None:
