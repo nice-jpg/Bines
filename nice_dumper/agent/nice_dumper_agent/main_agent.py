@@ -40,7 +40,7 @@ def run_optimizer(config: OptimizerConfig) -> OptimizerRunResult:
     if config.max_rounds < 1:
         raise ValueError("max_rounds must be >= 1")
     # model = build_model(config.model)
-    model = create_chat_model(model="gpt-5.4")
+    model = create_chat_model(model="gpt-5.6-sol")
     trace = OptimizerTrace()
     workspace_dir = config.output.parent
     ensure_optimizer_script(config.output)
