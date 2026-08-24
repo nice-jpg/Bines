@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any, Callable, Sequence
+from uuid import uuid4
 
 from nTrace import NTrace, createNTraceEndMiddleware, createNTraceStartMiddleware
 
@@ -14,6 +15,7 @@ from langchain_core.tools import StructuredTool
 
 try:
     from src.collector.coder import CollectorCoderSession
+    from src.collector.saved_instances import CollectorSavedInstanceMap
     from src.codex.model_retry import create_codex_model_retry_middleware
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from src.prompts import COLLECTOR_PROMPT
@@ -24,6 +26,7 @@ try:
     )
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from collector.coder import CollectorCoderSession
+    from collector.saved_instances import CollectorSavedInstanceMap
     from codex.model_retry import create_codex_model_retry_middleware
     from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
     from prompts import COLLECTOR_PROMPT
@@ -45,12 +48,13 @@ class CollectorManager:
         event_hub: EventHub | None = None,
         create_agent_factory: Callable[..., Any] | None = None,
         coder_create_agent_factory: Callable[..., Any] | None = None,
-        max_iterations: int = 80,
+        max_iterations: int = 1000,
     ) -> None:
         self.model = model
         self.mechanism = mechanism or PageMechanism()
         self.event_hub = event_hub or EventHub()
         self.training_registry = CollectorTrainingRegistry()
+        self.saved_instances = CollectorSavedInstanceMap()
         self.create_agent_factory = create_agent_factory
         self.coder_create_agent_factory = coder_create_agent_factory
         self.max_iterations = max(1, int(max_iterations))
@@ -76,6 +80,7 @@ class CollectorManager:
         if not visit_id:
             raise ValueError("prepare_collector requires the current page_visit_id.")
         self.training_registry.register_visit(visit_id, canonical_path)
+        self.saved_instances.register(canonical_path, visit_id)
 
         parsed_collection_schema = _require_json_object(collection_schema, "collection_schema")
         coder_session = CollectorCoderSession(
@@ -95,6 +100,8 @@ class CollectorManager:
             collection_schema=parsed_collection_schema,
             requires_merchant_profile=self.mechanism.page_policy(canonical_path).role == "merchant",
             coder_session=coder_session,
+            saved_instances=self.saved_instances,
+            page_visit_id=visit_id,
         )
         agent = self._build_agent(toolbox)
         agent._ntrace.update(session_id=f"collector:{visit_id}")
@@ -110,7 +117,7 @@ class CollectorManager:
                 "1. Call collector_uiautomate to inspect the real page XML.",
                 "2. Before any swipe, extract the merchant profile from the top XML and call save_merchant_profile.",
                 "3. Record at least two materially different XML/r1 pairs with save_baseline before requesting code.",
-                "4. Call sniff_run first to evaluate the existing run.agent.py against every recorded pair.",
+                "4. Call sniff_run first to evaluate the existing run.agent.py against every saved pair for this path, including prior visits.",
                 "5. If the batch score is already 100, do not call coder. Otherwise call consult_coder; coder alone reads and modifies run.agent.py.",
                 "6. Call sniff_run after each coder change, then return failed batch evaluation to the same coder until score is 100.",
                 "7. Add further distinct state pairs when needed to improve same-class compatibility.",
@@ -187,6 +194,7 @@ class CollectorManager:
 class CollectorToolbox:
     """Page-scoped tool implementations exposed only to collector."""
 
+    MIN_CODER_DIAGNOSIS_CHARS = 60
     REQUIRED_TRAINING_CASES = 2
     REQUIRED_VALIDATION_STATES = 2
 
@@ -200,6 +208,8 @@ class CollectorToolbox:
         collection_schema: str = "{}",
         requires_merchant_profile: bool = False,
         coder_session: CollectorCoderSession | None = None,
+        saved_instances: CollectorSavedInstanceMap | None = None,
+        page_visit_id: str | None = None,
     ) -> None:
         self.mechanism = mechanism
         self.event_hub = event_hub
@@ -208,6 +218,9 @@ class CollectorToolbox:
         self.collection_schema = _require_json_object(collection_schema, "collection_schema")
         self.requires_merchant_profile = requires_merchant_profile
         self.coder_session = coder_session
+        self.saved_instances = saved_instances or CollectorSavedInstanceMap()
+        self.page_visit_id = page_visit_id or f"standalone-{uuid4()}"
+        self.saved_instances.register(self.page_path, self.page_visit_id)
         self._merchant_profile: dict[str, Any] = {}
         self._training_cases: dict[str, dict[str, Any]] = {}
         self._training_case_revision = 0
@@ -221,6 +234,7 @@ class CollectorToolbox:
         }
         self._last_sniff_script_fingerprint: str | None = None
         self._last_sniff_training_case_revision = -1
+        self._last_sniff_corpus_revision = -1
         self._last_sniff_valid = False
         self._last_sniff_state_fingerprint = ""
         self._last_batch_evaluation: dict[str, Any] = {
@@ -365,6 +379,20 @@ class CollectorToolbox:
                     "verification": self.training_result(),
                 }
             )
+        diagnosis = instruction.strip()
+        if len(diagnosis) < self.MIN_CODER_DIAGNOSIS_CHARS:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CollectorCoderDiagnosisInsufficient",
+                    "error": (
+                        "Describe the probable structural failure, cross-state impact, and relevant "
+                        "container/hierarchy characteristics before consulting coder."
+                    ),
+                    "minimum_characters": self.MIN_CODER_DIAGNOSIS_CHARS,
+                    "provided_characters": len(diagnosis),
+                }
+            )
         if self.coder_session is None:
             return _json_result(
                 {
@@ -374,9 +402,9 @@ class CollectorToolbox:
                 }
             )
         return self.coder_session.implement(
-            training_cases=list(self._training_cases.values()),
+            training_cases=self.saved_instances.cases_for_path(self.page_path),
             evaluation=self._last_batch_evaluation,
-            instruction=instruction,
+            instruction=diagnosis,
         )
 
     def sniff_run(self) -> str:
@@ -395,7 +423,8 @@ class CollectorToolbox:
 
         state_fingerprint = _fingerprint(xml)
         script_fingerprint = self._script_fingerprint()
-        if not self._training_cases:
+        corpus_cases = self.saved_instances.cases_for_path(self.page_path)
+        if not corpus_cases:
             evaluation = {
                 "score": 0,
                 "errors": ["missing_baseline"],
@@ -405,14 +434,14 @@ class CollectorToolbox:
             run_result: Any = None
         else:
             case_results: list[dict[str, Any]] = []
-            for case in self._training_cases.values():
+            passing_cases = self._passing_states.setdefault(script_fingerprint, {})
+            for case in corpus_cases:
                 case_run = json.loads(self.mechanism.sniff_run(self.page_path, str(case["xml"])))
                 case_evaluation = eval_collection(case["r1"], case_run)
                 passed = case_run.get("ok") is True and case_evaluation["score"] == 100
+                passing_cases.pop(str(case["case_id"]), None)
                 if passed:
-                    self._passing_states.setdefault(script_fingerprint, {})[
-                        str(case["state_fingerprint"])
-                    ] = int(case["state_revision"])
+                    passing_cases[str(case["case_id"])] = int(case["state_revision"])
                 case_results.append(
                     {
                         "case_id": case["case_id"],
@@ -437,7 +466,7 @@ class CollectorToolbox:
                 "ok": passed,
                 "run": run_result,
                 "evaluation": evaluation,
-                "evaluated_cases": len(self._training_cases),
+                "evaluated_cases": len(corpus_cases),
                 "verification": self.training_result(),
             },
         )
@@ -478,14 +507,18 @@ class CollectorToolbox:
             )
         state_fingerprint = _fingerprint(self._last_xml)
         state_revision = self._state_revision
-        case_id = state_fingerprint
-        self._training_cases[case_id] = {
+        case_id = f"{self.page_visit_id}:{state_fingerprint}"
+        case = {
             "case_id": case_id,
+            "page_path": self.page_path,
+            "page_visit_id": self.page_visit_id,
             "xml": self._last_xml,
             "r1": baseline,
             "state_fingerprint": state_fingerprint,
             "state_revision": state_revision,
         }
+        self._training_cases[state_fingerprint] = case
+        self.saved_instances.save_case(self.page_path, self.page_visit_id, case)
         self._training_case_revision += 1
         return _json_result(
             {
@@ -501,8 +534,22 @@ class CollectorToolbox:
     def training_result(self) -> dict[str, Any]:
         script_fingerprint = self._script_fingerprint()
         passing_states = self._passing_states.get(script_fingerprint, {})
-        distinct_revisions = set(passing_states.values())
-        last_result_is_current = self._last_sniff_script_fingerprint == script_fingerprint
+        current_cases = list(self._training_cases.values())
+        current_case_ids = {str(case["case_id"]) for case in current_cases}
+        current_passing_states = {
+            case_id: revision
+            for case_id, revision in passing_states.items()
+            if case_id in current_case_ids
+        }
+        distinct_revisions = set(current_passing_states.values())
+        corpus_cases = self.saved_instances.cases_for_path(self.page_path)
+        corpus_case_ids = {str(case["case_id"]) for case in corpus_cases}
+        corpus_revision = self.saved_instances.revision_for_path(self.page_path)
+        last_result_is_current = bool(
+            self._last_sniff_script_fingerprint == script_fingerprint
+            and self._last_sniff_training_case_revision == self._training_case_revision
+            and self._last_sniff_corpus_revision == corpus_revision
+        )
         if self._last_sniff_script_fingerprint is None:
             effective_evaluation = self._last_evaluation
         elif last_result_is_current:
@@ -516,8 +563,9 @@ class CollectorToolbox:
         ready = bool(
             last_result_is_current
             and effective_evaluation.get("score") == 100
-            and len(passing_states) >= self.REQUIRED_VALIDATION_STATES
+            and len(current_passing_states) >= self.REQUIRED_VALIDATION_STATES
             and len(distinct_revisions) >= self.REQUIRED_VALIDATION_STATES
+            and corpus_case_ids.issubset(passing_states)
             and (
                 not self.requires_merchant_profile
                 or bool(str(self._merchant_profile.get("name") or "").strip())
@@ -527,10 +575,17 @@ class CollectorToolbox:
             "ready": ready,
             "score": effective_evaluation.get("score", 0),
             "evaluation": effective_evaluation,
-            "validated_states": len(passing_states),
+            "validated_states": len(current_passing_states),
             "required_states": self.REQUIRED_VALIDATION_STATES,
-            "validated_state_fingerprints": sorted(passing_states),
+            "validated_state_fingerprints": sorted(
+                str(case["state_fingerprint"])
+                for case in current_cases
+                if str(case["case_id"]) in current_passing_states
+            ),
             "validated_state_revisions": sorted(distinct_revisions),
+            "saved_instances": len(self.saved_instances.instances_for_path(self.page_path)),
+            "corpus_cases": len(corpus_case_ids),
+            "validated_corpus_cases": len(corpus_case_ids.intersection(passing_states)),
             "script_fingerprint": script_fingerprint,
             "current_state_fingerprint": self._last_sniff_state_fingerprint,
             "merchant_profile_saved": bool(str(self._merchant_profile.get("name") or "").strip()),
@@ -594,14 +649,15 @@ class CollectorToolbox:
                 description=(
                     "Ask the persistent collector-coder to implement or repair run.agent.py. "
                     "The runtime first ensures the existing script has a current sniff_run result, skips coder when "
-                    "the batch score is already 100, and otherwise supplies every recorded XML/r1 pair and failure."
+                    "the batch score is already 100, and otherwise requires a detailed structural diagnosis before "
+                    "supplying every saved XML/r1 pair for this canonical path and deterministic failure."
                 ),
             ),
             StructuredTool.from_function(
                 func=self.sniff_run,
                 name="sniff_run",
                 description=(
-                    "Capture unchanged current XML, run run.agent.py against every recorded XML/r1 pair, "
+                    "Capture unchanged current XML, run run.agent.py against every saved XML/r1 pair for this path, "
                     "and return deterministic batch evaluation plus multi-state verification status."
                 ),
             ),
@@ -644,6 +700,7 @@ class CollectorToolbox:
         self._last_evaluation = evaluation
         self._last_sniff_script_fingerprint = script_fingerprint
         self._last_sniff_training_case_revision = self._training_case_revision
+        self._last_sniff_corpus_revision = self.saved_instances.revision_for_path(self.page_path)
         self._last_sniff_valid = valid
         self._last_sniff_state_fingerprint = state_fingerprint
 
@@ -651,6 +708,8 @@ class CollectorToolbox:
         return bool(
             self._last_sniff_script_fingerprint == self._script_fingerprint()
             and self._last_sniff_training_case_revision == self._training_case_revision
+            and self._last_sniff_corpus_revision
+            == self.saved_instances.revision_for_path(self.page_path)
         )
 
 

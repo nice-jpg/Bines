@@ -7,8 +7,8 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable
 
+from langchain_core.messages import BaseMessage
 from langchain_core.tools import StructuredTool
-from langgraph.checkpoint.memory import InMemorySaver
 from nTrace import NTrace, createNTraceEndMiddleware, createNTraceStartMiddleware
 
 try:
@@ -76,7 +76,7 @@ class CollectorCoderToolbox:
 
 
 class CollectorCoderSession:
-    """Keep one coder agent and one checkpointed thread for a collector run."""
+    """Keep one coder agent and explicit conversation history for a collector run."""
 
     def __init__(
         self,
@@ -88,7 +88,7 @@ class CollectorCoderSession:
         page_description: str,
         collection_schema: Mapping[str, Any],
         create_agent_factory: Callable[..., Any] | None = None,
-        max_iterations: int = 40,
+        max_iterations: int = 1000,
     ) -> None:
         self.model = model
         self.mechanism = mechanism
@@ -100,6 +100,7 @@ class CollectorCoderSession:
         self.max_iterations = max(1, int(max_iterations))
         self.toolbox = CollectorCoderToolbox(mechanism=mechanism, page_path=page_path)
         self._agent: Any | None = None
+        self._message_history: list[Any] = []
         self._sent_case_ids: set[str] = set()
         self._turn = 0
 
@@ -122,16 +123,19 @@ class CollectorCoderSession:
         new_cases = [case for case in training_cases if str(case["case_id"]) not in self._sent_case_ids]
         payload = {
             "page_path": self.page_path,
+            "template_parent_path": self.page_path.rpartition("/")[0] or self.page_path,
             "page_description": self.page_description if self._turn == 0 else None,
             "collection_schema": self.collection_schema if self._turn == 0 else None,
             "new_training_cases": new_cases,
             "known_training_case_count": len(training_cases),
             "latest_sniff_run": dict(evaluation),
-            "collector_instruction": instruction.strip() or None,
+            "problem_report": _build_problem_report(evaluation, instruction),
         }
+        new_message = {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+        request_messages = [*self._message_history, new_message]
         try:
             state = agent.invoke(
-                {"messages": [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]},
+                {"messages": request_messages},
                 config={
                     "recursion_limit": self.max_iterations,
                     "configurable": {"thread_id": f"collector-coder:{self.page_visit_id}"},
@@ -141,6 +145,17 @@ class CollectorCoderSession:
             return _json_result(
                 {"ok": False, "error_type": type(exc).__name__, "error": str(exc), "turn": self._turn}
             )
+        returned_messages = _state_messages(state)
+        if not returned_messages:
+            return _json_result(
+                {
+                    "ok": False,
+                    "error_type": "CoderHistoryMissing",
+                    "error": "Coder returned no message history; the coding turn was not committed.",
+                    "turn": self._turn,
+                }
+            )
+        self._message_history = _merge_returned_history(request_messages, returned_messages)
         self._sent_case_ids.update(str(case["case_id"]) for case in new_cases)
         self._turn += 1
         return _json_result(
@@ -150,6 +165,7 @@ class CollectorCoderSession:
                 "new_training_cases": len(new_cases),
                 "known_training_cases": len(self._sent_case_ids),
                 "coder_message": _latest_text(state),
+                "history_messages": len(self._message_history),
                 "script_fingerprint": _fingerprint(self.mechanism.read_run_agent_py(self.page_path)),
             }
         )
@@ -172,13 +188,17 @@ class CollectorCoderSession:
                 *create_codex_model_retry_middleware(self.model),
                 createNTraceEndMiddleware(trace),
             ],
-            checkpointer=InMemorySaver(),
         )
         return self._agent
 
+    def message_history(self) -> tuple[Any, ...]:
+        """Return a read-only snapshot of committed coder conversation messages."""
+
+        return tuple(self._message_history)
+
 
 def _latest_text(state: Mapping[str, Any]) -> str:
-    messages: Sequence[Any] = state.get("messages") or []
+    messages = _state_messages(state)
     if not messages:
         return ""
     latest = messages[-1]
@@ -186,8 +206,68 @@ def _latest_text(state: Mapping[str, Any]) -> str:
     return content if isinstance(content, str) else str(content or "")
 
 
+def _state_messages(state: Mapping[str, Any]) -> list[Any]:
+    messages = state.get("messages") or []
+    if isinstance(messages, Sequence) and not isinstance(messages, (str, bytes)):
+        return list(messages)
+    return []
+
+
+def _merge_returned_history(request_messages: Sequence[Any], returned_messages: Sequence[Any]) -> list[Any]:
+    """Accept normal full-state responses while tolerating minimal test/custom agents."""
+
+    if len(returned_messages) >= len(request_messages) and all(
+        _message_identity(actual) == _message_identity(expected)
+        for actual, expected in zip(returned_messages, request_messages)
+    ):
+        return list(returned_messages)
+    return [*request_messages, *returned_messages]
+
+
+def _message_identity(message: Any) -> tuple[str, str]:
+    if isinstance(message, Mapping):
+        role = str(message.get("role") or message.get("type") or "")
+        content = message.get("content")
+    elif isinstance(message, BaseMessage):
+        role = message.type
+        content = message.content
+    else:
+        return type(message).__name__, str(message)
+    role = {"human": "user", "ai": "assistant"}.get(role, role)
+    return role, content if isinstance(content, str) else str(content or "")
+
+
 def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _build_problem_report(
+    evaluation: Mapping[str, Any],
+    instruction: str,
+) -> dict[str, Any]:
+    cases = evaluation.get("cases")
+    case_results = cases if isinstance(cases, Sequence) and not isinstance(cases, str) else []
+    failing_cases = [
+        {
+            "case_id": case.get("case_id"),
+            "score": case.get("score"),
+            "errors": list(case.get("errors") or []),
+            "missing": list(case.get("missing") or []),
+        }
+        for case in case_results
+        if isinstance(case, Mapping) and int(case.get("score", 0)) < 100
+    ]
+    return {
+        "structural_analysis": instruction.strip() or None,
+        "score": evaluation.get("score", 0),
+        "failed_paths": list(evaluation.get("errors") or []),
+        "missing_paths": list(evaluation.get("missing") or []),
+        "failing_cases": failing_cases,
+        "analysis_scope": (
+            "Infer a template-level structural exception shared by possible merchant states; "
+            "do not turn literal sample text into extraction conditions."
+        ),
+    }
 
 
 def _json_result(value: Any) -> str:

@@ -131,7 +131,7 @@ class AgentRuntime:
         *,
         session_id: str | None = None,
         tools: Sequence[Any] | None = None,
-        max_iterations: int = 1000,
+        max_iterations: int = 1000000,
     ) -> AgentRunResult:
         """Run one interaction turn without rebuilding the model or agent."""
 

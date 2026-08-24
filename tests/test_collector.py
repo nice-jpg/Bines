@@ -11,6 +11,7 @@ from collector import (
     CollectorCoderSession,
     CollectorCoderToolbox,
     CollectorManager,
+    CollectorSavedInstanceMap,
     CollectorToolbox,
     create_collector_tools,
 )
@@ -170,7 +171,12 @@ def test_collector_coder_reuses_agent_thread_and_sends_only_new_cases(tmp_path: 
     class FakeCoderAgent:
         def invoke(self, payload, config=None):
             invocations.append((payload, config))
-            return {"messages": [{"role": "assistant", "content": "patched"}]}
+            return {
+                "messages": [
+                    *payload["messages"],
+                    {"role": "assistant", "content": "patched"},
+                ]
+            }
 
     def create_agent(**kwargs):
         built.append(kwargs)
@@ -203,6 +209,10 @@ def test_collector_coder_reuses_agent_thread_and_sends_only_new_cases(tmp_path: 
         session.implement(
             training_cases=[first_case, second_case],
             evaluation={"score": 50, "errors": ["cases[1].result.items[0].name"]},
+            instruction=(
+                "The second repeated item container has the same width and child topology as the first, "
+                "but its label is split across sibling nodes; locate the repeated container structurally."
+            ),
         )
     )
 
@@ -211,17 +221,36 @@ def test_collector_coder_reuses_agent_thread_and_sends_only_new_cases(tmp_path: 
         "read_run_agent_py",
         "apply_run_agent_py_patch",
     ]
+    assert "checkpointer" not in built[0]
     assert first["turn"] == 1
     assert second["turn"] == 2
+    assert first["history_messages"] == 2
+    assert second["history_messages"] == 4
     assert first["new_training_cases"] == 1
     assert second["new_training_cases"] == 1
     first_payload = json.loads(invocations[0][0]["messages"][0]["content"])
-    second_payload = json.loads(invocations[1][0]["messages"][0]["content"])
+    second_payload = json.loads(invocations[1][0]["messages"][-1]["content"])
+    assert invocations[1][0]["messages"][:2] == invocations[0][0]["messages"] + [
+        {"role": "assistant", "content": "patched"}
+    ]
     assert first_payload["new_training_cases"] == [first_case]
     assert second_payload["new_training_cases"] == [second_case]
+    assert second_payload["template_parent_path"] == "meituan"
     assert second_payload["page_description"] is None
+    assert second_payload["problem_report"]["score"] == 50
+    assert second_payload["problem_report"]["failed_paths"] == [
+        "cases[1].result.items[0].name"
+    ]
+    assert "same width and child topology" in second_payload["problem_report"]["structural_analysis"]
+    assert "do not turn literal sample text" in second_payload["problem_report"]["analysis_scope"]
     assert invocations[0][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
     assert invocations[1][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
+    assert session.message_history() == tuple(
+        [
+            *invocations[1][0]["messages"],
+            {"role": "assistant", "content": "patched"},
+        ]
+    )
 
 
 def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp_path: Path) -> None:
@@ -253,16 +282,98 @@ def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp
     toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
     toolbox.sniff_run()
 
-    result = json.loads(toolbox.consult_coder("handle repeated card variants"))
+    rejected = json.loads(toolbox.consult_coder("handle repeated card variants"))
+    diagnosis = (
+        "Both states use repeated item containers with the same width and child hierarchy, but labels may be split "
+        "across sibling nodes. The current script returns no cards, so identify the shared container structurally."
+    )
+    result = json.loads(toolbox.consult_coder(diagnosis))
 
+    assert rejected["error_type"] == "CollectorCoderDiagnosisInsufficient"
+    assert rejected["minimum_characters"] == 60
     assert result["ok"] is True
     assert len(received) == 1
     assert len(received[0]["training_cases"]) == 2
     assert received[0]["training_cases"][1]["xml"] == event_hub.xml
     assert received[0]["training_cases"][0]["r1"] == {"items": [{"name": "cup"}]}
     assert received[0]["evaluation"]["score"] < 100
-    assert received[0]["instruction"] == "handle repeated card variants"
+    assert received[0]["instruction"] == diagnosis
     assert [call[0] for call in event_hub.calls].count("uiautomate") == 2
+
+
+def test_collector_saved_instances_require_coder_to_cover_every_visit_for_path(
+    tmp_path: Path,
+) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml: str):\n    return {'items': [{'name': 'new'}]}\n",
+        encoding="utf-8",
+    )
+    saved_instances = CollectorSavedInstanceMap()
+
+    first_hub = FakeEventHub()
+    first = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=first_hub,
+        page_path="meituan",
+        collection_schema='{"items": [{"name": ""}]}',
+        saved_instances=saved_instances,
+        page_visit_id="visit-a",
+    )
+    first.collector_uiautomate()
+    first.save_baseline('{"items": [{"name": "old-a"}]}')
+    first_hub.xml = '<h state="second"><n t="old-b"/></h>'
+    first.collector_swipe_up(100, 1000)
+    first.save_baseline('{"items": [{"name": "old-b"}]}')
+
+    received = []
+
+    class FakeCoderSession:
+        def implement(self, **kwargs):
+            received.append(kwargs)
+            return json.dumps({"ok": True})
+
+    second_hub = FakeEventHub()
+    second_hub.xml = '<h merchant="new" state="first"/>'
+    second = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path),
+        event_hub=second_hub,
+        page_path="meituan",
+        collection_schema='{"items": [{"name": ""}]}',
+        coder_session=FakeCoderSession(),
+        saved_instances=saved_instances,
+        page_visit_id="visit-b",
+    )
+    second.collector_uiautomate()
+    second.save_baseline('{"items": [{"name": "new"}]}')
+    second_hub.xml = '<h merchant="new" state="second"/>'
+    second.collector_swipe_up(100, 1000)
+    second.save_baseline('{"items": [{"name": "new"}]}')
+
+    sniffed = json.loads(second.sniff_run())
+    diagnosis = (
+        "The script matches the current visit but fails earlier instances of the shared template. "
+        "Use repeated container hierarchy and field placement to recognize the business value across variants."
+    )
+    consulted = json.loads(second.consult_coder(diagnosis))
+
+    instances = saved_instances.instances_for_path("meituan")
+    assert [instance["page_visit_id"] for instance in instances] == ["visit-a", "visit-b"]
+    assert [len(instance["cases"]) for instance in instances] == [2, 2]
+    assert sniffed["evaluated_cases"] == 4
+    assert sniffed["evaluation"]["score"] < 100
+    assert sniffed["verification"]["ready"] is False
+    assert sniffed["verification"]["saved_instances"] == 2
+    assert sniffed["verification"]["corpus_cases"] == 4
+    assert sniffed["verification"]["validated_corpus_cases"] == 2
+    assert consulted["ok"] is True
+    assert len(received) == 1
+    assert {case["page_visit_id"] for case in received[0]["training_cases"]} == {
+        "visit-a",
+        "visit-b",
+    }
+    assert len(received[0]["training_cases"]) == 4
 
 
 def test_collector_skips_coder_when_existing_script_already_scores_100(tmp_path: Path) -> None:
@@ -608,7 +719,7 @@ def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Pa
     assert result["restoration"]["restored"] is True
     assert captured["kwargs"]["name"] == "collector"
     assert captured["kwargs"]["system_prompt"]
-    assert captured["config"]["recursion_limit"] == 80
+    assert captured["config"]["recursion_limit"] == 1000
     assert "merchant page" in captured["payload"]["messages"][0]["content"]
 
 
