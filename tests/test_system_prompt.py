@@ -50,6 +50,12 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("page tasks, collection, and archival are complete", SYSTEM_PROMPT)
         self.assertIn("Never use an operation-only or templated placeholder", SYSTEM_PROMPT)
 
+    def test_conductor_prompt_requires_persistent_structured_completion(self) -> None:
+        self.assertIn('"resolved": true', SYSTEM_PROMPT)
+        self.assertIn('"next_action": null', SYSTEM_PROMPT)
+        self.assertIn("persistence layer will retain the existing context", SYSTEM_PROMPT)
+        self.assertIn("validates both the structured response and deterministic graph state", SYSTEM_PROMPT)
+
     def test_collector_prompt_has_isolated_fixed_loop(self) -> None:
         self.assertIn("keeping isolated context", COLLECTOR_PROMPT)
         self.assertIn("collector_uiautomate", COLLECTOR_PROMPT)

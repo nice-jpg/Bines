@@ -4,6 +4,7 @@ import itertools
 from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage
+from langgraph.errors import GraphRecursionError
 from websockets.exceptions import ConnectionClosedError
 
 from src.agent import AgentRuntime
@@ -17,6 +18,7 @@ class RecoverableFakeAgent:
         self.snapshot = SimpleNamespace(
             values={"messages": [HumanMessage(content="preserved")]}
         )
+        self._ntrace = SimpleNamespace(update=lambda **_kwargs: None)
 
     def invoke(self, value, config):
         self.invocations.append(value)
@@ -86,3 +88,40 @@ def test_transport_failure_without_session_is_not_claimed_recoverable() -> None:
             "retryable": False,
         }
     ]
+
+
+def test_recursion_limit_preserves_checkpoint_and_resumes_without_new_input() -> None:
+    agent = RecoverableFakeAgent()
+
+    def recursion_then_resume(value, config):
+        agent.invocations.append(value)
+        agent.configs.append(config)
+        if len(agent.invocations) == 1:
+            raise GraphRecursionError("limit")
+        return {
+            "messages": [
+                HumanMessage(content="preserved"),
+                {"role": "assistant", "content": "resumed after recursion"},
+            ]
+        }
+
+    agent.invoke = recursion_then_resume
+    runtime = make_runtime(agent)
+
+    interrupted = runtime.run_turn(
+        [{"role": "user", "content": "probe"}],
+        session_id="session-recursion",
+        max_iterations=2,
+    )
+    resumed = runtime.resume_turn(
+        session_id="session-recursion",
+        max_iterations=2,
+    )
+
+    assert interrupted.stopped_by == "recursion_interrupt"
+    assert interrupted.state == agent.snapshot.values
+    assert agent.invocations == [
+        {"messages": [{"role": "user", "content": "probe"}]},
+        None,
+    ]
+    assert resumed.output == "resumed after recursion"

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile
 
-from agent import AgentRunResult, AgentRuntime
+from agent import AgentRunResult, build_conductor_runtime
 from langchain_core.messages import AIMessage, BaseMessage
 from model import build_model
 from openpyxl import load_workbook
@@ -53,7 +53,7 @@ def run() -> None:
     notifier = PlainNotifier()
     operation_notice = OperationNoticeTool(notifier=notifier)
     captcha_authentication = CaptchaAuthenticationTool(notifier=notifier)
-    runtime = AgentRuntime(
+    runtime = build_conductor_runtime(
         model=build_model(),
         tools=create_common_tools(
             operation_notice_tool=operation_notice,

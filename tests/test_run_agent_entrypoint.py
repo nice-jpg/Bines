@@ -15,10 +15,12 @@ class RunAgentEntrypointTests(unittest.TestCase):
             "run_agent",
             "src.agent",
             "src.channel.feishu",
+            "src.conductor_persistence",
             "src.model",
             "src.tools.common",
             "agent",
             "channel.feishu",
+            "conductor_persistence",
             "model",
             "tools.common",
         ]
@@ -75,6 +77,23 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 operation_notice.notifier("notice")
                 return types.SimpleNamespace(output=f"output_{len(calls['run_turn'])}", interrupted=False)
 
+        class FakePersistenceLayer:
+            def __init__(self, runtime):
+                self.runtime = runtime
+
+            def has_pending_interrupt(self, session_id):
+                return self.runtime.has_pending_interrupt(session_id)
+
+            def pending_interrupt_kind(self, session_id):
+                return self.runtime.pending_interrupt_kind(session_id)
+
+            def run_turn(self, messages, *, session_id, max_iterations):
+                return self.runtime.run_turn(
+                    messages,
+                    session_id=session_id,
+                    max_iterations=max_iterations,
+                )
+
         class FakeOperationNoticeTool:
             def __init__(self, notifier):
                 self.notifier = notifier
@@ -89,6 +108,8 @@ class RunAgentEntrypointTests(unittest.TestCase):
 
         fake_agent = types.ModuleType("src.agent")
         fake_agent.AgentRuntime = FakeRuntime
+        fake_persistence = types.ModuleType("src.conductor_persistence")
+        fake_persistence.ConductorPersistenceLayer = FakePersistenceLayer
         fake_channel = types.ModuleType("src.channel.feishu")
         fake_channel.FeishuChannelRuntime = FakeChannel
         fake_channel.load_feishu_config = lambda: "config"
@@ -104,6 +125,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         ]
 
         sys.modules["src.agent"] = fake_agent
+        sys.modules["src.conductor_persistence"] = fake_persistence
         sys.modules["src.channel.feishu"] = fake_channel
         sys.modules["src.model"] = fake_model
         sys.modules["src.tools.common"] = fake_tools_common
@@ -178,6 +200,30 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 self.pending[session_id] = False
                 return types.SimpleNamespace(output="resumed output", interrupted=False)
 
+        class FakePersistenceLayer:
+            def __init__(self, runtime):
+                self.runtime = runtime
+
+            def has_pending_interrupt(self, session_id):
+                return self.runtime.has_pending_interrupt(session_id)
+
+            def pending_interrupt_kind(self, session_id):
+                return self.runtime.pending_interrupt_kind(session_id)
+
+            def run_turn(self, messages, *, session_id, max_iterations):
+                return self.runtime.run_turn(
+                    messages,
+                    session_id=session_id,
+                    max_iterations=max_iterations,
+                )
+
+            def resume_turn(self, *, session_id, user_input, max_iterations):
+                return self.runtime.resume_turn(
+                    session_id=session_id,
+                    user_input=user_input,
+                    max_iterations=max_iterations,
+                )
+
         class FakeOperationNoticeTool:
             def __init__(self, notifier):
                 self.notifier = notifier
@@ -192,6 +238,8 @@ class RunAgentEntrypointTests(unittest.TestCase):
 
         fake_agent = types.ModuleType("src.agent")
         fake_agent.AgentRuntime = FakeRuntime
+        fake_persistence = types.ModuleType("src.conductor_persistence")
+        fake_persistence.ConductorPersistenceLayer = FakePersistenceLayer
         fake_channel = types.ModuleType("src.channel.feishu")
         fake_channel.FeishuChannelRuntime = FakeChannel
         fake_channel.load_feishu_config = lambda: "config"
@@ -207,6 +255,7 @@ class RunAgentEntrypointTests(unittest.TestCase):
         ]
 
         sys.modules["src.agent"] = fake_agent
+        sys.modules["src.conductor_persistence"] = fake_persistence
         sys.modules["src.channel.feishu"] = fake_channel
         sys.modules["src.model"] = fake_model
         sys.modules["src.tools.common"] = fake_tools_common

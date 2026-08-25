@@ -59,8 +59,10 @@ Global operation rules:
 
 Completion:
 - The run is complete only after every configured secondary page has been operated according to task.md.
-- Completion order is fixed: authorize_probe_completion, then close_package with a completion-specific structured justification, then one final response.
+- Completion order is fixed: authorize_probe_completion, then close_package with a completion-specific structured justification, then one structured final response.
 - authorize_probe_completion is the only way to obtain close authorization. If it reports missing requirements, perform the required page operation instead of replying in natural language.
-- A natural-language assistant response is allowed only after close_package succeeds and the lifecycle reports completion.
+- After close_package succeeds and the lifecycle reports completion, return only one JSON object with exactly this shape: `{"resolved": true, "summary": "concise completion summary", "result": {}, "next_action": null}`. Do not wrap it in Markdown.
+- For a non-probe conductor request, use the same JSON shape when the problem is solved. If a conductor call must return before resolution, set resolved=false and provide a non-empty next_action; the persistence layer will retain the existing context and continue automatically.
+- Never claim resolved=true while runtime lifecycle state is incomplete. The persistence layer validates both the structured response and deterministic graph state.
 """
 SYSTEM_PROMPT = CONDUCTOR_PROMPT

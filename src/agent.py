@@ -99,6 +99,7 @@ class AgentRunResult:
     interrupted: bool = False
     interrupts: list[Any] | None = None
     summary: list[Any] | None = None
+    structured_response: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -156,10 +157,11 @@ class AgentRuntime:
         try:
             state = self.agent.invoke(input_state, config=config)
         except GraphRecursionError:
-            return AgentRunResult(
-                output="Agent达到运行递归上限，任务状态已保留但尚未完成。",
-                state={},
-                stopped_by="recursion_limit",
+            return self._checkpoint_interrupted(
+                session_id=session_id,
+                thread_id=thread_id,
+                config=config,
+                kind="recursion",
             )
         except Exception as error:
             if is_retryable_model_transport_error(error):
@@ -194,6 +196,8 @@ class AgentRuntime:
 
         if pending.kind == "model_transport":
             resume_command: Command[Any] | None = None
+        elif pending.kind == "recursion":
+            resume_command = None
         else:
             resume_message = "Human captcha authentication completed." if user_input is None else str(user_input)
             resume_payload = (
@@ -208,10 +212,11 @@ class AgentRuntime:
         try:
             state = self.agent.invoke(resume_command, config=config)
         except GraphRecursionError:
-            return AgentRunResult(
-                output="Agent达到运行递归上限，任务状态已保留但尚未完成。",
-                state={},
-                stopped_by="recursion_limit",
+            return self._checkpoint_interrupted(
+                session_id=session_id,
+                thread_id=pending.thread_id,
+                config=config,
+                kind="recursion",
             )
         except Exception as error:
             if is_retryable_model_transport_error(error):
@@ -227,6 +232,67 @@ class AgentRuntime:
             prepared_messages=self.sessions.get(session_id, []),
             session_id=session_id,
             thread_id=pending.thread_id,
+        )
+
+    def continue_turn(
+        self,
+        *,
+        session_id: str,
+        reason: str,
+        max_iterations: int = 1000,
+    ) -> AgentRunResult:
+        """Continue a completed graph call on the same checkpoint without new user input."""
+
+        if max_iterations < 1:
+            raise ValueError("max_iterations must be >= 1")
+        if self.has_pending_interrupt(session_id):
+            return self.resume_turn(
+                session_id=session_id,
+                max_iterations=max_iterations,
+            )
+        instruction = {
+            "role": "system",
+            "content": (
+                "<conductor_persistence_continuation>\n"
+                f"reason: {reason}\n"
+                "The task has not produced an accepted completion response. Preserve all existing "
+                "context and continue from the current state. If work remains, immediately select "
+                "the next valid tool. If work is complete, return the required structured response.\n"
+                "</conductor_persistence_continuation>"
+            ),
+            "additional_kwargs": {
+                "bines_context": {
+                    "kind": "conductor_persistence_continuation",
+                    "reason": reason,
+                }
+            },
+        }
+        thread_id = session_id
+        config = _invoke_config(max_iterations, thread_id)
+        _trace_for(self.agent).update(session_id=session_id, persistent_continue=True)
+        try:
+            state = self.agent.invoke({"messages": [instruction]}, config=config)
+        except GraphRecursionError:
+            return self._checkpoint_interrupted(
+                session_id=session_id,
+                thread_id=thread_id,
+                config=config,
+                kind="recursion",
+            )
+        except Exception as error:
+            if is_retryable_model_transport_error(error):
+                return self._model_transport_interrupted(
+                    error,
+                    session_id=session_id,
+                    thread_id=thread_id,
+                    config=config,
+                )
+            raise
+        return self._normalize_result(
+            state,
+            prepared_messages=self.sessions.get(session_id, []),
+            session_id=session_id,
+            thread_id=thread_id,
         )
 
     def _prepare_messages(self, turn_messages: list[Any], *, session_id: str | None) -> list[Any]:
@@ -308,6 +374,33 @@ class AgentRuntime:
             output="模型连接暂时中断，自动重试已耗尽。请回复“继续”从当前 checkpoint 恢复。",
             state=state,
             stopped_by="model_transport_interrupt",
+            interrupted=True,
+            interrupts=[detail],
+        )
+
+    def _checkpoint_interrupted(
+        self,
+        *,
+        session_id: str | None,
+        thread_id: str,
+        config: Mapping[str, Any],
+        kind: str,
+    ) -> AgentRunResult:
+        snapshot = self.agent.get_state(config)
+        state = snapshot.values if isinstance(snapshot.values, Mapping) else {}
+        detail = {"type": kind, "retryable": session_id is not None}
+        if session_id is None:
+            return AgentRunResult(
+                output="Agent达到运行递归上限；当前调用没有会话，无法从 checkpoint 继续。",
+                state=state,
+                stopped_by=f"{kind}_error",
+                interrupts=[detail],
+            )
+        self._pending_interrupts[session_id] = _PendingInterrupt(thread_id, kind)
+        return AgentRunResult(
+            output="Agent单次运行达到递归上限，任务 checkpoint 已保留。",
+            state=state,
+            stopped_by=f"{kind}_interrupt",
             interrupted=True,
             interrupts=[detail],
         )
@@ -403,10 +496,17 @@ def build_conductor_runtime(
     model: str | BaseChatModel,
     tools: Sequence[Any] | None = None,
     name: str | None = "conductor",
-) -> AgentRuntime:
-    """Build the main page-operating conductor runtime."""
+) -> Any:
+    """Build the main conductor behind its checkpoint-preserving outer layer."""
 
-    return AgentRuntime(model=model, tools=list(tools or []), name=name)
+    try:
+        from src.conductor_persistence import ConductorPersistenceLayer
+    except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
+        from conductor_persistence import ConductorPersistenceLayer
+
+    return ConductorPersistenceLayer(
+        AgentRuntime(model=model, tools=list(tools or []), name=name)
+    )
 
 
 def build_collector_runtime(
