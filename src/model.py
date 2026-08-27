@@ -75,24 +75,16 @@ def load_model_config(env_path: Path = WORKSPACE_ENV_PATH) -> ModelConfig:
             prompt_cache_key=_optional_env("CODEX_PROMPT_CACHE_KEY"),
             stream_max_retries=_optional_non_negative_int("CODEX_STREAM_MAX_RETRIES", default=5),
         )
-    if provider == "deepseek":
+    else:
+        base_url = f'{provider.upper()}_BASE_URL'
+        api_key = f'{provider.upper()}_API_KEY'
+        model = f'{provider.upper()}_MODEL'
         return ModelConfig(
             provider=provider,
-            base_url=_required_env("DEEPSEEK_BASE_URL"),
-            api_key=_required_env("DEEPSEEK_API_KEY"),
-            model=_required_env("DEEPSEEK_MODEL"),
+            base_url=_required_env(base_url),
+            api_key=_required_env(api_key),
+            model=_required_env(model),
         )
-    if provider == "openai":
-        return ModelConfig(
-            provider=provider,
-            base_url=_required_env("OPENAI_BASE_URL"),
-            api_key=_required_env("OPENAI_API_KEY"),
-            model=_required_env("OPENAI_MODEL"),
-        )
-    raise RuntimeError(
-        "Unsupported MODEL_PROVIDER in workspace/.env: "
-        f"{provider!r}. Expected one of: codex, deepseek, openai"
-    )
 
 
 def _required_env(*names: str) -> str:
