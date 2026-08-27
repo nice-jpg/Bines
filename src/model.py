@@ -79,7 +79,7 @@ def load_model_config(env_path: Path = WORKSPACE_ENV_PATH) -> ModelConfig:
         return ModelConfig(
             provider=provider,
             base_url=_required_env("DEEPSEEK_BASE_URL"),
-            api_key=_required_env("DEEPSEEK_API_KEY", "DEEPSEEK_API_KEYs"),
+            api_key=_required_env("DEEPSEEK_API_KEY"),
             model=_required_env("DEEPSEEK_MODEL"),
         )
     if provider == "openai":

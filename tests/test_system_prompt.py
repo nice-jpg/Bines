@@ -123,6 +123,16 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("not implementation steps", COLLECTOR_CODER_PROMPT)
         self.assertIn("genuine special scenario", COLLECTOR_CODER_PROMPT)
         self.assertIn("structural trigger", COLLECTOR_CODER_PROMPT)
+        self.assertIn("Stagnation escalation:", COLLECTOR_CODER_PROMPT)
+        self.assertIn("stagnation_review_required=true", COLLECTOR_CODER_PROMPT)
+        self.assertIn("read_run_agent_py(force=true)", COLLECTOR_CODER_PROMPT)
+        self.assertIn("Reassess the extraction problem from the page-template level", COLLECTOR_CODER_PROMPT)
+        self.assertIn("contradictory selectors", COLLECTOR_CODER_PROMPT)
+        self.assertIn("repeated tree traversal", COLLECTOR_CODER_PROMPT)
+        self.assertIn("Prefer replacing or deleting a flawed recognition rule", COLLECTOR_CODER_PROMPT)
+        self.assertIn("does not layer a new recognition path", COLLECTOR_CODER_PROMPT)
+        self.assertIn("script-metrics history", COLLECTOR_CODER_PROMPT)
+        self.assertIn("Repeated growth without corresponding corpus-score improvement", COLLECTOR_CODER_PROMPT)
 
 
 if __name__ == "__main__":

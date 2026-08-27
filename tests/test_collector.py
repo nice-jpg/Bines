@@ -109,6 +109,7 @@ def test_run_agent_py_reads_are_deduplicated_and_external_changes_refresh_conten
         )
     )
     after_patch = json.loads(toolbox.read_run_agent_py())
+    forced_after_patch = json.loads(toolbox.read_run_agent_py(force=True))
     external = "def run(xml: str):\n    return {'items': [{'external': xml}]}\n"
     run_path.write_text(external, encoding="utf-8")
     after_external_change = json.loads(toolbox.read_run_agent_py())
@@ -121,6 +122,8 @@ def test_run_agent_py_reads_are_deduplicated_and_external_changes_refresh_conten
     assert "content" not in applied
     assert after_patch["content_omitted"] is True
     assert "content" not in after_patch
+    assert forced_after_patch["content_omitted"] is False
+    assert "return {'items': [xml]}" in forced_after_patch["content"]
     assert after_external_change["content_omitted"] is False
     assert after_external_change["content"] == external
 
@@ -251,6 +254,60 @@ def test_collector_coder_reuses_agent_thread_and_sends_only_new_cases(tmp_path: 
             {"role": "assistant", "content": "patched"},
         ]
     )
+
+
+def test_collector_coder_marks_third_failed_attempt_for_macro_review(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml: str):\n    return {'items': []}\n",
+        encoding="utf-8",
+    )
+    invocations = []
+
+    class FakeCoderAgent:
+        def invoke(self, payload, config=None):
+            invocations.append(payload)
+            return {
+                "messages": [
+                    *payload["messages"],
+                    {"role": "assistant", "content": "patched"},
+                ]
+            }
+
+    session = CollectorCoderSession(
+        model="model",
+        mechanism=PageMechanism(tmp_path),
+        page_path="meituan",
+        page_visit_id="visit-stagnation",
+        page_description="merchant page",
+        collection_schema={"items": []},
+        create_agent_factory=lambda **_kwargs: FakeCoderAgent(),
+    )
+    cases = [{"case_id": "case-1", "xml": "<page/>", "r1": {"items": []}}]
+
+    session.implement(training_cases=cases, evaluation={"score": 20})
+    session.implement(training_cases=cases, evaluation={"score": 45})
+    session.implement(training_cases=cases, evaluation={"score": 45})
+
+    histories = [
+        json.loads(invocation["messages"][-1]["content"])["optimization_history"]
+        for invocation in invocations
+    ]
+    assert [history["attempt"] for history in histories] == [1, 2, 3]
+    assert [history["prior_scores"] for history in histories] == [[], [20], [20, 45]]
+    assert [history["current_score"] for history in histories] == [20, 45, 45]
+    assert [history["stagnation_review_required"] for history in histories] == [
+        False,
+        False,
+        True,
+    ]
+    assert histories[0]["prior_script_metrics"] == []
+    assert histories[0]["current_script_metrics"]["lines"] == 2
+    assert histories[2]["prior_script_metrics"] == [
+        histories[0]["current_script_metrics"],
+        histories[1]["current_script_metrics"],
+    ]
 
 
 def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp_path: Path) -> None:

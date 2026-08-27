@@ -29,13 +29,13 @@ class CollectorCoderToolbox:
         self.page_path = page_path
         self._exposed_fingerprint: str | None = None
 
-    def read_run_agent_py(self) -> str:
+    def read_run_agent_py(self, force: bool = False) -> str:
         snapshot = self.mechanism.read_run_agent_py_snapshot(self.page_path)
         if snapshot["ok"] is not True:
             return _json_result(snapshot)
         content = str(snapshot["content"])
         fingerprint = _fingerprint(content)
-        content_omitted = fingerprint == self._exposed_fingerprint
+        content_omitted = not force and fingerprint == self._exposed_fingerprint
         result = {
             "ok": True,
             "canonical_path": snapshot["canonical_path"],
@@ -62,7 +62,10 @@ class CollectorCoderToolbox:
             StructuredTool.from_function(
                 func=self.read_run_agent_py,
                 name="read_run_agent_py",
-                description="Read the current page's run.agent.py. Repeated unchanged reads omit content.",
+                description=(
+                    "Read the current page's run.agent.py. Repeated unchanged reads omit content. "
+                    "Set force=true only when stagnation_review_required requests a full architecture audit."
+                ),
             ),
             StructuredTool.from_function(
                 func=self.apply_run_agent_py_patch,
@@ -77,6 +80,8 @@ class CollectorCoderToolbox:
 
 class CollectorCoderSession:
     """Keep one coder agent and explicit conversation history for a collector run."""
+
+    STAGNATION_REVIEW_ATTEMPT = 3
 
     def __init__(
         self,
@@ -102,6 +107,8 @@ class CollectorCoderSession:
         self._agent: Any | None = None
         self._message_history: list[Any] = []
         self._sent_case_ids: set[str] = set()
+        self._evaluation_scores: list[int] = []
+        self._script_metrics_history: list[dict[str, int]] = []
         self._turn = 0
 
     def implement(
@@ -121,6 +128,14 @@ class CollectorCoderSession:
             )
         agent = self._agent_instance()
         new_cases = [case for case in training_cases if str(case["case_id"]) not in self._sent_case_ids]
+        current_score = _evaluation_score(evaluation)
+        current_script = self.mechanism.read_run_agent_py(self.page_path)
+        current_script_metrics = _script_metrics(current_script)
+        optimization_attempt = self._turn + 1
+        stagnation_review_required = bool(
+            optimization_attempt >= self.STAGNATION_REVIEW_ATTEMPT
+            and current_score < 100
+        )
         payload = {
             "page_path": self.page_path,
             "template_parent_path": self.page_path.rpartition("/")[0] or self.page_path,
@@ -130,6 +145,14 @@ class CollectorCoderSession:
             "known_training_case_count": len(training_cases),
             "latest_sniff_run": dict(evaluation),
             "problem_report": _build_problem_report(evaluation, instruction),
+            "optimization_history": {
+                "attempt": optimization_attempt,
+                "prior_scores": list(self._evaluation_scores),
+                "current_score": current_score,
+                "stagnation_review_required": stagnation_review_required,
+                "prior_script_metrics": list(self._script_metrics_history),
+                "current_script_metrics": current_script_metrics,
+            },
         }
         new_message = {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
         request_messages = [*self._message_history, new_message]
@@ -157,6 +180,8 @@ class CollectorCoderSession:
             )
         self._message_history = _merge_returned_history(request_messages, returned_messages)
         self._sent_case_ids.update(str(case["case_id"]) for case in new_cases)
+        self._evaluation_scores.append(current_score)
+        self._script_metrics_history.append(current_script_metrics)
         self._turn += 1
         return _json_result(
             {
@@ -267,6 +292,23 @@ def _build_problem_report(
             "Infer a template-level structural exception shared by possible merchant states; "
             "do not turn literal sample text into extraction conditions."
         ),
+    }
+
+
+def _evaluation_score(evaluation: Mapping[str, Any]) -> int:
+    value = evaluation.get("score", 0)
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _script_metrics(content: str) -> dict[str, int]:
+    return {
+        "bytes": len(content.encode("utf-8")),
+        "lines": len(content.splitlines()),
     }
 
 

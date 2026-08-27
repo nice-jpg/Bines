@@ -90,7 +90,7 @@ def build_model(model_name: str | None = None) -> Any:
     env_path = Path(__file__).resolve().parents[2] / "workspace" / ".env"
     load_dotenv(env_path, override=False)
     base_url = os.getenv("OPENAI_BASE_URL") or os.getenv("DEEPSEEK_BASE_URL")
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEYs")
+    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
     selected_model = model_name or os.getenv("OPENAI_MODEL") or os.getenv("DEEPSEEK_MODEL")
     if base_url and api_key and selected_model:
         from langchain_openai import ChatOpenAI
