@@ -60,6 +60,7 @@ def run() -> None:
             captcha_authentication_tool=captcha_authentication,
         ),
         name="main",
+        operation_notice_service=operation_notice,
     )
 
     r = runtime.run_turn(

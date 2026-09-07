@@ -6,9 +6,7 @@ import types
 import unittest
 from pathlib import Path
 
-import langgraph.checkpoint.memory  # Keep real LangGraph dependencies loaded before local LangChain stubs.
-import langgraph.errors
-import langgraph.types
+import langgraph.checkpoint.memory  # noqa: F401 - preload real dependencies before local stubs.
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import agent as _agent_dependency_preload  # noqa: E402,F401
@@ -102,7 +100,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
         def create_agent(**kwargs):
             captured.update(kwargs)
-            return object()
+            return types.SimpleNamespace()
 
         langchain_agents.create_agent = create_agent
         langchain_agents_middleware.HumanInTheLoopMiddleware = HumanInTheLoopMiddleware
@@ -154,20 +152,16 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertEqual(
             middleware_names,
             [
-                "ToolErrorMiddleware",
-                "DangerousToolMiddleware",
-                "ProbeLifecycleMiddleware",
-                "PageContextMiddleware",
-                "CollectorReadinessMiddleware",
-                "OperationNoticeMiddleware",
+                "NTraceStartMiddleware",
+                "ProbeControlMiddleware",
                 "CollectionPersistenceMiddleware",
-                "DeviceOperationReliabilityMiddleware",
-                "DeviceContextCompressionMiddleware",
+                "ToolExecutionPolicyMiddleware",
+                "ConductorContextMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
-                "PageManualMiddleware",
+                "NTraceEndMiddleware",
             ],
         )
-        hitl = captured["middleware"][9]
+        hitl = captured["middleware"][5]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
@@ -178,10 +172,14 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         tool_runtime = collect_calls[0]
         self.assertIs(tool_runtime["collector_manager"].mechanism, tool_runtime["mechanism"])
         self.assertIs(tool_runtime["collector_manager"].event_hub, tool_runtime["event_hub"])
-        persistence = captured["middleware"][6]
+        control = captured["middleware"][1]
+        self.assertIs(control.mechanism, tool_runtime["mechanism"])
+        persistence = captured["middleware"][2]
         self.assertIs(persistence.mechanism, tool_runtime["mechanism"])
-        page_manual = captured["middleware"][-1]
-        self.assertIs(page_manual.mechanism, tool_runtime["mechanism"])
+        conductor_context = captured["middleware"][4]
+        self.assertIs(conductor_context.mechanism, tool_runtime["mechanism"])
+        execution_policy = captured["middleware"][3]
+        self.assertIs(execution_policy._notice.service, notice_service)
 
     def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:
         self.test_build_agent_registers_request_compression_without_summarization()

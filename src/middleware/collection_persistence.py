@@ -12,6 +12,9 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 
+
+_DEFAULT_WORKBOOK_SINK = object()
+
 try:
     from src.middleware.page_context import (
         PAGE_CONTEXT_OVERLAY,
@@ -64,10 +67,17 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         *,
         mechanism: PageMechanism,
         training_registry: CollectorTrainingRegistry,
-        workbook_sink: Any | None = None,
+        workbook_sink: Any = _DEFAULT_WORKBOOK_SINK,
     ) -> None:
         self.mechanism = mechanism
         self.training_registry = training_registry
+        if workbook_sink is _DEFAULT_WORKBOOK_SINK:
+            try:
+                from src.tools.content_provider import CollectionWorkbookSink
+            except ModuleNotFoundError:  # Supports running tests with src on sys.path.
+                from tools.content_provider import CollectionWorkbookSink
+
+            workbook_sink = CollectionWorkbookSink()
         self.workbook_sink = workbook_sink
 
     def create_tools(self) -> list[StructuredTool]:

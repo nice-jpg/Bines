@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import Any
 
-from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 
 if __package__ and __package__.startswith("src."):
-    from src.page_mechanism import PageMechanism, normalize_page_path
     from src.tools.event_hub import EventHub
     from src.tools.operation_effect import (
         NAVIGATION_PAGE_CHANGE_POLICY,
         OPERATION_EFFECT_POLICY_METADATA_KEY,
     )
 else:  # Supports running tests with src on sys.path.
-    from page_mechanism import PageMechanism, normalize_page_path
     from tools.event_hub import EventHub
     from tools.operation_effect import (
         NAVIGATION_PAGE_CHANGE_POLICY,
@@ -25,15 +21,12 @@ else:  # Supports running tests with src on sys.path.
 
 
 NAVIGATION_TOOL_NAMES = ("tap_in_page", "navigate_to", "navigate_back")
-PAGE_CONTEXT_APP_ROOT = "page_context_app_root"
-PAGE_CONTEXT_PATH = "page_context_path"
 
 
 class NavigationTools:
     """Bind business navigation semantics to the low-level device actions."""
 
-    def __init__(self, *, mechanism: PageMechanism, event_hub: EventHub) -> None:
-        self.mechanism = mechanism
+    def __init__(self, *, event_hub: EventHub) -> None:
         self.event_hub = event_hub
 
     def tap_in_page(self, x: int, y: int) -> Any:
@@ -41,42 +34,25 @@ class NavigationTools:
 
         return self.event_hub.tap(x, y)
 
-    def navigate_to(self, x: int, y: int, next_path: str, runtime: ToolRuntime) -> Any:
+    def navigate_to(self, x: int, y: int, next_path: str) -> Any:
         """Tap a control that enters the declared absolute canonical child page."""
 
-        self._validate_target(next_path, runtime, allow_same=False)
+        # ProbeControlMiddleware owns canonical-path validation.
+        del next_path
         return self.event_hub.tap(x, y)
 
-    def navigate_back(self, next_path: str, runtime: ToolRuntime) -> Any:
+    def navigate_back(self, next_path: str) -> Any:
         """Return to the declared absolute canonical parent or prior page."""
 
-        self._validate_target(next_path, runtime, allow_same=False)
+        del next_path
         return self.event_hub.swipe_back()
-
-    def _validate_target(self, next_path: str, runtime: ToolRuntime, *, allow_same: bool) -> str:
-        state = runtime.state if isinstance(runtime.state, Mapping) else {}
-        current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
-        app_root = str(state.get(PAGE_CONTEXT_APP_ROOT) or "")
-        parts, error = normalize_page_path(next_path)
-        canonical_path = "/".join(parts)
-        if error or not canonical_path:
-            raise ValueError(error or "next_path is required.")
-        if not app_root or canonical_path.split("/", 1)[0] != app_root:
-            raise ValueError(
-                f"next_path must be absolute from the current app root {app_root!r}: "
-                f"use {app_root!r} or {app_root!r}/..."
-            )
-        if not allow_same and canonical_path == current_path:
-            raise ValueError("next_path must differ from the current page; use tap_in_page for same-page actions.")
-        return self.mechanism.validate_page_manual(canonical_path)
 
 
 def create_navigation_tools(
     *,
-    mechanism: PageMechanism,
     event_hub: EventHub,
 ) -> list[StructuredTool]:
-    navigation = NavigationTools(mechanism=mechanism, event_hub=event_hub)
+    navigation = NavigationTools(event_hub=event_hub)
     return [
         StructuredTool.from_function(
             func=navigation.tap_in_page,

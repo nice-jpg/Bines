@@ -29,8 +29,15 @@ else:  # Supports running tests and python src/run_agent.py with src on sys.path
 class OperationNoticeMiddleware(AgentMiddleware):
     """Notify through the configured service immediately before real side effects."""
 
-    def __init__(self, tools: Sequence[BaseTool]) -> None:
-        self.service = _notice_service(tools)
+    def __init__(
+        self,
+        tools: Sequence[BaseTool] | None = None,
+        *,
+        service: OperationNoticeService | None = None,
+    ) -> None:
+        """Bind an explicit service; tool discovery remains a compatibility adapter."""
+
+        self.service = service if service is not None else _notice_service(tools or ())
 
     def wrap_tool_call(
         self,

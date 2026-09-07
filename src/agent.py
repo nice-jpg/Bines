@@ -35,28 +35,24 @@ try:
     )
     from src.middleware import (
         CollectionPersistenceMiddleware,
-        CollectorReadinessMiddleware,
-        DangerousToolMiddleware,
-        DeviceContextCompressionMiddleware,
-        DeviceOperationReliabilityMiddleware,
-        OperationNoticeMiddleware,
-        PageContextMiddleware,
-        PageManualMiddleware,
-        ProbeLifecycleMiddleware,
+        ConductorContextMiddleware,
+        ProbeControlMiddleware,
         PROBE_COMPLETED,
         PROBE_STATUS,
-        ToolErrorMiddleware,
+        ToolExecutionPolicyMiddleware,
         create_captcha_human_in_the_loop_middleware,
         initial_page_context_state,
         initial_probe_state,
     )
     from src.page_mechanism import PageMechanism
     from src.tools import collect_conductor_tools
-    from src.tools.content_provider import CollectionWorkbookSink
     from src.tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
     from src.tools.navigation import NAVIGATION_TOOL_NAMES
-    from src.tools.operation_policy import operation_notice_service_from_metadata
-    from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
+    from src.tools.operation_policy import (
+        OperationNoticeService,
+        operation_notice_service_from_metadata,
+    )
+    from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from codex.model_retry import (
@@ -65,28 +61,21 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     )
     from middleware import (
         CollectionPersistenceMiddleware,
-        CollectorReadinessMiddleware,
-        DangerousToolMiddleware,
-        DeviceContextCompressionMiddleware,
-        DeviceOperationReliabilityMiddleware,
-        OperationNoticeMiddleware,
-        PageContextMiddleware,
-        PageManualMiddleware,
-        ProbeLifecycleMiddleware,
+        ConductorContextMiddleware,
+        ProbeControlMiddleware,
         PROBE_COMPLETED,
         PROBE_STATUS,
-        ToolErrorMiddleware,
+        ToolExecutionPolicyMiddleware,
         create_captcha_human_in_the_loop_middleware,
         initial_page_context_state,
         initial_probe_state,
     )
     from page_mechanism import PageMechanism
     from tools import collect_conductor_tools
-    from tools.content_provider import CollectionWorkbookSink
     from tools.event_hub import CONDUCTOR_EVENT_HUB_TOOL_NAMES, EventHub
     from tools.navigation import NAVIGATION_TOOL_NAMES
-    from tools.operation_policy import operation_notice_service_from_metadata
-    from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT, SYSTEM_PROMPT
+    from tools.operation_policy import OperationNoticeService, operation_notice_service_from_metadata
+    from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT
     from tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 
 @dataclass(frozen=True)
@@ -117,11 +106,17 @@ class AgentRuntime:
         model: str | BaseChatModel,
         tools: Sequence[Any] | None = None,
         name: str | None = None,
+        operation_notice_service: OperationNoticeService | None = None,
     ) -> None:
         self.model = model
         self.tools = list(tools or [])
         self.name = name
-        self.agent = build_agent(model=model, tools=self.tools, name=name)
+        self.agent = build_agent(
+            model=model,
+            tools=self.tools,
+            name=name,
+            operation_notice_service=operation_notice_service,
+        )
         self.sessions: dict[str, list[Any]] = {}
         self._stateless_counter = itertools.count(1)
         self._pending_interrupts: dict[str, _PendingInterrupt] = {}
@@ -412,6 +407,7 @@ def build_agent(
     tools: Sequence[Any],
     name: str | None = None,
     system_prompt: str = CONDUCTOR_PROMPT,
+    operation_notice_service: OperationNoticeService | None = None,
 ):
     """Create a standard LangChain agent with ``langchain.agents.create_agent``."""
 
@@ -428,13 +424,14 @@ def build_agent(
         mechanism=mechanism,
         event_hub=event_hub,
     )
-    workbook_sink = CollectionWorkbookSink()
     collection_persistence = CollectionPersistenceMiddleware(
         mechanism=mechanism,
         training_registry=collector_manager.training_registry,
-        workbook_sink=workbook_sink,
     )
-    probe_lifecycle = ProbeLifecycleMiddleware(mechanism=mechanism)
+    probe_control = ProbeControlMiddleware(
+        mechanism=mechanism,
+        training_registry=collector_manager.training_registry,
+    )
     registered_tools = _with_collected_tools(
         tools,
         [
@@ -445,11 +442,18 @@ def build_agent(
                 collector_manager=collector_manager,
             ),
             *collection_persistence.create_tools(),
-            *probe_lifecycle.create_tools(),
+            *probe_control.create_tools(),
         ],
     )
-    operation_notice = OperationNoticeMiddleware(registered_tools)
-    if operation_notice.service is None:
+    notice_service = operation_notice_service or next(
+        (
+            service
+            for tool in registered_tools
+            if (service := operation_notice_service_from_metadata(tool.metadata)) is not None
+        ),
+        None,
+    )
+    if notice_service is None:
         raise ValueError(
             "Conductor tools must include the typed internal operation notice service."
         )
@@ -462,22 +466,16 @@ def build_agent(
         createNTraceStartMiddleware(trace),
         *create_codex_model_retry_middleware(model),
     ]
-    middlewares.append(ToolErrorMiddleware())
-    middlewares.append(DangerousToolMiddleware())
-    middlewares.append(probe_lifecycle)
-    middlewares.append(PageContextMiddleware(mechanism=mechanism))
+    middlewares.append(probe_control)
+    middlewares.append(collection_persistence)
     middlewares.append(
-        CollectorReadinessMiddleware(
-            mechanism=mechanism,
-            training_registry=collector_manager.training_registry,
+        ToolExecutionPolicyMiddleware(
+            event_hub=event_hub,
+            notice_service=notice_service,
         )
     )
-    middlewares.append(operation_notice)
-    middlewares.append(collection_persistence)
-    middlewares.append(DeviceOperationReliabilityMiddleware(event_hub=event_hub))
-    middlewares.append(DeviceContextCompressionMiddleware())
+    middlewares.append(ConductorContextMiddleware(mechanism=mechanism))
     middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
-    middlewares.append(PageManualMiddleware(mechanism=mechanism))
     middlewares.append(createNTraceEndMiddleware(trace))
 
     agent = create_agent(
@@ -496,6 +494,7 @@ def build_conductor_runtime(
     model: str | BaseChatModel,
     tools: Sequence[Any] | None = None,
     name: str | None = "conductor",
+    operation_notice_service: OperationNoticeService | None = None,
 ) -> Any:
     """Build the main conductor behind its checkpoint-preserving outer layer."""
 
@@ -505,7 +504,12 @@ def build_conductor_runtime(
         from conductor_persistence import ConductorPersistenceLayer
 
     return ConductorPersistenceLayer(
-        AgentRuntime(model=model, tools=list(tools or []), name=name)
+        AgentRuntime(
+            model=model,
+            tools=list(tools or []),
+            name=name,
+            operation_notice_service=operation_notice_service,
+        )
     )
 
 

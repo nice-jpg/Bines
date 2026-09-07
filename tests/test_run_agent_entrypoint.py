@@ -61,9 +61,10 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 on_message(FakeMessage("chat_2"))
 
         class FakeRuntime:
-            def __init__(self, *, model, tools, name=None):
+            def __init__(self, *, model, tools, name=None, operation_notice_service=None):
                 calls["runtime_init"] += 1
                 self.tools = tools
+                self.operation_notice_service = operation_notice_service
 
             def has_pending_interrupt(self, _session_id):
                 return False
@@ -179,8 +180,9 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 on_message(FakeMessage("chat_2", "done"))
 
         class FakeRuntime:
-            def __init__(self, *, model, tools, name=None):
+            def __init__(self, *, model, tools, name=None, operation_notice_service=None):
                 self.pending = {"feishu:chat_1": False}
+                self.operation_notice_service = operation_notice_service
 
             def has_pending_interrupt(self, session_id):
                 return self.pending.get(session_id, False)

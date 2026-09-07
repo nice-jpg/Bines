@@ -5,6 +5,7 @@ from .captcha_human_in_loop import (
     create_captcha_human_in_the_loop_middleware,
 )
 from .collection_persistence import CollectionPersistenceMiddleware
+from .conductor_context import ConductorContextMiddleware
 from .collector_readiness import CollectorReadinessMiddleware
 from .dangerous_tool import DangerousToolMiddleware
 from .device_context_compression import DeviceContextCompressionMiddleware, compact_device_messages
@@ -24,6 +25,7 @@ from .page_context import (
 from .page_manual import PageManualMiddleware
 from .operation_notice import OperationNoticeMiddleware
 from .probe_lifecycle import ProbeLifecycleMiddleware
+from .probe_control import ConductorState, ProbeControlMiddleware
 from .probe_state import (
     COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
     COLLECTION_INITIALIZED,
@@ -42,10 +44,13 @@ from .probe_state import (
     initial_probe_state,
 )
 from .tool_error import ToolErrorMiddleware, make_tool_error_message
+from .tool_execution_policy import ToolExecutionPolicyMiddleware
 
 __all__ = [
     "CAPTCHA_AUTHENTICATION_TOOL_NAME",
     "CollectionPersistenceMiddleware",
+    "ConductorContextMiddleware",
+    "ConductorState",
     "CollectorReadinessMiddleware",
     "DangerousToolMiddleware",
     "DeviceContextCompressionMiddleware",
@@ -62,6 +67,7 @@ __all__ = [
     "PageManualMiddleware",
     "OperationNoticeMiddleware",
     "ProbeLifecycleMiddleware",
+    "ProbeControlMiddleware",
     "COLLECTION_INITIALIZED",
     "COLLECTION_CONSECUTIVE_EMPTY_SWIPES",
     "COLLECTION_LATEST_NEW_COUNT",
@@ -77,6 +83,7 @@ __all__ = [
     "PROBE_TARGET_LEAF_PATHS",
     "PROBE_VISITED_LEAF_PATHS",
     "ToolErrorMiddleware",
+    "ToolExecutionPolicyMiddleware",
     "compact_device_messages",
     "create_captcha_human_in_the_loop_middleware",
     "initial_page_context_state",

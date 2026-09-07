@@ -52,7 +52,7 @@ def collect_conductor_tools(
     return [
         *create_common_tools(),
         *create_conductor_event_hub_tools(event_hub),
-        *create_navigation_tools(mechanism=mechanism, event_hub=event_hub),
+        *create_navigation_tools(event_hub=event_hub),
         *create_prepare_collector_tool(collector_manager),
     ]
 
