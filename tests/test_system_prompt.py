@@ -74,7 +74,7 @@ class SystemPromptTests(unittest.TestCase):
         self.assertNotIn(RUN_AGENT_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)
         self.assertIn("immediately call save_baseline", COLLECTOR_PROMPT)
         self.assertIn("batch evaluation as authoritative", COLLECTOR_PROMPT)
-        self.assertIn("sniff_run.verification.ready=true", COLLECTOR_PROMPT)
+        self.assertIn("sniff_run.eval_grades.ready=true", COLLECTOR_PROMPT)
         self.assertIn("only completion signal", COLLECTOR_PROMPT)
         self.assertIn("collector_tap is locked until verification.ready=true", COLLECTOR_PROMPT)
         self.assertIn("commonly labeled 点菜, 商品, or 全部商品", COLLECTOR_PROMPT)

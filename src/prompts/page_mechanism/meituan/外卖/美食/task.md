@@ -8,7 +8,7 @@
 
 ## Operations
 1. Ignore the header.
-2. Use `tap_in_page` on filter `全部筛选`, select the best match in `速度`, then use `tap_in_page` on `完成`.
+2. Use `tap_in_page` on filter `全部筛选`, select the best match, then use `tap_in_page` on `完成`.
 3. Use `tap_in_page` on `综合排序` and select `距离优先`.
 4. Use `navigate_to` to enter each merchant.
 5. Keep swiping the list until the page reaches the stop condition.

@@ -96,25 +96,50 @@ Optimization priority:
    generic attribute and syntax compression.
 
 Tree-preservation invariant and allowed tree contraction:
-- Preserve the original ancestor branch and document order of every retained
-  node. Never move a node under a different original branch, merge nodes from
-  separate branches, deduplicate across branches, synthesize replacement nodes,
-  or reorder siblings.
-- Meaningless hierarchy levels may be removed. If a node has no function
+- Keep the original ancestor branch order of every retained node. Never 
+  deduplicate across branches, synthesize replacement nodes, r reorder siblings.
+- Meaningless hierarchy levels should be removed. If a node has no function
   semantics of its own but has retained children, remove that container and
   splice its retained children into the container's original position under the
-  nearest retained ancestor. Preserve child order. This edge contraction is
-  allowed and is not considered invalid reparenting.
-- If both A and B are retained and A was B's direct parent in XML0, A must remain
-  B's direct parent. A new direct edge may only be created by deleting every
-  intermediate node on an existing ancestor path; it may never cross branches.
+  nearest retained ancestor. Preserve child order.
 - Remove a meaningless leaf directly. Remove a hidden or inactive node with its
   whole subtree. For a meaningful descendant inside a merely structural
   container, contract the container instead of deleting the descendant.
 - Serialize the contracted surviving tree recursively. Do not collect all
   useful nodes into one flat hierarchy-level list.
 
-Meaningless-node pruning policy:
+Tree-preservation examples:
+1. Meaningless leaf
+```
+  <node attributes="some meaningless text...">
+    <node /> 
+    <node text="some text content"/>
+  </node>
+
+  preserved as ->
+
+  <node text="some text content"/>
+```
+
+2. Meaningless hierarchy levels
+```
+  <node bounds="[0,0][100,100]" class="shop">
+    <node bounds="[10,10][80,80]"> # invisiable & meaningless
+      <node bounds="[10,10][80,80]" text="..." />
+    </node>
+    <node>...</nodes>
+  </node>
+
+  preserved as ->
+
+  <node bounds="[0,0][100,100]" class="shop"> # reserved because of multiple significant children
+    <node bounds="[10,10][80,80]" text="..." />
+    <node>...</nodes>
+  </node>
+```
+
+
+Node pruning policy:
 - A node is effective when its own text/content-desc, actionable state,
   recognizer-required resource-id/class/bounds, hidden-layer evidence, or role
   is needed to preserve L1. Having bounds or a generic class alone does not
@@ -133,8 +158,6 @@ Meaningless-node pruning policy:
 Character deletion policy:
 - This policy applies only to the XML string returned when optimize(xml_text)
   processes a captured page. It does not apply to the generated Python source.
-  Keep optimize_xml.py readable and maintainable; do not minify its identifiers,
-  indentation, whitespace, or helper structure to improve XML compression.
 - Delete meaningless characters directly instead of preserving them out of
   caution when doing so leaves L1 unchanged. In the returned XML, try removing
   the XML declaration, indentation, line breaks, whitespace between tags, empty

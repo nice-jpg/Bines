@@ -121,7 +121,7 @@ class CollectorManager:
                 "5. If the batch score is already 100, do not call coder. Otherwise call consult_coder; coder alone reads and modifies run.agent.py.",
                 "6. Call sniff_run after each coder change, then return failed batch evaluation to the same coder until score is 100.",
                 "7. Add further distinct state pairs when needed to improve same-class compatibility.",
-                "8. Continue until sniff_run.verification.ready is true for the same run.agent.py version.",
+                "8. Continue until sniff_run.eval_grades.ready is true for the same run.agent.py version.",
                 "9. After verification is ready, inspect the current XML and use collector_tap on a visible "
                 "same-page product-tab reset control when available.",
                 "</workflow>",
@@ -243,6 +243,7 @@ class CollectorToolbox:
             "missing": ["result"],
             "cases": [],
         }
+        self._last_sniff_report: dict[str, Any] = {}
         self._reset_tap_attempted = False
         self._reset_tap_succeeded = False
         self._reset_tap_error: Any = None
@@ -403,73 +404,43 @@ class CollectorToolbox:
             )
         return self.coder_session.implement(
             training_cases=self.saved_instances.cases_for_path(self.page_path),
-            evaluation=self._last_batch_evaluation,
+            evaluation=self._last_sniff_report,
             instruction=diagnosis,
         )
 
     def sniff_run(self) -> str:
         xml = self.collector_uiautomate()
-        if not isinstance(xml, str):
-            evaluation = {"score": 0, "errors": ["uiautomate_error"], "missing": ["result"]}
-            self._record_evaluation(evaluation, self._script_fingerprint(), "", valid=False)
-            return _json_result(
-                {
-                    "ok": False,
-                    "run": xml,
-                    "evaluation": evaluation,
-                    "verification": self.training_result(),
-                }
-            )
-
-        state_fingerprint = _fingerprint(xml)
+        valid = isinstance(xml, str)
+        state_fingerprint = _fingerprint(xml) if valid else ""
         script_fingerprint = self._script_fingerprint()
         corpus_cases = self.saved_instances.cases_for_path(self.page_path)
-        if not corpus_cases:
-            evaluation = {
-                "score": 0,
-                "errors": ["missing_baseline"],
-                "missing": ["result"],
-                "cases": [],
-            }
-            run_result: Any = None
-        else:
-            case_results: list[dict[str, Any]] = []
-            passing_cases = self._passing_states.setdefault(script_fingerprint, {})
+        run_results = {str(case["case_id"]): None for case in corpus_cases}
+        case_results = []
+        passing_cases = self._passing_states.setdefault(script_fingerprint, {})
+        if valid:
             for case in corpus_cases:
+                case_id = str(case["case_id"])
                 case_run = json.loads(self.mechanism.sniff_run(self.page_path, str(case["xml"])))
                 case_evaluation = eval_collection(case["r1"], case_run)
-                passed = case_run.get("ok") is True and case_evaluation["score"] == 100
-                passing_cases.pop(str(case["case_id"]), None)
-                if passed:
-                    passing_cases[str(case["case_id"])] = int(case["state_revision"])
-                case_results.append(
-                    {
-                        "case_id": case["case_id"],
-                        "state_fingerprint": case["state_fingerprint"],
-                        "state_revision": case["state_revision"],
-                        "run": case_run,
-                        "evaluation": case_evaluation,
-                        "passed": passed,
-                    }
-                )
-            evaluation = _batch_evaluation(case_results)
-            current_case = self._training_cases.get(state_fingerprint)
-            run_result = next(
-                (item["run"] for item in case_results if item["case_id"] == current_case["case_id"]),
-                None,
-            ) if current_case is not None else None
-        passed = evaluation["score"] == 100
+                passing_cases.pop(case_id, None)
+                run_results[case_id] = case_run.get("result")
+                if case_run.get("ok") is True and case_evaluation["score"] == 100:
+                    passing_cases[case_id] = int(case["state_revision"])
+                if case_run.get("ok") is not True:
+                    case_evaluation["execution_error"] = case_run
+                case_results.append({"case_id": case_id, **case_evaluation})
+        evaluation = _batch_evaluation(case_results)
+        if not valid:
+            evaluation = {"score": 0, "errors": ["uiautomate_error"], "missing": [], "cases": [], "execution_error": xml}
         self._last_batch_evaluation = evaluation
-        self._record_evaluation(evaluation, script_fingerprint, state_fingerprint, valid=True)
-        return _json_result(
-            {
-                "ok": passed,
-                "run": run_result,
-                "evaluation": evaluation,
-                "evaluated_cases": len(corpus_cases),
-                "verification": self.training_result(),
-            },
-        )
+        self._record_evaluation(evaluation, script_fingerprint, state_fingerprint, valid=valid)
+        self._last_sniff_report = {
+            "cases": [{key: value for key, value in case.items() if key != "r1"} for case in corpus_cases],
+            "ground_truths": {str(case["case_id"]): case["r1"] for case in corpus_cases},
+            "run_results": run_results,
+            "eval_grades": {**evaluation, "ready": self.training_result()["ready"]},
+        }
+        return _json_result(self._last_sniff_report)
 
     def save_baseline(self, r1: str) -> str:
         if self._last_xml is None:
@@ -658,7 +629,8 @@ class CollectorToolbox:
                 name="sniff_run",
                 description=(
                     "Capture unchanged current XML, run run.agent.py against every saved XML/r1 pair for this path, "
-                    "and return deterministic batch evaluation plus multi-state verification status."
+                    "and return cases, ground_truths, run_results, and eval_grades. "
+                    "The two result tables use case_id keys; eval_grades.ready is the training completion signal."
                 ),
             ),
             StructuredTool.from_function(
@@ -804,32 +776,11 @@ def _schema_shape_errors(schema: Any, value: Any, path: str) -> list[str]:
 def _batch_evaluation(case_results: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     if not case_results:
         return {"score": 0, "errors": ["missing_baseline"], "missing": ["result"], "cases": []}
-    errors: list[str] = []
-    missing: list[str] = []
-    scores: list[int] = []
-    summaries: list[dict[str, Any]] = []
-    for index, result in enumerate(case_results):
-        evaluation = result["evaluation"]
-        score = int(evaluation.get("score", 0))
-        scores.append(score)
-        errors.extend(f"cases[{index}].{path}" for path in evaluation.get("errors", []))
-        missing.extend(f"cases[{index}].{path}" for path in evaluation.get("missing", []))
-        summaries.append(
-            {
-                "case_id": result["case_id"],
-                "state_fingerprint": result["state_fingerprint"],
-                "state_revision": result["state_revision"],
-                "score": score,
-                "errors": list(evaluation.get("errors", [])),
-                "missing": list(evaluation.get("missing", [])),
-                "run": result["run"],
-            }
-        )
     return {
-        "score": min(scores),
-        "errors": errors,
-        "missing": missing,
-        "cases": summaries,
+        "score": min(int(case["score"]) for case in case_results),
+        "errors": [f"cases[{index}].{path}" for index, case in enumerate(case_results) for path in case.get("errors", [])],
+        "missing": [f"cases[{index}].{path}" for index, case in enumerate(case_results) for path in case.get("missing", [])],
+        "cases": list(case_results),
     }
 
 

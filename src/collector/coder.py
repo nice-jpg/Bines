@@ -128,7 +128,8 @@ class CollectorCoderSession:
             )
         agent = self._agent_instance()
         new_cases = [case for case in training_cases if str(case["case_id"]) not in self._sent_case_ids]
-        current_score = _evaluation_score(evaluation)
+        grades = evaluation.get("eval_grades", evaluation)
+        current_score = _evaluation_score(grades)
         current_script = self.mechanism.read_run_agent_py(self.page_path)
         current_script_metrics = _script_metrics(current_script)
         optimization_attempt = self._turn + 1
@@ -136,25 +137,40 @@ class CollectorCoderSession:
             optimization_attempt >= self.STAGNATION_REVIEW_ATTEMPT
             and current_score < 100
         )
-        payload = {
+        context = {
             "page_path": self.page_path,
             "template_parent_path": self.page_path.rpartition("/")[0] or self.page_path,
             "page_description": self.page_description if self._turn == 0 else None,
             "collection_schema": self.collection_schema if self._turn == 0 else None,
-            "new_training_cases": new_cases,
             "known_training_case_count": len(training_cases),
-            "latest_sniff_run": dict(evaluation),
-            "problem_report": _build_problem_report(evaluation, instruction),
-            "optimization_history": {
-                "attempt": optimization_attempt,
-                "prior_scores": list(self._evaluation_scores),
-                "current_score": current_score,
-                "stagnation_review_required": stagnation_review_required,
-                "prior_script_metrics": list(self._script_metrics_history),
-                "current_script_metrics": current_script_metrics,
-            },
         }
-        new_message = {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+        optimization_history = {
+            "attempt": optimization_attempt,
+            "prior_scores": list(self._evaluation_scores),
+            "current_score": current_score,
+            "stagnation_review_required": stagnation_review_required,
+            "prior_script_metrics": list(self._script_metrics_history),
+            "current_script_metrics": current_script_metrics,
+        }
+        sections = [
+            ("Task context and output contract", context),
+            ("New cases: XML inputs and identifying metadata", [
+                {key: value for key, value in case.items() if key != "r1"}
+                for case in new_cases
+            ]),
+            ("Ground truths: expected JSON by case_id", {
+                str(case["case_id"]): case["r1"] for case in training_cases
+            }),
+            ("Run results: actual JSON by case_id; null means execution failed", evaluation.get("run_results", {})),
+            ("Evaluation grades: deterministic full-corpus results", grades),
+            ("Collector diagnosis: structural hypotheses to investigate", instruction.strip()),
+            ("Optimization history: reassess architecture when stagnation_review_required", optimization_history),
+        ]
+        content = "\n\n".join(
+            f"## {title}\n\n{json.dumps(value, ensure_ascii=False, indent=2)}"
+            for title, value in sections
+        )
+        new_message = {"role": "user", "content": content}
         request_messages = [*self._message_history, new_message]
         try:
             state = agent.invoke(
@@ -264,35 +280,6 @@ def _message_identity(message: Any) -> tuple[str, str]:
 
 def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _build_problem_report(
-    evaluation: Mapping[str, Any],
-    instruction: str,
-) -> dict[str, Any]:
-    cases = evaluation.get("cases")
-    case_results = cases if isinstance(cases, Sequence) and not isinstance(cases, str) else []
-    failing_cases = [
-        {
-            "case_id": case.get("case_id"),
-            "score": case.get("score"),
-            "errors": list(case.get("errors") or []),
-            "missing": list(case.get("missing") or []),
-        }
-        for case in case_results
-        if isinstance(case, Mapping) and int(case.get("score", 0)) < 100
-    ]
-    return {
-        "structural_analysis": instruction.strip() or None,
-        "score": evaluation.get("score", 0),
-        "failed_paths": list(evaluation.get("errors") or []),
-        "missing_paths": list(evaluation.get("missing") or []),
-        "failing_cases": failing_cases,
-        "analysis_scope": (
-            "Infer a template-level structural exception shared by possible merchant states; "
-            "do not turn literal sample text into extraction conditions."
-        ),
-    }
 
 
 def _evaluation_score(evaluation: Mapping[str, Any]) -> int:

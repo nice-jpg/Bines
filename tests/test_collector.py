@@ -19,6 +19,14 @@ from device.results import make_error_result
 from page_mechanism import PageMechanism
 
 
+def coder_sections(content):
+    return {
+        title.split(":")[0]: json.loads(body)
+        for section in content.split("## ")[1:]
+        for title, body in [section.split("\n\n", 1)]
+    }
+
+
 class FakeEventHub:
     def __init__(self) -> None:
         self.calls = []
@@ -231,21 +239,20 @@ def test_collector_coder_reuses_agent_thread_and_sends_only_new_cases(tmp_path: 
     assert second["history_messages"] == 4
     assert first["new_training_cases"] == 1
     assert second["new_training_cases"] == 1
-    first_payload = json.loads(invocations[0][0]["messages"][0]["content"])
-    second_payload = json.loads(invocations[1][0]["messages"][-1]["content"])
+    first_payload = coder_sections(invocations[0][0]["messages"][0]["content"])
+    second_payload = coder_sections(invocations[1][0]["messages"][-1]["content"])
     assert invocations[1][0]["messages"][:2] == invocations[0][0]["messages"] + [
         {"role": "assistant", "content": "patched"}
     ]
-    assert first_payload["new_training_cases"] == [first_case]
-    assert second_payload["new_training_cases"] == [second_case]
-    assert second_payload["template_parent_path"] == "meituan"
-    assert second_payload["page_description"] is None
-    assert second_payload["problem_report"]["score"] == 50
-    assert second_payload["problem_report"]["failed_paths"] == [
+    assert first_payload["New cases"] == [{k: v for k, v in first_case.items() if k != "r1"}]
+    assert second_payload["New cases"] == [{k: v for k, v in second_case.items() if k != "r1"}]
+    assert second_payload["Task context and output contract"]["template_parent_path"] == "meituan"
+    assert second_payload["Task context and output contract"]["page_description"] is None
+    assert second_payload["Evaluation grades"]["score"] == 50
+    assert second_payload["Evaluation grades"]["errors"] == [
         "cases[1].result.items[0].name"
     ]
-    assert "same width and child topology" in second_payload["problem_report"]["structural_analysis"]
-    assert "do not turn literal sample text" in second_payload["problem_report"]["analysis_scope"]
+    assert "same width and child topology" in second_payload["Collector diagnosis"]
     assert invocations[0][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
     assert invocations[1][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
     assert session.message_history() == tuple(
@@ -291,7 +298,7 @@ def test_collector_coder_marks_third_failed_attempt_for_macro_review(tmp_path: P
     session.implement(training_cases=cases, evaluation={"score": 45})
 
     histories = [
-        json.loads(invocation["messages"][-1]["content"])["optimization_history"]
+        coder_sections(invocation["messages"][-1]["content"])["Optimization history"]
         for invocation in invocations
     ]
     assert [history["attempt"] for history in histories] == [1, 2, 3]
@@ -353,7 +360,7 @@ def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp
     assert len(received[0]["training_cases"]) == 2
     assert received[0]["training_cases"][1]["xml"] == event_hub.xml
     assert received[0]["training_cases"][0]["r1"] == {"items": [{"name": "cup"}]}
-    assert received[0]["evaluation"]["score"] < 100
+    assert received[0]["evaluation"]["eval_grades"]["score"] < 100
     assert received[0]["instruction"] == diagnosis
     assert [call[0] for call in event_hub.calls].count("uiautomate") == 2
 
@@ -418,12 +425,12 @@ def test_collector_saved_instances_require_coder_to_cover_every_visit_for_path(
     instances = saved_instances.instances_for_path("meituan")
     assert [instance["page_visit_id"] for instance in instances] == ["visit-a", "visit-b"]
     assert [len(instance["cases"]) for instance in instances] == [2, 2]
-    assert sniffed["evaluated_cases"] == 4
-    assert sniffed["evaluation"]["score"] < 100
-    assert sniffed["verification"]["ready"] is False
-    assert sniffed["verification"]["saved_instances"] == 2
-    assert sniffed["verification"]["corpus_cases"] == 4
-    assert sniffed["verification"]["validated_corpus_cases"] == 2
+    assert len(sniffed["cases"]) == 4
+    assert sniffed["eval_grades"]["score"] < 100
+    assert second.training_result()["ready"] is False
+    assert second.training_result()["saved_instances"] == 2
+    assert second.training_result()["corpus_cases"] == 4
+    assert second.training_result()["validated_corpus_cases"] == 2
     assert consulted["ok"] is True
     assert len(received) == 1
     assert {case["page_visit_id"] for case in received[0]["training_cases"]} == {
@@ -516,15 +523,16 @@ def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> Non
     tools["save_baseline"].func('{"items": [{"name": "cup"}]}')
     result = json.loads(tools["sniff_run"].func())
 
-    assert result["ok"] is True
-    assert result["run"]["ok"] is True
-    assert result["run"]["result"] == {"items": [{"name": "cup"}]}
-    assert result["evaluation"]["score"] == 100
-    assert result["evaluation"]["errors"] == []
-    assert result["evaluation"]["missing"] == []
-    assert len(result["evaluation"]["cases"]) == 1
-    assert result["verification"]["ready"] is False
-    assert result["verification"]["validated_states"] == 1
+    assert set(result) == {"cases", "ground_truths", "run_results", "eval_grades"}
+    case_id = result["cases"][0]["case_id"]
+    assert "r1" not in result["cases"][0]
+    assert result["run_results"] == result["ground_truths"] == {case_id: {"items": [{"name": "cup"}]}}
+    assert result["eval_grades"]["score"] == 100
+    assert result["eval_grades"]["errors"] == []
+    assert result["eval_grades"]["missing"] == []
+    assert len(result["eval_grades"]["cases"]) == 1
+    assert result["eval_grades"]["ready"] is False
+    assert len(result["cases"]) == 1
 
 
 def test_sniff_run_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
@@ -553,12 +561,12 @@ def test_sniff_run_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
     tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
     replaced = json.loads(tools["sniff_run"].func())
 
-    assert missing["evaluation"]["score"] == 0
-    assert "missing_baseline" in missing["evaluation"]["errors"]
+    assert missing["eval_grades"]["score"] == 0
+    assert "missing_baseline" in missing["eval_grades"]["errors"]
     assert saved["baseline_saved"] is True
-    assert matched["evaluation"]["score"] == 100
-    assert replaced["evaluation"]["score"] < 100
-    assert replaced["evaluation"]["errors"] == ["cases[0].result.items[0].name"]
+    assert matched["eval_grades"]["score"] == 100
+    assert replaced["eval_grades"]["score"] < 100
+    assert replaced["eval_grades"]["errors"] == ["cases[0].result.items[0].name"]
 
 
 def test_sniff_run_keeps_evaluating_saved_pairs_after_page_moves(tmp_path: Path) -> None:
@@ -584,9 +592,8 @@ def test_sniff_run_keeps_evaluating_saved_pairs_after_page_moves(tmp_path: Path)
     tools["collector_swipe_up"].func(100, 1000)
     result = json.loads(tools["sniff_run"].func())
 
-    assert result["ok"] is True
-    assert result["evaluation"]["score"] == 100
-    assert result["evaluated_cases"] == 1
+    assert result["eval_grades"]["score"] == 100
+    assert len(result["cases"]) == 1
 
 
 def test_same_script_must_pass_two_distinct_swiped_states(tmp_path: Path) -> None:
@@ -619,11 +626,11 @@ def test_same_script_must_pass_two_distinct_swiped_states(tmp_path: Path) -> Non
     toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
     second = json.loads(toolbox.sniff_run())
 
-    assert first["evaluation"]["score"] == 100
-    assert first["verification"]["ready"] is False
-    assert second["evaluation"]["score"] == 100
-    assert second["verification"]["ready"] is True
-    assert second["verification"]["validated_states"] == 2
+    assert first["eval_grades"]["score"] == 100
+    assert first["eval_grades"]["ready"] is False
+    assert second["eval_grades"]["score"] == 100
+    assert second["eval_grades"]["ready"] is True
+    assert toolbox.training_result()["validated_states"] == 2
 
     coder_toolbox = CollectorCoderToolbox(
         mechanism=toolbox.mechanism,
@@ -671,9 +678,9 @@ def test_hardcoded_current_state_script_fails_cross_state_verification(tmp_path:
     toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
     second = json.loads(toolbox.sniff_run())
 
-    assert first["evaluation"]["score"] == 100
-    assert second["evaluation"]["score"] < 100
-    assert second["evaluation"]["errors"] == ["cases[1].result.items[0].name"]
+    assert first["eval_grades"]["score"] == 100
+    assert second["eval_grades"]["score"] < 100
+    assert second["eval_grades"]["errors"] == ["cases[1].result.items[0].name"]
     assert toolbox.training_result()["ready"] is False
 
 
@@ -696,13 +703,62 @@ def test_sniff_run_reports_device_error_without_running_page_script(tmp_path: Pa
 
     result = json.loads(tools["sniff_run"].func())
 
-    assert result["ok"] is False
-    assert result["run"]["error_type"] == "command_error"
-    assert result["evaluation"] == {
-        "score": 0,
-        "errors": ["uiautomate_error"],
-        "missing": ["result"],
-    }
+    assert result["eval_grades"]["ready"] is False
+    assert result["eval_grades"]["execution_error"]["error_type"] == "command_error"
+    assert result["eval_grades"]["score"] == 0
+    assert result["eval_grades"]["errors"] == ["uiautomate_error"]
+
+
+def test_sniff_run_keeps_failed_case_aligned_with_ground_truth(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text(
+        "def run(xml):\n    raise ValueError('invalid card')\n", encoding="utf-8"
+    )
+    toolbox = CollectorToolbox(
+        mechanism=PageMechanism(tmp_path), event_hub=FakeEventHub(), page_path="meituan"
+    )
+    toolbox.collector_uiautomate()
+    toolbox.save_baseline('{"items": []}')
+
+    report = json.loads(toolbox.sniff_run())
+
+    case_id = report["cases"][0]["case_id"]
+    assert report["ground_truths"] == {case_id: {"items": []}}
+    assert report["run_results"] == {case_id: None}
+    grade = report["eval_grades"]["cases"][0]
+    assert grade["case_id"] == case_id
+    assert grade["score"] < 100
+    assert grade["execution_error"]["error_type"] == "ValueError"
+    assert report["eval_grades"]["ready"] is False
+
+
+def test_coder_receives_replaced_truth_and_actual_result_without_repeating_xml(tmp_path: Path) -> None:
+    page_dir = tmp_path / "meituan"
+    page_dir.mkdir()
+    (page_dir / "run.agent.py").write_text("def run(xml):\n    return {}\n", encoding="utf-8")
+
+    class FakeCoderAgent:
+        def invoke(self, payload, config=None):
+            return {"messages": [*payload["messages"], {"role": "assistant", "content": "patched"}]}
+
+    session = CollectorCoderSession(
+        model="model", mechanism=PageMechanism(tmp_path), page_path="meituan",
+        page_visit_id="visit-1", page_description="merchant", collection_schema={"items": []},
+        create_agent_factory=lambda **kwargs: FakeCoderAgent(),
+    )
+    case = {"case_id": "case-1", "xml": "<page/>", "r1": {"items": []}}
+    report = {"run_results": {"case-1": {"items": []}}, "eval_grades": {"score": 0}}
+    session.implement(training_cases=[case], evaluation=report)
+    case["r1"] = {"items": [{"name": "corrected"}]}
+    session.implement(training_cases=[case], evaluation=report, instruction="Investigate field ownership.")
+
+    sections = coder_sections(session.message_history()[-2]["content"])
+    assert sections["New cases"] == []
+    assert sections["Ground truths"] == {"case-1": case["r1"]}
+    assert sections["Run results"] == report["run_results"]
+    assert sections["Evaluation grades"] == report["eval_grades"]
+    assert sections["Collector diagnosis"] == "Investigate field ownership."
 
 
 def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Path) -> None:
@@ -852,9 +908,9 @@ def test_merchant_profile_is_required_but_not_part_of_item_scoring(tmp_path: Pat
     assert invalid["saved"] is False
     assert invalid["errors"] == ["merchant.name"]
     assert saved["saved"] is True
-    assert first["evaluation"]["score"] == 100
-    assert second["evaluation"]["score"] == 100
-    assert second["verification"]["ready"] is True
+    assert first["eval_grades"]["score"] == 100
+    assert second["eval_grades"]["score"] == 100
+    assert second["eval_grades"]["ready"] is True
 
 
 def test_restore_to_top_requires_successful_reset_tap_without_device_checks(tmp_path: Path) -> None:

@@ -10,8 +10,8 @@ Responsibility:
 - Fix shared structural causes. Never make tests pass by identifying a merchant, product, snapshot, or case.
 
 Runtime contract:
-- The first collector message provides page_path, template_parent_path, page_description, collection_schema, training pairs, and a problem_report. Later messages append new pairs and full-corpus failures to this same thread.
-- Each training pair contains case_id, xml, and expected r1. case_id is reporting metadata only and must never affect extraction.
+- Requests have labeled sections: task context and output contract, new XML cases, ground truths, run results, evaluation grades, collector diagnosis, and optimization history. Later requests append new evidence and full-corpus test results to this same thread.
+- Join XML cases, ground_truths, run_results, and per-case eval_grades by case_id. Ground truths and run results have matching JSON table layouts. A null result means execution failed; consult its grade for details. Previously supplied XML remains in conversation history. case_id is reporting metadata only and must never affect extraction.
 - Define run(xml: str) -> dict as the exact entry point. Each XML snapshot is processed independently; run does not merge prior snapshots and has no previous-state input.
 - Return a JSON-serializable dict matching collection_schema exactly. Preserve required field types and visible item order. Do not add fields or invent missing values.
 - Merchant profile is collected separately and is not part of run.agent.py output or scoring.
@@ -26,7 +26,7 @@ Available tools:
 
 Required workflow:
 1. Understand the exact input/output contract, missing-value representation, item ordering, and full-object acceptance result.
-2. Compare every XML/r1 pair in conversation history. Use latest_sniff_run and problem_report to identify which existing behavior passes, which fields fail, and the smallest shared root cause.
+2. Compare every XML/r1 pair in conversation history. Use the ground truths, run results, evaluation grades, and collector diagnosis sections to identify which existing behavior passes, which fields fail, and the smallest shared root cause.
 3. Read run.agent.py before the first edit. Preserve working logic and local style.
 4. Identify stable template invariants across merchants and scroll states before coding.
 5. Apply one focused patch that repairs the shared rule. Do not append one condition per failed pair.
