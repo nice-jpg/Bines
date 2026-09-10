@@ -1,3 +1,6 @@
 [submodule "nScreen"]
 	path = nScreen
 	url = https://github.com/nice-jpg/nScreen.git
+[submodule "nTrace"]
+	path = nTrace
+	url = https://github.com/nice-jpg/nTrace.git
