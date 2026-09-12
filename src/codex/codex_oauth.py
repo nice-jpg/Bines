@@ -544,7 +544,7 @@ class OpenAICodexModel(BaseChatModel):
                 {
                     "type": "message",
                     "role": role,
-                    "content": [{"type": "input_text", "text": self._message_text(message)}],
+                    "content": _to_responses_input_content(message),
                 }
             )
 
@@ -664,6 +664,52 @@ class OpenAICodexModel(BaseChatModel):
         output_details = usage.get("output_tokens_details")
         if isinstance(output_details, Mapping):
             _add_usage_total(self._usage_totals, "reasoning_tokens", output_details.get("reasoning_tokens"))
+
+
+def _to_responses_input_content(message: BaseMessage) -> list[dict[str, str]]:
+    """Preserve text/image blocks instead of serializing image bytes as text."""
+    content = message.content
+    if isinstance(content, str):
+        return [{"type": "input_text", "text": content}]
+
+    result: list[dict[str, str]] = []
+    for block in content:
+        if isinstance(block, str):
+            result.append({"type": "input_text", "text": block})
+            continue
+        kind = block.get("type")
+        if kind in ("text", "input_text"):
+            text = block.get("text")
+            if not isinstance(text, str):
+                raise ValueError("Text input blocks require a string 'text'")
+            result.append({"type": "input_text", "text": text})
+            continue
+        if kind == "image_url":
+            image = block.get("image_url")
+            url = image.get("url") if isinstance(image, Mapping) else image
+            detail = image.get("detail") if isinstance(image, Mapping) else None
+            if not isinstance(url, str) or not url:
+                raise ValueError("Image input blocks require a non-empty image URL")
+            converted = {"type": "input_image", "image_url": url}
+        elif kind == "input_image":
+            converted = {"type": "input_image"}
+            for key in ("image_url", "file_id"):
+                value = block.get(key)
+                if value is not None:
+                    if not isinstance(value, str) or not value:
+                        raise ValueError(f"Image input '{key}' must be a non-empty string")
+                    converted[key] = value
+            if len(converted) != 2:
+                raise ValueError("Image input requires exactly one of 'image_url' or 'file_id'")
+            detail = block.get("detail")
+        else:
+            raise ValueError(f"Unsupported user input content block type: {kind!r}")
+        if detail is not None:
+            if not isinstance(detail, str):
+                raise ValueError("Image input 'detail' must be a string")
+            converted["detail"] = detail
+        result.append(converted)
+    return result
 
 
 def _to_responses_tool(tool: Mapping[str, Any]) -> dict[str, Any]:

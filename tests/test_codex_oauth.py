@@ -32,6 +32,65 @@ def sample_lookup(city: str) -> str:
 
 
 class CodexOAuthModelTests(unittest.TestCase):
+    def test_build_request_preserves_multimodal_user_content_order(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        data_url = "data:image/png;base64," + "aGVsbG8=" * 1000
+        content = [
+            {"type": "text", "text": "采集全部商家"},
+            {"type": "image_url", "image_url": {"url": data_url, "detail": "high"}},
+            "第二张图",
+            {"type": "image_url", "image_url": {"url": "https://example.com/page.png"}},
+            {"type": "input_text", "text": "保留全部基本信息"},
+        ]
+        message = HumanMessage(content=content)
+        request = model._build_request([SystemMessage(content="system"), message])
+        blocks = request["input"][0]["content"]
+        self.assertEqual(blocks, [
+            {"type": "input_text", "text": "采集全部商家"},
+            {"type": "input_image", "image_url": data_url, "detail": "high"},
+            {"type": "input_text", "text": "第二张图"},
+            {"type": "input_image", "image_url": "https://example.com/page.png"},
+            {"type": "input_text", "text": "保留全部基本信息"},
+        ])
+        self.assertTrue(all("base64" not in block.get("text", "") for block in blocks))
+        self.assertEqual(message.content, content)
+        self.assertNotIn("previous_response_id", request)
+
+    def test_build_request_accepts_native_image_blocks_and_string_urls(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        for block, expected in [
+            ({"type": "image_url", "image_url": "https://example.com/page.png"},
+             {"type": "input_image", "image_url": "https://example.com/page.png"}),
+            ({"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8=", "detail": "auto"},
+             {"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8=", "detail": "auto"}),
+            ({"type": "input_image", "file_id": "file-image", "detail": "original"},
+             {"type": "input_image", "file_id": "file-image", "detail": "original"}),
+        ]:
+            with self.subTest(block=block):
+                request = model._build_request([HumanMessage(content=[block])])
+                self.assertEqual(request["input"][0]["content"], [expected])
+
+    def test_build_request_rejects_invalid_blocks_instead_of_textualizing_them(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        for block in [
+            {"type": "image_url", "image_url": {}},
+            {"type": "image_url", "image_url": {"url": ""}},
+            {"type": "image_url", "image_url": {"url": "https://example.com/p.png", "detail": 1}},
+            {"type": "input_image"},
+            {"type": "input_image", "file_id": 1},
+            {"type": "input_image", "image_url": "https://example.com/p.png", "file_id": "file-x"},
+            {"type": "text", "text": 1},
+            {"type": "input_audio", "input_audio": {"data": "base64"}},
+        ]:
+            with self.subTest(block=block):
+                with self.assertRaises(ValueError):
+                    model._build_request([HumanMessage(content=[block])])
+
+    def test_build_request_keeps_plain_xml_text_unchanged(self) -> None:
+        text = '采集要求：商家列表\n<hierarchy>\r\n<node text="商家"/>\r\n</hierarchy>'
+        request = OpenAICodexModel(model="test-model")._build_request([HumanMessage(content=text)])
+        self.assertEqual(request["input"][0]["content"], [{"type": "input_text", "text": text}])
+
     def test_bind_tools_converts_langchain_tools_to_responses_schema(self) -> None:
         tool = StructuredTool.from_function(
             func=sample_lookup,
