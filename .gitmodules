@@ -4,3 +4,6 @@
 [submodule "nTrace"]
 	path = nTrace
 	url = https://github.com/nice-jpg/nTrace.git
+[submodule "Reco"]
+	path = Reco
+	url = https://github.com/nice-jpg/Reco.git
