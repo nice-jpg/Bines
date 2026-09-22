@@ -3,36 +3,32 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import logging
 import os
 import threading
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 from uuid import uuid4
 
 import websockets
-from websockets.exceptions import ConnectionClosed
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
+from langchain_core.language_models.base import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import Field, PrivateAttr
-import builtins
-from collections.abc import Callable
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
+from pydantic import Field, PrivateAttr
+from websockets.exceptions import ConnectionClosed
 
-from langchain_core.language_models.base import (
-    BaseLanguageModel,
-    LangSmithParams,
-    LanguageModelInput,
-)
-from datetime import datetime, timezone
+logger = logging.getLogger(__name__)
+
 
 class CodexOAuthTokenProvider:
     """Loads Codex login credentials the same way as ws_probe_codex_login.sh."""
-
-    ENV_KEYS = ("AUTH_JSON",)
 
     def __init__(self, auth_path: str | Path | None = None) -> None:
         self.auth_path = Path(auth_path or self._default_auth_path()).expanduser()
@@ -51,14 +47,19 @@ class CodexOAuthTokenProvider:
                 "Run `codex login` first, or set AUTH_JSON to a file-based Codex auth state."
             )
 
-        data = json.loads(self.auth_path.read_text())
-        token = self._read_path(data, ("tokens", "access_token")) or data.get("OPENAI_API_KEY")
+        data = json.loads(self.auth_path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Invalid Codex auth file: {self.auth_path}. Expected a JSON object.")
+        tokens = data.get("tokens")
+        if not isinstance(tokens, dict):
+            tokens = {}
+        token = tokens.get("access_token") or data.get("OPENAI_API_KEY")
         if not token:
             raise RuntimeError(
                 f"Token not found in {self.auth_path}. Expected `.tokens.access_token` "
                 "or `.OPENAI_API_KEY`, matching ws_probe_codex_login.sh."
             )
-        account_id = self._read_path(data, ("tokens", "account_id")) or ""
+        account_id = tokens.get("account_id") or ""
         return str(token), str(account_id)
 
     def get_token(self) -> str:
@@ -68,14 +69,6 @@ class CodexOAuthTokenProvider:
     def get_account_id(self) -> str:
         _token, account_id = self.get_credentials()
         return account_id
-
-    def _read_path(self, value: dict[str, Any], path: tuple[str, ...]) -> Any:
-        current: Any = value
-        for key in path:
-            if not isinstance(current, dict):
-                return None
-            current = current.get(key)
-        return current
 
 
 class OpenAICodexModel(BaseChatModel):
@@ -126,31 +119,7 @@ class OpenAICodexModel(BaseChatModel):
     ) -> ChatResult:
         message = await asyncio.wrap_future(self._submit_request(messages, **kwargs))
         return ChatResult(generations=[ChatGeneration(message=message)])
-    
-    def bind_tools(
-        self,
-        tools: Sequence[builtins.dict[str, Any] | type | Callable | BaseTool],
-        *,
-        tool_choice: builtins.dict[str, Any] | str | bool | None = None,
-        strict: bool | None = None,
-        parallel_tool_calls: bool | None = None,
-        **kwargs: Any,
-    ) -> Runnable[LanguageModelInput, AIMessage]:
-        """Bind LangChain tools using OpenAI-compatible tool schemas.
 
-        LangChain agents call this method to attach tool definitions to a chat
-        model. The Codex WebSocket endpoint uses the Responses API shape, so
-        tools are converted once here and later injected into ``response.create``.
-        """
-
-        formatted_tools = [_to_responses_tool(convert_to_openai_tool(tool, strict=strict)) for tool in tools]
-        bind_kwargs = {key: value for key, value in kwargs.items() if value is not None}
-        bind_kwargs["tools"] = formatted_tools
-        if tool_choice is not None:
-            bind_kwargs["tool_choice"] = _normalize_tool_choice(tool_choice)
-        if parallel_tool_calls is not None:
-            bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
-        return self.bind(**bind_kwargs)
 
     def _submit_request(
         self,
@@ -206,26 +175,13 @@ class OpenAICodexModel(BaseChatModel):
         request_id = str(uuid4())
 
         async with self._request_lock:
-            try:
-                ws = await self._ensure_connection()
-            except Exception as error:
-                self._log_transport_failure(request_id, "connect", error)
-                raise
-            request = self._build_request_for_connection(messages, kwargs)
-            payload = json.dumps(request, ensure_ascii=False)
-            _write_protocol_log("request", request)
-            try:
-                await ws.send(payload)
-            except asyncio.CancelledError:
-                await self._invalidate_connection()
-                raise
-            except Exception as error:
-                self._log_transport_failure(request_id, "send", error)
-                await self._invalidate_connection()
+            # Retry a failed send once. Rebuild after reconnecting because an
+            # unstored previous response belongs to the old connection.
+            for attempt in range(2):
                 try:
                     ws = await self._ensure_connection()
-                except Exception as reconnect_error:
-                    self._log_transport_failure(request_id, "connect", reconnect_error)
+                except Exception as error:
+                    self._log_transport_failure(request_id, "connect", error)
                     raise
                 request = self._build_request_for_connection(messages, kwargs)
                 payload = json.dumps(request, ensure_ascii=False)
@@ -235,28 +191,27 @@ class OpenAICodexModel(BaseChatModel):
                 except asyncio.CancelledError:
                     await self._invalidate_connection()
                     raise
-                except Exception as retry_error:
-                    self._log_transport_failure(request_id, "send", retry_error)
+                except Exception as error:
+                    self._log_transport_failure(request_id, "send", error)
                     await self._invalidate_connection()
-                    raise
+                    if attempt == 1:
+                        raise
+                else:
+                    break
 
             try:
                 message = await self._read_response(ws)
-            except RuntimeError:
-                await self._invalidate_connection()
-                raise
             except asyncio.CancelledError:
                 await self._invalidate_connection()
                 raise
             except Exception as error:
-                self._log_transport_failure(request_id, "receive", error)
+                if not isinstance(error, RuntimeError):
+                    self._log_transport_failure(request_id, "receive", error)
                 await self._invalidate_connection()
                 raise
 
             self._record_usage(message)
-            response_id = _message_response_id(message)
-            if response_id is not None:
-                self._connection_response_id = response_id
+            self._connection_response_id = _message_response_id(message)
             return message
 
     def _build_request_for_connection(
@@ -337,21 +292,17 @@ class OpenAICodexModel(BaseChatModel):
             if close_frame is not None:
                 close_code = close_frame.code
                 close_reason = close_frame.reason or None
-        try:
-            _write_protocol_log(
-                "transport_error",
-                {
-                    "request_id": request_id,
-                    "phase": phase,
-                    "connection_age_seconds": self._connection_age_seconds(),
-                    "error_type": type(error).__name__,
-                    "close_code": close_code,
-                    "close_reason": close_reason,
-                },
-            )
-        except OSError:
-            # Audit logging must not replace the transport exception being recovered.
-            pass
+        _write_protocol_log(
+            "transport_error",
+            {
+                "request_id": request_id,
+                "phase": phase,
+                "connection_age_seconds": self._connection_age_seconds(),
+                "error_type": type(error).__name__,
+                "close_code": close_code,
+                "close_reason": close_reason,
+            },
+        )
 
     async def _invalidate_connection(self) -> None:
         ws = self._ws
@@ -460,7 +411,7 @@ class OpenAICodexModel(BaseChatModel):
         messages: list[BaseMessage],
         *,
         tools: Sequence[Mapping[str, Any]] | None = None,
-        tool_choice: builtins.dict[str, Any] | str | bool | None = None,
+        tool_choice: dict[str, Any] | str | bool | None = None,
         parallel_tool_calls: bool = True,
         previous_response_id: str | None = None,
         store: bool | None = None,
@@ -510,7 +461,8 @@ class OpenAICodexModel(BaseChatModel):
                         {
                             "type": "function_call_output",
                             "call_id": str(message.tool_call_id or ""),
-                            "output": self._message_text(message),
+                            "output": _to_responses_input_content(message) if isinstance(message.content, list)
+                            else self._message_text(message),
                         }
                     )
                 continue
@@ -539,11 +491,10 @@ class OpenAICodexModel(BaseChatModel):
                     else:
                         input_messages.append(_to_responses_function_call(tool_call))
                 continue
-            role = "assistant" if isinstance(message, AIMessage) else "user"
             input_messages.append(
                 {
                     "type": "message",
-                    "role": role,
+                    "role": "user",
                     "content": _to_responses_input_content(message),
                 }
             )
@@ -579,13 +530,12 @@ class OpenAICodexModel(BaseChatModel):
         return json.dumps(content, ensure_ascii=False)
 
     async def _read_response(self, ws: Any) -> AIMessage:
-        chunks: list[str] = []
+        text_parts: dict[tuple[int, int], list[str]] = {}
         output_items: dict[str, dict[str, Any]] = {}
-        output_item_order: list[str] = []
-        done_text = ""
-        deadline = asyncio.get_running_loop().time() + self.wait_seconds
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.wait_seconds
         while True:
-            remaining = deadline - asyncio.get_running_loop().time()
+            remaining = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError("No response.completed event received from Codex WebSocket.")
             message = await asyncio.wait_for(ws.recv(), timeout=remaining)
@@ -593,49 +543,46 @@ class OpenAICodexModel(BaseChatModel):
                 continue
             data = json.loads(message)
             event_type = data.get("type")
-            if event_type == 'response.completed':
-                _write_protocol_log("response", data)
-
             if event_type in {"response.output_text.delta", "response.text.delta"}:
-                chunks.append(str(data.get("delta", "")))
+                text_key = (data.get("output_index", 0), data.get("content_index", 0))
+                text_parts.setdefault(text_key, []).append(str(data.get("delta", "")))
             elif event_type in {"response.output_text.done", "response.text.done"}:
                 if isinstance(data.get("text"), str):
-                    done_text = data["text"]
+                    text_key = (data.get("output_index", 0), data.get("content_index", 0))
+                    text_parts[text_key] = [data["text"]]
             elif event_type in {"response.output_item.added", "response.output_item.done"}:
                 item = data.get("item")
                 if isinstance(item, dict):
-                    key = _response_item_key(item, len(output_item_order))
-                    if key not in output_items:
-                        output_item_order.append(key)
-                    output_items[key] = item
+                    item_key = (
+                        f"index:{data['output_index']}" if "output_index" in data
+                        else _response_item_key(item, len(output_items))
+                    )
+                    output_items[item_key] = item
             elif event_type in {"response.completed", "response.done"}:
-                fallback = done_text or "".join(chunks)
-                usage = _response_usage(data)
-                response_id = _response_id(data)
-                response_store = _response_store(data)
-                completed = self._completed_message(data, fallback_text="")
-                if completed.content or completed.tool_calls:
-                    return completed
-                items = [output_items[key] for key in output_item_order]
-                return _message_from_response_items(
-                    items,
-                    fallback_text=fallback,
-                    usage=usage,
-                    response_id=response_id,
-                    response_store=response_store,
+                _write_protocol_log("response", data)
+                return self._completed_message(
+                    data,
+                    fallback_text="".join(
+                        chunk for key in sorted(text_parts) for chunk in text_parts[key]
+                    ),
+                    fallback_items=list(output_items.values()),
                 )
             elif event_type in {"response.failed", "response.incomplete"}:
                 raise RuntimeError(f"Codex WebSocket response failed: {data}")
             elif event_type == "error":
                 raise RuntimeError(f"Codex WebSocket error: {data}")
 
-    def _completed_message(self, data: dict[str, Any], fallback_text: str = "") -> AIMessage:
+    def _completed_message(
+        self,
+        data: dict[str, Any],
+        fallback_text: str = "",
+        *,
+        fallback_items: Sequence[Mapping[str, Any]] = (),
+    ) -> AIMessage:
         response = data.get("response")
-        if not isinstance(response, dict):
-            return AIMessage(content=fallback_text)
-        output = response.get("output")
-        if not isinstance(output, list):
-            output = []
+        output = response.get("output") if isinstance(response, Mapping) else None
+        if not isinstance(output, list) or not output:
+            output = fallback_items
         return _message_from_response_items(
             output,
             fallback_text=fallback_text,
@@ -643,9 +590,6 @@ class OpenAICodexModel(BaseChatModel):
             response_id=_response_id(data),
             response_store=_response_store(data),
         )
-
-    def _completed_text(self, data: dict[str, Any]) -> str:
-        return str(self._completed_message(data).content or "")
 
     def _record_usage(self, message: AIMessage) -> None:
         usage = message.response_metadata.get("usage") if isinstance(message.response_metadata, dict) else None
@@ -731,10 +675,14 @@ def _to_responses_tool(tool: Mapping[str, Any]) -> dict[str, Any]:
 
 def _write_protocol_log(kind: str, data: Mapping[str, Any]) -> None:
     log_dir = Path("workspace/logs/codex_responses")
-    log_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).isoformat()
-    with (log_dir / f"codex_{timestamp}_{kind}.json").open("w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False)
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).isoformat()
+        with (log_dir / f"codex_{timestamp}_{kind}.json").open("w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False)
+    except OSError:
+        # A diagnostic write failure must not trigger a paid model-call retry.
+        logger.warning("Unable to write Codex protocol log", exc_info=True)
 
 
 def _response_item_key(item: Mapping[str, Any], fallback_index: int) -> str:
@@ -953,7 +901,7 @@ def _add_usage_total(totals: dict[str, int], key: str, value: Any) -> None:
         totals[key] = totals.get(key, 0) + amount
 
 
-def _normalize_tool_choice(tool_choice: builtins.dict[str, Any] | str | bool) -> builtins.dict[str, Any] | str:
+def _normalize_tool_choice(tool_choice: dict[str, Any] | str | bool) -> dict[str, Any] | str:
     if isinstance(tool_choice, bool):
         return "required" if tool_choice else "none"
     if isinstance(tool_choice, str):
