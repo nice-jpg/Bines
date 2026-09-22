@@ -31,9 +31,9 @@ class _PendingInterrupt:
 class AgentRuntime:
     """Reusable agent runtime that separates initialization from interaction."""
 
-    def __init__(self, *, model, tools, system_prompt: str, middleware=()) -> None:
+    def __init__(self, *, name: str, model, tools, system_prompt: str, middleware=()) -> None:
         from ._stability import build_graph
-        self.agent, self._trace = build_graph(model, tools, system_prompt, middleware)
+        self.agent, self._trace = build_graph(name, model, tools, system_prompt, middleware)
         self.sessions: dict[str, list[Any]] = {}
         self._stateless_counter = itertools.count(1)
         self._pending_interrupts: dict[str, _PendingInterrupt] = {}

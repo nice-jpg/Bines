@@ -4,7 +4,7 @@ Framework execution infrastructure with no application-specific task semantics.
 
 ## Public API
 
-- `create_runtime(model, tools, system_prompt, middleware=())` returns an `AgentRuntime`.
+- `create_runtime(name, model, tools, system_prompt, middleware=())` returns an `AgentRuntime` (keyword-only parameters).
 - `AgentRuntime.run_turn(messages, session_id=...)` submits new input to a checkpointed graph.
 - `AgentRuntime.resume_turn(session_id=..., user_input=...)` resumes the same thread.
 - `AgentPersistenceLayer(runtime)` continues until an `AgentResponse` is accepted or human intervention is required.
@@ -27,8 +27,9 @@ The runtime constructs tracing, model retry, tool-error handling and the
 in-memory checkpointer. No trace object, retry callback or error handler is
 accepted by the public factory. Business middleware remains caller-owned.
 
-Tracing reads `NTRACE_ENABLED`, `NTRACE_AGENT_NAME` (default: `agent`) and
-`NTRACE_SERVER_URL`. The telemetry dependency is nTrace; execution depends on
+The required `name` parameter names both the agent graph and its trace.
+Tracing reads only `NTRACE_ENABLED` and `NTRACE_SERVER_URL`; agent names do not
+come from environment variables. The telemetry dependency is nTrace; execution depends on
 LangChain, LangGraph and websockets, not application models or device modules.
 
 The model retry policy allows five retries for recognized transient transport
