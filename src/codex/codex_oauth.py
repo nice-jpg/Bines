@@ -120,6 +120,32 @@ class OpenAICodexModel(BaseChatModel):
         message = await asyncio.wrap_future(self._submit_request(messages, **kwargs))
         return ChatResult(generations=[ChatGeneration(message=message)])
 
+    
+    def bind_tools(
+        self,
+        tools: Sequence[builtins.dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: builtins.dict[str, Any] | str | bool | None = None,
+        strict: bool | None = None,
+        parallel_tool_calls: bool | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        """Bind LangChain tools using OpenAI-compatible tool schemas.
+
+        LangChain agents call this method to attach tool definitions to a chat
+        model. The Codex WebSocket endpoint uses the Responses API shape, so
+        tools are converted once here and later injected into ``response.create``.
+        """
+
+        formatted_tools = [_to_responses_tool(convert_to_openai_tool(tool, strict=strict)) for tool in tools]
+        bind_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        bind_kwargs["tools"] = formatted_tools
+        if tool_choice is not None:
+            bind_kwargs["tool_choice"] = _normalize_tool_choice(tool_choice)
+        if parallel_tool_calls is not None:
+            bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
+        return self.bind(**bind_kwargs)
+
 
     def _submit_request(
         self,
