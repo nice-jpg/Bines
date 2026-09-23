@@ -11,6 +11,7 @@ import langgraph.errors
 import langgraph.types
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import nTrace
 import agent as _agent_dependency_preload  # noqa: E402,F401
 import collector as _collector_dependency_preload  # noqa: E402,F401
 
@@ -48,7 +49,7 @@ class AgentRuntimeTests(unittest.TestCase):
         agent = importlib.import_module("agent")
         agent.collect_tools = lambda **_kwargs: []
 
-        runtime = agent.AgentRuntime(model="model", tools=[], name="runtime")
+        runtime = agent.build_agent(model="model", tools=[])
         first = runtime.run_turn([{"role": "user", "content": "hello"}])
         second = runtime.run_turn([{"role": "user", "content": "again"}])
 
@@ -175,12 +176,12 @@ class AgentRuntimeTests(unittest.TestCase):
         agent = importlib.import_module("agent")
         agent.collect_tools = lambda **_kwargs: []
 
-        runtime = agent.AgentRuntime(model="model", tools=[], name="runtime")
+        runtime = agent.build_agent(model="model", tools=[])
         runtime.run_turn([{"role": "user", "content": "first"}], session_id="s1")
         runtime.run_turn([{"role": "user", "content": "second"}], session_id="s1")
         runtime.run_turn([{"role": "user", "content": "other"}], session_id="s2")
 
-        self.assertEqual([message["content"] for message in captured["invocations"][1]], ["first", "agent output", "second"])
+        self.assertEqual([message["content"] for message in captured["invocations"][1]], ["second"])
         self.assertEqual([message["content"] for message in captured["invocations"][2]], ["other"])
 
     def test_app_probe_context_only_uses_current_turn_not_session_history(self) -> None:
@@ -191,7 +192,7 @@ class AgentRuntimeTests(unittest.TestCase):
         agent.collect_tools = lambda **_kwargs: []
         agent.build_app_probe_messages = lambda: [{"role": "user", "content": "<environment_context>probe</environment_context>"}]
 
-        runtime = agent.AgentRuntime(model="model", tools=[], name="runtime")
+        runtime = agent.build_agent(model="model", tools=[])
         runtime.run_turn([{"role": "user", "content": "执行应用探测任务"}], session_id="s1")
         runtime.run_turn([{"role": "user", "content": "普通消息"}], session_id="s1")
 
@@ -215,7 +216,7 @@ class AgentRuntimeTests(unittest.TestCase):
         agent = importlib.import_module("agent")
         agent.collect_tools = lambda **_kwargs: []
 
-        runtime = agent.AgentRuntime(model="model", tools=[], name="runtime")
+        runtime = agent.build_agent(model="model", tools=[])
         interrupted = runtime.run_turn([{"role": "user", "content": "captcha"}], session_id="s1")
         resumed = runtime.resume_turn(session_id="s1", user_input="验证码已完成")
 

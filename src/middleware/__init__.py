@@ -43,7 +43,6 @@ from .probe_state import (
     PROBE_VISITED_LEAF_PATHS,
     initial_probe_state,
 )
-from .tool_error import ToolErrorMiddleware, make_tool_error_message
 from .tool_execution_policy import ToolExecutionPolicyMiddleware
 
 __all__ = [
@@ -82,11 +81,9 @@ __all__ = [
     "PROBE_STATUS",
     "PROBE_TARGET_LEAF_PATHS",
     "PROBE_VISITED_LEAF_PATHS",
-    "ToolErrorMiddleware",
     "ToolExecutionPolicyMiddleware",
     "compact_device_messages",
     "create_captcha_human_in_the_loop_middleware",
     "initial_page_context_state",
     "initial_probe_state",
-    "make_tool_error_message",
 ]

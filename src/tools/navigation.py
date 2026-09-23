@@ -56,15 +56,17 @@ def create_navigation_tools(
     return [
         StructuredTool.from_function(
             func=navigation.tap_in_page,
+            response_format="content_and_artifact",
             name="tap_in_page",
             description=(
                 "Tap a visible control that stays on the current business page, such as a filter, "
                 "sort option, tab, expand control, or popup close button. Never use it to enter or "
-                "leave a business page. Returns current UIAutomator XML."
+                "leave a business page. Returns current abstract page view."
             ),
         ),
         StructuredTool.from_function(
             func=navigation.navigate_to,
+            response_format="content_and_artifact",
             name="navigate_to",
             description=(
                 "Tap a visible target that enters another business page. Provide x, y, and next_path. "
@@ -77,6 +79,7 @@ def create_navigation_tools(
         ),
         StructuredTool.from_function(
             func=navigation.navigate_back,
+            response_format="content_and_artifact",
             name="navigate_back",
             description=(
                 "Return to a declared prior business page. Provide its complete canonical next_path, "

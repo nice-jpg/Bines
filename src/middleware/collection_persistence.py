@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 import json
+import logging
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
@@ -11,9 +12,11 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
+from src.page_view import ReadOnlyPageView
 
 
 _DEFAULT_WORKBOOK_SINK = object()
+logger = logging.getLogger(__name__)
 
 try:
     from src.middleware.page_context import (
@@ -54,11 +57,11 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
 
 
 ITEM_APPEND_TOOLS = {"swipe_up", "swipe_up_long", "swipe_down"}
-COLLECTION_XML_TOOL_NAMES = {"tap_in_page", "swipe_up", "swipe_up_long", "swipe_down", "uiautomate"}
+COLLECTION_XML_TOOL_NAMES = {"tap_in_page", "swipe_up", "swipe_up_long", "swipe_down", "page_view"}
 
 
 class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
-    """Run page-local scripts and persist collection output after XML tools."""
+    """Silently collect trained page views; expose progress only through is_done."""
 
     state_schema = ProbeState
 
@@ -164,7 +167,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         handler: Callable[[Any], ToolMessage | Any],
     ) -> ToolMessage | Any:
         result = handler(request)
-        return self._maybe_wrap_tool_result(request, result)
+        return self._process_tool_result(request, result)
 
     async def awrap_tool_call(
         self,
@@ -172,9 +175,9 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         handler: Callable[[Any], Awaitable[ToolMessage | Any]],
     ) -> ToolMessage | Any:
         result = await handler(request)
-        return self._maybe_wrap_tool_result(request, result)
+        return self._process_tool_result(request, result)
 
-    def _maybe_wrap_tool_result(self, request: ToolCallRequest, result: ToolMessage | Any) -> ToolMessage | Any:
+    def _process_tool_result(self, request: ToolCallRequest, result: ToolMessage | Any) -> ToolMessage | Any:
         invocation = ToolInvocation.from_request(request)
         tool_name = invocation.name
         if tool_name == "prepare_collector":
@@ -194,24 +197,21 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             return result
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         visit_id = str(state.get(PAGE_VISIT_ID) or "")
-        if not current_path:
+        if not current_path or not self.training_registry.is_trained(visit_id, current_path):
             return result
 
-        collection = self.mechanism.run_page_script(current_path, result.content)
+        snapshot = result.artifact.get("page_snapshot") if isinstance(result.artifact, Mapping) else None
+        if not snapshot:
+            return result
+        try:
+            collection = self.mechanism.run_page_script(current_path, ReadOnlyPageView(snapshot))
+        except Exception as exc:
+            collection = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
+        if collection.get("ok") is not True:
+            return self._collection_failed(result, current_path, visit_id, collection)
         persistence = self._persist(tool_name, current_path, visit_id, collection)
-        wrapped = _replace_tool_message_content(
-            result,
-            json.dumps(
-                {
-                    "xml": result.content,
-                    "page_path": current_path,
-                    "collection": collection,
-                    "persistence": persistence,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            ),
-        )
+        if persistence.get("ok") is not True:
+            return self._collection_failed(result, current_path, visit_id, persistence)
         progress_update = self._progress_update(
             tool_name,
             current_path,
@@ -219,7 +219,22 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             persistence,
             state,
         )
-        return Command(update={"messages": [wrapped], **progress_update}) if progress_update else wrapped
+        return Command(update={"messages": [result], **progress_update}) if progress_update else result
+
+    def _collection_failed(
+        self,
+        result: ToolMessage,
+        current_path: str,
+        visit_id: str,
+        failure: Mapping[str, Any],
+    ) -> Command:
+        logger.warning("Silent collection failed for %s (%s): %s", current_path, visit_id, failure)
+        # A failed observation breaks the evidence for consecutive empty swipes.
+        return Command(update={
+            "messages": [result],
+            COLLECTION_CONSECUTIVE_EMPTY_SWIPES: 0,
+            MERCHANT_COLLECTION_DONE: False,
+        })
 
     def _progress_update(
         self,
@@ -299,6 +314,8 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         state = ToolInvocation.from_request(request).state
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         visit_id = str(state.get(PAGE_VISIT_ID) or "")
+        if not current_path or not self.training_registry.is_trained(visit_id, current_path):
+            return result
         if self.workbook_sink is None:
             persistence = {"ok": True, "skipped": True, "reason": "persistence_disabled"}
         elif self.mechanism.page_policy(current_path).role != "merchant":
@@ -320,17 +337,8 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
                 )
             except Exception as exc:  # noqa: BLE001 - persistence must not fail the collector tool.
                 persistence = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
-        try:
-            payload = json.loads(result.content) if isinstance(result.content, str) else {}
-        except json.JSONDecodeError:
-            payload = {"collector_result": result.content}
-        if not isinstance(payload, dict):
-            payload = {"collector_result": payload}
-        payload["persistence"] = persistence
-        wrapped = _replace_tool_message_content(
-            result,
-            json.dumps(payload, ensure_ascii=False, sort_keys=True),
-        )
+        if persistence.get("ok") is not True:
+            return self._collection_failed(result, current_path, visit_id, persistence)
         record = self.training_registry.record_for(visit_id)
         if (
             record is None
@@ -339,7 +347,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             or not visit_id
             or not self.training_registry.is_trained(visit_id, current_path)
         ):
-            return wrapped
+            return result
         summaries = _collection_summaries(state)
         previous_summary = summaries.get(visit_id, {})
         summaries[visit_id] = {
@@ -350,21 +358,10 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         }
         return Command(
             update={
-                "messages": [wrapped],
+                "messages": [result],
                 COLLECTION_VISIT_SUMMARIES: summaries,
             }
         )
-
-
-def _replace_tool_message_content(message: ToolMessage, content: str) -> ToolMessage:
-    return ToolMessage(
-        content=content,
-        tool_call_id=message.tool_call_id,
-        name=message.name,
-        status=message.status,
-        additional_kwargs=dict(message.additional_kwargs),
-        response_metadata=dict(message.response_metadata),
-    )
 
 
 def _merge_merchant_profile(

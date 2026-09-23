@@ -32,6 +32,12 @@ class RecordingRunner:
 
 
 class DeviceActionTests(unittest.TestCase):
+    def test_pull_file_uses_adb_transfer_not_text_stdout(self):
+        runner = RecordingRunner()
+        device = AndroidDevice(serial="test", runner=runner)
+        assert device.pull_file("/sdcard/screen.png", "/tmp/screen.png") == "/tmp/screen.png"
+        assert runner.calls == [["adb", "-s", "test", "pull", "/sdcard/screen.png", "/tmp/screen.png"]]
+
     def test_parse_getevent_line_supports_symbolic_pathless_and_signed_hex(self) -> None:
         self.assertEqual(parse_getevent_line("[ 1.000000] EV_KEY BTN_TOUCH DOWN").value, 1)
         self.assertEqual(parse_getevent_line("[ 1.000000] EV_KEY BTN_TOUCH UP").value, 0)

@@ -10,6 +10,7 @@ from threading import Lock
 from typing import Any, Callable, Mapping, Sequence
 
 from langchain_core.tools import StructuredTool
+from src.agent_runtime import create_runtime
 
 try:
     from src.middleware.tool_io import tool_definition_name
@@ -59,13 +60,11 @@ class SubagentManager:
         parent_context_provider: Callable[[], Sequence[Any]] | None = None,
         tool_factory: Callable[[], Sequence[Any]] | None = None,
         system_prompt: str = "",
-        create_agent_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.model = model
         self.parent_context_provider = parent_context_provider or (lambda: [])
         self.tool_factory = tool_factory or (lambda: [])
         self.system_prompt = system_prompt
-        self.create_agent_factory = create_agent_factory
         self._records: dict[str, SubagentRecord] = {}
         self._counter = itertools.count(1)
         self._lock = Lock()
@@ -212,15 +211,11 @@ class SubagentManager:
         return [*copy.deepcopy(record.messages), task_message]
 
     def _build_agent(self, record: SubagentRecord) -> Any:
-        create_agent = self.create_agent_factory
-        if create_agent is None:
-            from langchain.agents import create_agent as create_agent  # noqa: PLC0415
-
-        return create_agent(
+        return create_runtime(
+            name=record.name,
             model=self.model,
             tools=list(record.tools),
             system_prompt=_system_prompt_for_subagent(self.system_prompt, record),
-            name=record.name,
         )
 
 
@@ -253,7 +248,7 @@ def _build_child_message(instructions: str, task: str, *, fork: bool) -> str:
         "Rules:\n"
         "1. Do not create, spawn, call, or delegate to any other subagent.\n"
         "2. Use query_manual for the current canonical page path before page-specific operations.\n"
-        "3. Use uiautomate first; use screenshot only when XML is insufficient or misleading.\n"
+        "3. Use page_view first; use screenshot only when XML is insufficient or misleading.\n"
         "4. Do not rely on merchant descriptions or page summaries from the main agent; inspect the current page yourself.\n"
         "5. Stay strictly within the assigned task and return one concise factual result.\n"
         "6. Device operations are serial. Finish and report before the main agent continues.\n\n"

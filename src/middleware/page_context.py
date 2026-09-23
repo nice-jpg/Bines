@@ -20,13 +20,16 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage, ToolMessage
 from typing_extensions import NotRequired
+from Reco.model_interface import TOOLS as PAGE_TOOLS
+
+PAGE_TOOL_NAMES = frozenset(tool["name"] for tool in PAGE_TOOLS)
 
 try:
     from src.middleware.probe_state import reset_collection_state
     from src.middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
-        tool_messages,
+        page_xml,
         tool_succeeded,
         with_state_update,
     )
@@ -36,7 +39,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
-        tool_messages,
+        page_xml,
         tool_succeeded,
         with_state_update,
     )
@@ -80,7 +83,7 @@ DEVICE_ACTION_TOOLS = frozenset(
         "swipe_up",
         "swipe_up_long",
         "swipe_down",
-        "uiautomate",
+        "page_view",
         "screenshot",
     }
 )
@@ -152,9 +155,9 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         tool_name = invocation.name
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
 
-        if state.get(PAGE_CONTEXT_OVERLAY, False) and tool_name in DEVICE_ACTION_TOOLS - {"tap_in_page", "close_package"}:
+        if state.get(PAGE_CONTEXT_OVERLAY, False) and tool_name in DEVICE_ACTION_TOOLS - {"tap_in_page", "close_package", "page_view"}:
             return _context_error(request, "overlay_requires_close", "Close the overlay with tap_in_page first.")
-        if not current_path and tool_name in DEVICE_ACTION_TOOLS - {"run_package", "close_package"}:
+        if not current_path and tool_name in (DEVICE_ACTION_TOOLS | PAGE_TOOL_NAMES) - {"run_package", "close_package"}:
             return _context_error(request, "application_not_open", "Call run_package before page operations.")
 
         args = invocation.args
@@ -258,7 +261,7 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         elif tool_name in {"swipe_up", "swipe_up_long", "swipe_down"}:
             if self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
                 update = {PAGE_COLLECTION_STARTED: True}
-        elif tool_name == "uiautomate" and is_compact_popup_result(result):
+        elif tool_name == "page_view" and is_compact_popup_result(result):
             update = {PAGE_CONTEXT_OVERLAY: True}
 
         return with_state_update(typed_result, update) if update else result
@@ -308,7 +311,7 @@ def is_compact_popup_result(result: Any) -> bool:
     if not xml:
         return False
     bounds = [tuple(map(int, match)) for match in BOUNDS_RE.findall(xml)]
-    if len(bounds) < 2 or len(bounds) > 40 or ' k="1"' not in xml:
+    if len(bounds) < 2 or len(bounds) > 40 or not (' k="1"' in xml or 'clickable="true"' in xml):
         return False
     left = min(item[0] for item in bounds)
     top = min(item[1] for item in bounds)
@@ -368,19 +371,7 @@ def _context_error(request: Any, error_type: str, detail: str) -> ToolMessage:
 
 
 def _xml_from_result(result: Any) -> str:
-    messages = tool_messages(require_tool_result(result))
-    if not messages:
-        return ""
-    content = messages[-1].content
-    if not isinstance(content, str):
-        return ""
-    if content.lstrip().startswith("{"):
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            return ""
-        return str(payload.get("xml") or "") if isinstance(payload, Mapping) else ""
-    return content if "<h" in content or "<hierarchy" in content else ""
+    return page_xml(require_tool_result(result))
 
 
 __all__ = [

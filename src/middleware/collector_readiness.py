@@ -11,6 +11,7 @@ from langchain.agents.middleware.types import (
     ToolCallRequest,
 )
 from langchain_core.messages import ToolMessage
+from Reco.model_interface import TOOLS as PAGE_TOOLS
 
 try:
     from src.middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
@@ -67,6 +68,7 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         allowed = set(UNTRAINED_ALLOWED_TOOLS)
         if state.get(PAGE_CONTEXT_OVERLAY, False):
             allowed.add("tap_in_page")
+            allowed.update(tool["name"] for tool in PAGE_TOOLS)
         if tool_name in allowed:
             return None
         return ToolMessage(

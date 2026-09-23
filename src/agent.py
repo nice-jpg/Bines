@@ -6,33 +6,15 @@ LangChain's ``create_agent`` owns that loop through its graph runtime.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import itertools
-from pathlib import Path
-import sys
 from typing import Any, Iterable, Mapping, Sequence
 
-try:
-    from nTrace import NTrace, createNTraceEndMiddleware, createNTraceStartMiddleware
-except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from nTrace import NTrace, createNTraceEndMiddleware, createNTraceStartMiddleware
-
-from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 
 from langchain.agents.middleware.types import AgentMiddleware
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.types import Command, Interrupt
-from langgraph.errors import GraphRecursionError
 
 try:
-    from src.codex.model_retry import (
-        create_codex_model_retry_middleware,
-        is_retryable_model_transport_error,
-    )
     from src.middleware import (
         CollectionPersistenceMiddleware,
         ConductorContextMiddleware,
@@ -55,10 +37,6 @@ try:
     from src.prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT
     from src.tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    from codex.model_retry import (
-        create_codex_model_retry_middleware,
-        is_retryable_model_transport_error,
-    )
     from middleware import (
         CollectionPersistenceMiddleware,
         ConductorContextMiddleware,
@@ -78,334 +56,40 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from prompts import COLLECTOR_PROMPT, CONDUCTOR_PROMPT
     from tasks import build_app_probe_messages, messages_request_app_probe, probe_task_spec
 
-@dataclass(frozen=True)
-class AgentRunResult:
-    """Normalized result returned by the LangChain agent harness."""
 
-    output: str
-    state: Mapping[str, Any]
-    stopped_by: str
-    interrupted: bool = False
-    interrupts: list[Any] | None = None
-    summary: list[Any] | None = None
-    structured_response: Mapping[str, Any] | None = None
+from src.agent_runtime import AgentRunResult, AgentRuntime, create_runtime
+from src.agent_runtime import AgentPersistenceLayer
 
 
-@dataclass(frozen=True)
-class _PendingInterrupt:
-    thread_id: str
-    kind: str
+class _ConductorRuntime(AgentRuntime):
+    """Translate probe requests without coupling the generic runtime to devices."""
 
-
-class AgentRuntime:
-    """Reusable agent runtime that separates initialization from interaction."""
-
-    def __init__(
-        self,
-        *,
-        model: str | BaseChatModel,
-        tools: Sequence[Any] | None = None,
-        name: str | None = None,
-        operation_notice_service: OperationNoticeService | None = None,
-    ) -> None:
-        self.model = model
-        self.tools = list(tools or [])
-        self.name = name
-        self.agent = build_agent(
-            model=model,
-            tools=self.tools,
-            name=name,
-            operation_notice_service=operation_notice_service,
-        )
-        self.sessions: dict[str, list[Any]] = {}
-        self._stateless_counter = itertools.count(1)
-        self._pending_interrupts: dict[str, _PendingInterrupt] = {}
-
-    def run_turn(
-        self,
-        messages: Iterable[BaseMessage | Mapping[str, Any]],
-        *,
-        session_id: str | None = None,
-        tools: Sequence[Any] | None = None,
-        max_iterations: int = 1000000,
-    ) -> AgentRunResult:
-        """Run one interaction turn without rebuilding the model or agent."""
-
-        if max_iterations < 1:
-            raise ValueError("max_iterations must be >= 1")
-        if tools:
-            raise ValueError("AgentRuntime tools are fixed at initialization to avoid rebuilding the agent.")
-
-        turn_messages = list(messages)
-        probe_requested = messages_request_app_probe(turn_messages)
-        prepared_messages = self._prepare_messages(turn_messages, session_id=session_id)
-        thread_id = self._thread_id_for_turn(session_id)
-        _trace_for(self.agent).update(
-            session_id=thread_id,
-            user_input_boundary=True,
-        )
-        input_state: dict[str, Any] = {"messages": prepared_messages}
-        if probe_requested:
-            input_state.update(initial_page_context_state())
-            input_state.update(initial_probe_state(probe_task_spec().target_leaf_paths))
-        config = _invoke_config(max_iterations, thread_id)
-        try:
-            state = self.agent.invoke(input_state, config=config)
-        except GraphRecursionError:
-            return self._checkpoint_interrupted(
-                session_id=session_id,
-                thread_id=thread_id,
-                config=config,
-                kind="recursion",
-            )
-        except Exception as error:
-            if is_retryable_model_transport_error(error):
-                return self._model_transport_interrupted(
-                    error,
-                    session_id=session_id,
-                    thread_id=thread_id,
-                    config=config,
-                )
-            raise
-        return self._normalize_result(
-            state,
-            prepared_messages=prepared_messages,
-            session_id=session_id,
-            thread_id=thread_id,
-        )
-
-    def resume_turn(
-        self,
-        *,
-        session_id: str,
-        user_input: Any | None = None,
-        max_iterations: int = 8,
-    ) -> AgentRunResult:
-        """Resume a previously interrupted LangGraph thread."""
-
-        if max_iterations < 1:
-            raise ValueError("max_iterations must be >= 1")
-        pending = self._pending_interrupts.get(session_id)
-        if not pending:
-            raise ValueError(f"No interrupted agent workflow is pending for session: {session_id}")
-
-        if pending.kind == "model_transport":
-            resume_command: Command[Any] | None = None
-        elif pending.kind == "recursion":
-            resume_command = None
-        else:
-            resume_message = "Human captcha authentication completed." if user_input is None else str(user_input)
-            resume_payload = (
-                {"action": "continue", "message": resume_message}
-                if pending.kind == "liveness"
-                else {"decisions": [{"type": "respond", "message": resume_message}]}
-            )
-            resume_command = Command(resume=resume_payload)
-        config = _invoke_config(max_iterations, pending.thread_id)
-        self.agent._ntrace.update(session_id=session_id, resume=True)
-        _trace_for(self.agent).update(session_id=session_id, resume=True)
-        try:
-            state = self.agent.invoke(resume_command, config=config)
-        except GraphRecursionError:
-            return self._checkpoint_interrupted(
-                session_id=session_id,
-                thread_id=pending.thread_id,
-                config=config,
-                kind="recursion",
-            )
-        except Exception as error:
-            if is_retryable_model_transport_error(error):
-                return self._model_transport_interrupted(
-                    error,
-                    session_id=session_id,
-                    thread_id=pending.thread_id,
-                    config=config,
-                )
-            raise
-        return self._normalize_result(
-            state,
-            prepared_messages=self.sessions.get(session_id, []),
-            session_id=session_id,
-            thread_id=pending.thread_id,
-        )
-
-    def continue_turn(
-        self,
-        *,
-        session_id: str,
-        reason: str,
-        max_iterations: int = 1000,
-    ) -> AgentRunResult:
-        """Continue a completed graph call on the same checkpoint without new user input."""
-
-        if max_iterations < 1:
-            raise ValueError("max_iterations must be >= 1")
-        if self.has_pending_interrupt(session_id):
-            return self.resume_turn(
-                session_id=session_id,
-                max_iterations=max_iterations,
-            )
-        instruction = {
-            "role": "system",
-            "content": (
-                "<conductor_persistence_continuation>\n"
-                f"reason: {reason}\n"
-                "The task has not produced an accepted completion response. Preserve all existing "
-                "context and continue from the current state. If work remains, immediately select "
-                "the next valid tool. If work is complete, return the required structured response.\n"
-                "</conductor_persistence_continuation>"
-            ),
-            "additional_kwargs": {
-                "bines_context": {
-                    "kind": "conductor_persistence_continuation",
-                    "reason": reason,
-                }
-            },
-        }
-        thread_id = session_id
-        config = _invoke_config(max_iterations, thread_id)
-        _trace_for(self.agent).update(session_id=session_id, persistent_continue=True)
-        try:
-            state = self.agent.invoke({"messages": [instruction]}, config=config)
-        except GraphRecursionError:
-            return self._checkpoint_interrupted(
-                session_id=session_id,
-                thread_id=thread_id,
-                config=config,
-                kind="recursion",
-            )
-        except Exception as error:
-            if is_retryable_model_transport_error(error):
-                return self._model_transport_interrupted(
-                    error,
-                    session_id=session_id,
-                    thread_id=thread_id,
-                    config=config,
-                )
-            raise
-        return self._normalize_result(
-            state,
-            prepared_messages=self.sessions.get(session_id, []),
-            session_id=session_id,
-            thread_id=thread_id,
-        )
-
-    def _prepare_messages(self, turn_messages: list[Any], *, session_id: str | None) -> list[Any]:
-        messages: list[Any] = []
-        if session_id:
-            messages.extend(self.sessions.get(session_id, []))
+    def _prepare_messages(self, turn_messages, *, session_id):
         if messages_request_app_probe(turn_messages):
-            messages.extend(build_app_probe_messages())
-        messages.extend(turn_messages)
-        return messages
+            return [*build_app_probe_messages(), *turn_messages]
+        return turn_messages
 
-    def has_pending_interrupt(self, session_id: str) -> bool:
-        return session_id in self._pending_interrupts
+    def _input_state(self, messages):
+        state = {"messages": messages}
+        if messages_request_app_probe(messages):
+            state.update(initial_page_context_state())
+            state.update(initial_probe_state(probe_task_spec().target_leaf_paths))
+        return state
 
-    def pending_interrupt_kind(self, session_id: str) -> str | None:
-        pending = self._pending_interrupts.get(session_id)
-        return pending.kind if pending is not None else None
+    def _completion_allowed(self, state):
+        return state.get(PROBE_STATUS) in (None, "inactive", PROBE_COMPLETED)
 
-    def _normalize_result(
-        self,
-        state: Mapping[str, Any],
-        *,
-        prepared_messages: Sequence[Any],
-        session_id: str | None,
-        thread_id: str,
-    ) -> AgentRunResult:
-        interrupts = _extract_interrupts(state)
-        interrupt_kind = _interrupt_kind(interrupts)
-        if session_id and interrupts:
-            self._pending_interrupts[session_id] = _PendingInterrupt(thread_id, interrupt_kind)
-        elif session_id:
-            self._pending_interrupts.pop(session_id, None)
-            self.sessions[session_id] = list(state.get("messages") or prepared_messages)
-        stopped_by = (
-            f"{interrupt_kind}_interrupt"
-            if interrupts
-            else "completed"
-            if state.get(PROBE_STATUS) == PROBE_COMPLETED
-            else "create_agent"
-        )
-        output = _interrupt_output(interrupts) if interrupts else _latest_text(state)
-        return AgentRunResult(
-            output=output,
-            state=state,
-            stopped_by=stopped_by,
-            interrupted=bool(interrupts),
-            interrupts=interrupts,
-        )
-
-    def _thread_id_for_turn(self, session_id: str | None) -> str:
-        if session_id:
-            return session_id
-        return f"stateless:{id(self)}:{next(self._stateless_counter)}"
-
-    def _model_transport_interrupted(
-        self,
-        error: Exception,
-        *,
-        session_id: str | None,
-        thread_id: str,
-        config: Mapping[str, Any],
-    ) -> AgentRunResult:
-        snapshot = self.agent.get_state(config)
-        state = snapshot.values if isinstance(snapshot.values, Mapping) else {}
-        detail = {
-            "type": "model_transport",
-            "error_type": type(error).__name__,
-            "retryable": session_id is not None,
-        }
-        if session_id is None:
-            return AgentRunResult(
-                output="模型连接中断且自动重试已耗尽；当前调用没有会话，无法从 checkpoint 恢复。",
-                state=state,
-                stopped_by="model_transport_error",
-                interrupts=[detail],
-            )
-        self._pending_interrupts[session_id] = _PendingInterrupt(thread_id, "model_transport")
-        return AgentRunResult(
-            output="模型连接暂时中断，自动重试已耗尽。请回复“继续”从当前 checkpoint 恢复。",
-            state=state,
-            stopped_by="model_transport_interrupt",
-            interrupted=True,
-            interrupts=[detail],
-        )
-
-    def _checkpoint_interrupted(
-        self,
-        *,
-        session_id: str | None,
-        thread_id: str,
-        config: Mapping[str, Any],
-        kind: str,
-    ) -> AgentRunResult:
-        snapshot = self.agent.get_state(config)
-        state = snapshot.values if isinstance(snapshot.values, Mapping) else {}
-        detail = {"type": kind, "retryable": session_id is not None}
-        if session_id is None:
-            return AgentRunResult(
-                output="Agent达到运行递归上限；当前调用没有会话，无法从 checkpoint 继续。",
-                state=state,
-                stopped_by=f"{kind}_error",
-                interrupts=[detail],
-            )
-        self._pending_interrupts[session_id] = _PendingInterrupt(thread_id, kind)
-        return AgentRunResult(
-            output="Agent单次运行达到递归上限，任务 checkpoint 已保留。",
-            state=state,
-            stopped_by=f"{kind}_interrupt",
-            interrupted=True,
-            interrupts=[detail],
-        )
+    def _resume_payload(self, kind, user_input):
+        message = "Human captcha authentication completed." if user_input is None else str(user_input)
+        if kind == "liveness":
+            return {"action": "continue", "message": message}
+        return {"decisions": [{"type": "respond", "message": message}]}
 
 
 def build_agent(
     *,
     model: str | BaseChatModel,
     tools: Sequence[Any],
-    name: str | None = None,
     system_prompt: str = CONDUCTOR_PROMPT,
     operation_notice_service: OperationNoticeService | None = None,
 ):
@@ -418,7 +102,6 @@ def build_agent(
     except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
         from collector import CollectorManager
 
-    trace = NTrace(agent_name=name or "conductor", system_prompt=system_prompt)
     collector_manager = CollectorManager(
         model=model,
         mechanism=mechanism,
@@ -463,51 +146,32 @@ def build_agent(
         if operation_notice_service_from_metadata(tool.metadata) is None
     ]
     middlewares: list[AgentMiddleware] = [
-        createNTraceStartMiddleware(trace),
-        *create_codex_model_retry_middleware(model),
-    ]
-    middlewares.append(probe_control)
-    middlewares.append(collection_persistence)
-    middlewares.append(
+        probe_control,
+        collection_persistence,
         ToolExecutionPolicyMiddleware(
             event_hub=event_hub,
             notice_service=notice_service,
-        )
-    )
-    middlewares.append(ConductorContextMiddleware(mechanism=mechanism))
-    middlewares.append(create_captcha_human_in_the_loop_middleware(registered_tools))
-    middlewares.append(createNTraceEndMiddleware(trace))
+        ),
+        ConductorContextMiddleware(mechanism=mechanism),
+        create_captcha_human_in_the_loop_middleware(registered_tools),
+    ]
 
-    agent = create_agent(
-        model=model,
-        tools=registered_tools,
-        system_prompt=system_prompt,
-        name=name,
-        middleware=middlewares,
-        checkpointer=InMemorySaver(),
-    )
-    return _attach_trace(agent, trace)
+    return _ConductorRuntime(name="conductor", model=model, tools=registered_tools,
+                             system_prompt=system_prompt, middleware=middlewares)
 
 
 def build_conductor_runtime(
     *,
     model: str | BaseChatModel,
-    tools: Sequence[Any] | None = None,
-    name: str | None = "conductor",
+    tools: Sequence[Any] = (),
     operation_notice_service: OperationNoticeService | None = None,
 ) -> Any:
     """Build the main conductor behind its checkpoint-preserving outer layer."""
 
-    try:
-        from src.conductor_persistence import ConductorPersistenceLayer
-    except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-        from conductor_persistence import ConductorPersistenceLayer
-
-    return ConductorPersistenceLayer(
-        AgentRuntime(
+    return AgentPersistenceLayer(
+        build_agent(
             model=model,
-            tools=list(tools or []),
-            name=name,
+            tools=tools,
             operation_notice_service=operation_notice_service,
         )
     )
@@ -517,57 +181,13 @@ def build_collector_runtime(
     *,
     model: str | BaseChatModel,
     tools: Sequence[Any],
-    name: str | None = "collector",
 ) -> Any:
     """Build a collector agent with caller-provided page-scoped tools."""
-    trace = NTrace(agent_name=name or "collector", system_prompt=COLLECTOR_PROMPT)
-    middleware = [
-        createNTraceStartMiddleware(trace),
-        *create_codex_model_retry_middleware(model),
-        createNTraceEndMiddleware(trace),
-    ]
-    agent = create_agent(
-        model=model,
-        tools=list(tools),
-        system_prompt=COLLECTOR_PROMPT,
-        name=name,
-        middleware=middleware,
-    )
-    return _attach_trace(agent, trace)
+    from src.collector.middleware import CollectorModelMiddleware
+    return create_runtime(name="collector", model=model, tools=tools, system_prompt=COLLECTOR_PROMPT,
+                          middleware=[CollectorModelMiddleware()])
 
-
-def _attach_trace(agent: Any, trace: NTrace) -> Any:
-    """Keep trace ownership private to the compiled agent without wrapping it."""
-
-    agent._ntrace = trace
-    return agent
-
-
-def _trace_for(agent: Any) -> NTrace:
-    return agent._ntrace
-
-
-def _invoke_config(max_iterations: int, thread_id: str) -> dict[str, Any]:
-    return {
-        "recursion_limit": max_iterations,
-        "configurable": {"thread_id": thread_id},
-    }
-
-
-def _extract_interrupts(state: Mapping[str, Any]) -> list[Any]:
-    interrupts = state.get("__interrupt__") or state.get("interrupts") or []
-    if interrupts is None:
-        return []
-    if isinstance(interrupts, list):
-        return interrupts
-    if isinstance(interrupts, tuple):
-        return list(interrupts)
-    return [interrupts]
-
-
-def _with_collected_tools(tools: Sequence[Any], collected_tools: Sequence[Any] | None = None) -> list[Any]:
-    if collected_tools is None:
-        raise ValueError("collected_tools is required for conductor runtime assembly.")
+def _with_collected_tools(tools: Sequence[Any], collected_tools: Sequence[Any]) -> list[Any]:
 
     registered_tools = list(tools)
     _ensure_unique_tool_names(registered_tools, source="caller-provided")
@@ -626,48 +246,11 @@ def run_agent_loop(
     tools: Sequence[Any],
     history: Iterable[BaseMessage | Mapping[str, Any]] | None = None,
     max_iterations: int = 8,
-    name: str | None = None,
 ) -> AgentRunResult:
     """Run one user turn through LangChain's standard ``create_agent`` harness."""
 
-    runtime = AgentRuntime(
+    runtime = build_agent(
         model=model,
         tools=tools,
-        name=name,
     )
     return runtime.run_turn(history or [], max_iterations=max_iterations)
-
-def _latest_text(state: Mapping[str, Any]) -> str:
-    messages = state.get("messages") or []
-    if not messages:
-        return ""
-
-    latest = messages[-1]
-    content = latest.get("content") if isinstance(latest, Mapping) else latest.content
-    if isinstance(content, str):
-        return content
-    if content is None:
-        return ""
-    return str(content)
-
-
-def _interrupt_value(value: Any) -> Any:
-    return value.value if isinstance(value, Interrupt) else value
-
-
-def _interrupt_kind(interrupts: Sequence[Any]) -> str:
-    for item in interrupts:
-        value = _interrupt_value(item)
-        if isinstance(value, Mapping) and value.get("kind") == "liveness":
-            return "liveness"
-    return "human"
-
-
-def _interrupt_output(interrupts: Sequence[Any]) -> str:
-    for item in interrupts:
-        value = _interrupt_value(item)
-        if isinstance(value, Mapping):
-            message = value.get("message")
-            if isinstance(message, str):
-                return message
-    return ""

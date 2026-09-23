@@ -20,17 +20,19 @@ from tools.operation_effect import (
     SCROLL_PAGE_CHANGE_POLICY,
 )
 from tools.page_similarity import PageSimilarityResult
+from tools.page_bridge import PageBridge
 
 
-XML = '<h><n b="[0,0][100,80]" t="page"/></h>'
+XML = '<hierarchy><node bounds="[0,0][100,80]" text="page"/></hierarchy>'
 
 
 class FakeEventHub:
     def __init__(self, result=XML) -> None:
         self.result = result
         self.calls = 0
+        self.page_bridge = PageBridge(self.page_view)
 
-    def uiautomate(self):
+    def page_view(self):
         self.calls += 1
         return self.result
 
@@ -58,7 +60,7 @@ def _request(tool: StructuredTool):
 
 
 def _message(name: str) -> ToolMessage:
-    return ToolMessage(content=XML, name=name, tool_call_id="call-1")
+    return ToolMessage(content='{"summary": "page"}', artifact={"page_xml": XML}, name=name, tool_call_id="call-1")
 
 
 def _middleware(score: float, *, event_result=XML):
@@ -71,8 +73,8 @@ def _middleware(score: float, *, event_result=XML):
 
 def test_tool_without_policy_is_unchanged_and_does_not_capture_page() -> None:
     middleware, hub = _middleware(1.0)
-    expected = _message("uiautomate")
-    result = middleware.wrap_tool_call(_request(_tool("uiautomate")), lambda _: expected)
+    expected = _message("page_view")
+    result = middleware.wrap_tool_call(_request(_tool("page_view")), lambda _: expected)
     assert result is expected
     assert hub.calls == 0
 

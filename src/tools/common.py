@@ -382,7 +382,7 @@ def create_common_tools(
                 "Call this tool only after the user reports the captcha has been completed. "
                 "Inputs: optional current_path and optional evidence. This tool closes the "
                 "captcha remote control service; after it returns, re-read the UI with "
-                "uiautomate or screenshot before continuing."
+                "page_view or screenshot before continuing."
             ),
         ),
         StructuredTool.from_function(

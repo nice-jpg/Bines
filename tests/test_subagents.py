@@ -26,6 +26,10 @@ class FakeAgent:
 
 class SubagentManagerTests(unittest.TestCase):
     def make_manager(self, **kwargs) -> SubagentManager:
+        from unittest.mock import patch
+        factory = patch("subagents_manager.create_runtime", kwargs.get("create_agent_factory", lambda **_: FakeAgent()))
+        factory.start()
+        self.addCleanup(factory.stop)
         return SubagentManager(
             model="model",
             parent_context_provider=kwargs.get("parent_context_provider", lambda: []),
@@ -43,7 +47,6 @@ class SubagentManagerTests(unittest.TestCase):
                 ],
             ),
             system_prompt="system",
-            create_agent_factory=kwargs.get("create_agent_factory", lambda **_: FakeAgent()),
         )
 
     def test_spawn_creates_independent_and_delegated_subagents(self) -> None:

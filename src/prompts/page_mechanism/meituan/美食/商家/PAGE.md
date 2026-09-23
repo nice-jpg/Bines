@@ -18,7 +18,7 @@
 - Merchant fields: merchant name, distance, rating, total review count.
 - Product fields: product name, price, sales.
 - Product data may appear in `菜品`, `团购`, `优惠`, `推荐`, `套餐`, or similar product-relevant tabs.
-- Names, prices, and sales may be split across sibling XML nodes; extraction should group text by repeated product-card structure instead of one fixed coordinate.
+- Names, prices, and sales may be split across sibling view regions; the collector uses COLLECT.md annotations and screenshot-confirmed baselines to validate run(view).
 
 ## Merchant Schema
 ```json
@@ -30,7 +30,7 @@
 }
 ```
 
-The collector saves this profile from the initial top-of-page XML. It is not returned by `run.agent.py` and is not part of item extraction scoring.
+The collector saves this profile from the initial top-of-page evidence. It is not returned by `run.agent.py` and is not part of item extraction scoring.
 
 ## Collection Schema
 ```json

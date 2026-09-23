@@ -206,7 +206,8 @@ def test_create_agent_loop_interrupts_after_three_toolless_probe_responses() -> 
         def bind_tools(self, *_args, **_kwargs):
             return self
 
-    runtime = AgentRuntime(
+    from src.agent import build_agent
+    runtime = build_agent(
         model=ToolBindingFakeModel(
             responses=[
                 AIMessage(content="任务仍需继续"),

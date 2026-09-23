@@ -43,6 +43,7 @@ def make_runtime(agent: RecoverableFakeAgent) -> AgentRuntime:
     runtime.tools = []
     runtime.name = "test"
     runtime.agent = agent
+    runtime._trace = SimpleNamespace(update=lambda **_kwargs: None)
     runtime.sessions = {}
     runtime._stateless_counter = itertools.count(1)
     runtime._pending_interrupts = {}
@@ -88,6 +89,24 @@ def test_transport_failure_without_session_is_not_claimed_recoverable() -> None:
             "retryable": False,
         }
     ]
+
+
+def test_permanent_failure_is_checkpointed_but_not_automatically_retried():
+    from src.agent_runtime import AgentPersistenceLayer
+    agent = RecoverableFakeAgent()
+    attempts = []
+
+    def fail(value, config):
+        attempts.append(value)
+        raise ValueError("invalid configuration")
+
+    agent.invoke = fail
+    runtime = make_runtime(agent)
+    result = AgentPersistenceLayer(runtime).run_turn([], session_id="invalid")
+    assert result.stopped_by == "execution_interrupt"
+    assert result.interrupts[0]["retryable"] is False
+    assert result.state == agent.snapshot.values
+    assert len(attempts) == 1
 
 
 def test_recursion_limit_preserves_checkpoint_and_resumes_without_new_input() -> None:

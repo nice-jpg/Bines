@@ -1,9 +1,4 @@
-"""Recorded touch operations exposed as individual LangChain tools.
-
-Each operation is fire-and-forget: the agent calls a specific tool with a
-random ``(x, y)`` coordinate, then the hub replays the matching recorded action.
-The replay backend is intentionally left as a placeholder.
-"""
+"""Recorded device actions with Reco region views and internal XML artifacts."""
 
 from __future__ import annotations
 
@@ -12,13 +7,13 @@ from dataclasses import dataclass
 import time
 
 from langchain_core.tools import StructuredTool
+from .page_bridge import PageBridge
 
 if __package__ and __package__.startswith("src."):
     from src.device.adapter import AndroidDevice
     from src.device.results import ErrorResult, is_error_result, make_error_result
     from src.device.translator import check_actions
     from src.tools.event_logger import WorkspaceEventLogger
-    from src.tools.optimize_xml import optimize
     from src.tools.operation_policy import (
         EXTERNAL_OPERATION_POLICY_METADATA_KEY,
         ExternalOperationPolicy,
@@ -40,7 +35,6 @@ else:  # Supports running as: python src/run_agent.py
     from device.results import ErrorResult, is_error_result, make_error_result
     from device.translator import check_actions
     from tools.event_logger import WorkspaceEventLogger
-    from tools.optimize_xml import optimize
     from tools.operation_policy import (
         EXTERNAL_OPERATION_POLICY_METADATA_KEY,
         ExternalOperationPolicy,
@@ -66,7 +60,7 @@ class ToolSpec:
     name: str
     description: str
     operation_name: str
-    returns_xml: bool = False
+    returns_page: bool = False
     notice_reason: str | None = None
     effect_policy: OperationEffectPolicy | None = None
 
@@ -86,45 +80,44 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "tap",
-        "Tap (x, y). Provide x/y coordinates. Returns the current UIAutomator XML hierarchy.",
+        "Tap (x, y). Provide x/y coordinates. Returns the current abstract page view.",
         "tap",
         True,
     ),
     ToolSpec(
         "swipe_up",
-        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
+        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current abstract page view.",
         "swipe_up",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_up_long",
-        "Swipe up from (x, y) for a long distance. Use this tool to traverse a large collection region efficiently. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
+        "Swipe up from (x, y) for a long distance. Use this tool to traverse a large collection region efficiently. Provide x/y coordinates. Returns current abstract page view.",
         "swipe_up_long",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_to_random",
-        "Swipe from (x, y) to a recorded random page state. This operation is reserved for collector training. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
+        "Swipe from (x, y) to a recorded random page state. This operation is reserved for collector training. Provide x/y coordinates. Returns current abstract page view.",
         "swipe_to_random",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_down",
-        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current UIAutomator XML hierarchy.",
+        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current abstract page view.",
         "swipe_down",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_back",
-        "return to the last page. Returns current UIAutomator XML hierarchy.",
+        "return to the last page. Returns current abstract page view.",
         "swipe_back",
         True,
     ),
-    ToolSpec("uiautomate", "Get the current UIAutomator XML hierarchy.", "uiautomate", True),
     ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot"),
 )
 
@@ -132,14 +125,12 @@ COLLECTOR_ONLY_EVENT_HUB_TOOL_NAMES = frozenset({"swipe_to_random"})
 EVENT_HUB_TOOL_NAMES = tuple(
     spec.name for spec in TOOL_SPECS if spec.name not in COLLECTOR_ONLY_EVENT_HUB_TOOL_NAMES
 )
-XML_RESULT_TOOL_NAMES = frozenset(spec.name for spec in TOOL_SPECS if spec.returns_xml)
 CONDUCTOR_EVENT_HUB_TOOL_NAMES = (
     "run_package",
     "close_package",
     "swipe_up",
     "swipe_up_long",
     "swipe_down",
-    "uiautomate",
     "screenshot",
 )
 
@@ -157,49 +148,50 @@ class EventHub:
         self.logger = logger or WorkspaceEventLogger()
         self.post_action_ui_delay_seconds = DEFAULT_POST_ACTION_UI_DELAY_SECONDS
         self._sleep = sleep_func
+        self.page_bridge = PageBridge(self._dump_xml)
 
     @xy_operation
-    def tap(self, x: int, y: int) -> str | ErrorResult:
+    def tap(self, x: int, y: int) -> tuple:
         """Replay the recorded tap action."""
 
         return self._replay_recorded_action("tap", x, y)
 
     @xy_operation
-    def swipe_up(self, x: int, y: int) -> str | ErrorResult:
+    def swipe_up(self, x: int, y: int) -> tuple:
         """Replay the recorded upward swipe action."""
 
         return self._replay_recorded_action("swipe_up", x, y)
 
     @xy_operation
-    def swipe_up_long(self, x: int, y: int) -> str | ErrorResult:
+    def swipe_up_long(self, x: int, y: int) -> tuple:
         """Replay the recorded long upward swipe action."""
 
         return self._replay_recorded_action("swipe_up_long", x, y)
 
     @xy_operation
-    def swipe_to_random(self, x: int, y: int) -> str | ErrorResult:
+    def swipe_to_random(self, x: int, y: int) -> tuple:
         """Replay the recorded swipe used to select a random training state."""
 
         return self._replay_recorded_action("swipe_to_random", x, y)
 
     @xy_operation
-    def swipe_down(self, x: int, y: int) -> str | ErrorResult:
+    def swipe_down(self, x: int, y: int) -> tuple:
         """Replay the recorded downward swipe action."""
 
         return self._replay_recorded_action("swipe_down", x, y)
 
-    def swipe_back(self) -> str | ErrorResult:
+    def swipe_back(self) -> tuple:
         """Replay the recorded back action."""
 
         return self._replay_recorded_action("swipe_back", 0, 2000)
 
-    def uiautomate(self) -> str | ErrorResult:
-        """Return the current UIAutomator XML hierarchy."""
-        result = self._run_device_operation("uiautomate", self.device.dump_ui, inspect_page=True)
+    def _dump_xml(self) -> str | ErrorResult:
+        """Capture source XML for the internal Reco bridge."""
+        result = self._run_device_operation("page_view", self.device.dump_ui, inspect_page=True)
         if type(result) is ErrorResult:
             return result
         assert(isinstance(result, str))
-        return optimize(result)
+        return result
 
     def screenshot(self) -> str | ErrorResult:
         """Capture a screenshot on the device and return the remote path."""
@@ -210,7 +202,10 @@ class EventHub:
     def run_package(self, package_name: str) -> str | ErrorResult:
         """Open the specified Android application package."""
 
-        return self._run_device_operation("run_package", lambda: self.device.run_package(package_name))
+        result = self._run_device_operation("run_package", lambda: self.device.run_package(package_name))
+        if not is_error_result(result):
+            self.page_bridge.reset()
+        return result
 
     @dangerous_func
     def close_package(self, package_name: str) -> str | ErrorResult:
@@ -218,24 +213,19 @@ class EventHub:
 
         return self._run_device_operation("close_package", lambda: self.device.close_package(package_name))
 
-    def _replay_recorded_action(self, action_name: str, x: int, y: int) -> str | ErrorResult:
-        """Replay a recorded action with coordinate jitter input.
-
-        The concrete replay implementation is intentionally empty for now.
-        Future code should map ``action_name`` to a recorded action asset and
-        use ``x`` / ``y`` only as randomness input.
-        """
+    def _replay_recorded_action(self, action_name: str, x: int, y: int) -> tuple:
+        """Replay the action, then synchronize the shared abstract page view."""
         action_check_result = self._ensure_actions_checked()
         if is_error_result(action_check_result):
-            return action_check_result
+            return action_check_result, None
         action_result = self._run_device_operation(
             action_name,
             lambda: self.device.act(action_name=action_name, xy=(x, y)),
         )
         if is_error_result(action_result):
-            return action_result
+            return action_result, None
         self._wait_after_action()
-        return self.uiautomate()
+        return self.page_bridge.refresh()
 
     def _wait_after_action(self) -> None:
         if self.post_action_ui_delay_seconds > 0:
@@ -279,12 +269,12 @@ class EventHub:
     def _log_page_exception_signals(self, page_text: str) -> None:
         lowered = page_text.lower()
         if any(keyword in page_text for keyword in ("验证码", "安全验证", "滑块验证", "人机验证")) or "captcha" in lowered:
-            self.logger.log("captcha", "Detected captcha signal in UI hierarchy", {"source": "uiautomate"})
+            self.logger.log("captcha", "Detected captcha signal in UI hierarchy", {"source": "page_view"})
         if any(
             keyword in page_text
             for keyword in ("优惠券", "红包", "弹窗", "广告", "立即领取", "以后再说", "暂不", "关闭")
         ):
-            self.logger.log("popup", "Detected popup signal in UI hierarchy", {"source": "uiautomate"})
+            self.logger.log("popup", "Detected popup signal in UI hierarchy", {"source": "page_view"})
 
 
 def create_event_hub_tools(
@@ -296,7 +286,8 @@ def create_event_hub_tools(
 
     hub = event_hub or EventHub()
     selected_names = frozenset(tool_names or EVENT_HUB_TOOL_NAMES)
-    return [_build_tool(spec, hub) for spec in TOOL_SPECS if spec.name in selected_names]
+    tools = [_build_tool(spec, hub) for spec in TOOL_SPECS if spec.name in selected_names]
+    return tools + hub.page_bridge.create_tools() if tool_names is None else tools
 
 
 def create_conductor_event_hub_tools(event_hub: EventHub | None = None) -> list[StructuredTool]:
@@ -327,6 +318,7 @@ def _build_tool(spec: ToolSpec, hub: EventHub) -> StructuredTool:
         name=spec.name,
         description=spec.description,
         metadata=metadata,
+        response_format="content_and_artifact" if spec.returns_page else "content",
     )
 
 
@@ -349,8 +341,6 @@ def _resolve_operation(operation_name: str, hub: EventHub) -> Callable[..., obje
         return hub.swipe_down
     if operation_name == "swipe_back":
         return hub.swipe_back
-    if operation_name == "uiautomate":
-        return hub.uiautomate
     if operation_name == "screenshot":
         return hub.screenshot
     raise ValueError(f"Unsupported EventHub operation: {operation_name}")

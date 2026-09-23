@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -11,9 +12,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
-from codex.model_retry import (
-    create_codex_model_retry_middleware,
+from src.codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
+from src.codex import codex_oauth
+from src.agent_runtime._model_retry import (
+    create_model_retry_middleware,
     is_retryable_model_transport_error,
 )
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -32,6 +34,33 @@ def sample_lookup(city: str) -> str:
 
 
 class CodexOAuthModelTests(unittest.TestCase):
+    def test_credentials_accept_known_shapes_and_reject_non_object_auth(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            auth_path = Path(directory) / "auth.json"
+            provider = CodexOAuthTokenProvider(auth_path)
+            for data, expected in [
+                ({"tokens": {"access_token": "test-token", "account_id": "test-account"}}, ("test-token", "test-account")),
+                ({"tokens": None, "OPENAI_API_KEY": "test-key"}, ("test-key", "")),
+            ]:
+                with self.subTest(data=data):
+                    auth_path.write_text(json.dumps(data), encoding="utf-8")
+                    self.assertEqual(provider.get_credentials(), expected)
+            auth_path.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "Expected a JSON object"):
+                provider.get_credentials()
+
+    def test_screenshot_tool_output_is_multimodal_not_encoded_text(self):
+        url = "data:image/png;base64,aGVsbG8="
+        message = ToolMessage(tool_call_id="screen", content=[
+            {"type": "text", "text": "Frozen snapshot"},
+            {"type": "image_url", "image_url": {"url": url}},
+        ])
+        request = OpenAICodexModel(model="test-model")._build_request([message])
+        self.assertEqual(request["input"][0]["output"], [
+            {"type": "input_text", "text": "Frozen snapshot"},
+            {"type": "input_image", "image_url": url},
+        ])
+
     def test_build_request_preserves_multimodal_user_content_order(self) -> None:
         model = OpenAICodexModel(model="test-model")
         data_url = "data:image/png;base64," + "aGVsbG8=" * 1000
@@ -719,6 +748,110 @@ class CodexOAuthModelTests(unittest.TestCase):
 
         self.assertEqual(message.content, "hello delta")
 
+    def test_read_response_keeps_reasoning_only_completed_output(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        reasoning = {
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "Checking"}],
+            "encrypted_content": "opaque-test-reasoning",
+        }
+        message = asyncio.run(model._read_response(FakeWebSocket([{
+            "type": "response.completed",
+            "response": {
+                "id": "resp_reasoning",
+                "store": False,
+                "output": [reasoning],
+                "usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+            },
+        }])))
+
+        self.assertEqual(message.additional_kwargs["reasoning_items"], [reasoning])
+        self.assertEqual(message.response_metadata["response_id"], "resp_reasoning")
+        self.assertEqual(message.usage_metadata["total_tokens"], 3)
+
+    def test_read_response_combines_text_parts_without_repeating_deltas(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        message = asyncio.run(model._read_response(FakeWebSocket([
+            {"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "hel"},
+            {"type": "response.output_text.done", "output_index": 0, "content_index": 0, "text": "hello "},
+            {"type": "response.output_text.done", "output_index": 1, "content_index": 0, "text": "world"},
+            {"type": "response.completed", "response": {"output": []}},
+        ])))
+
+        self.assertEqual(message.content, "hello world")
+
+    def test_read_response_updates_anonymous_items_by_output_index(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        message = asyncio.run(model._read_response(FakeWebSocket([
+            {
+                "type": "response.output_item.added", "output_index": 0,
+                "item": {"type": "function_call", "name": "sample_lookup", "arguments": ""},
+            },
+            {
+                "type": "response.output_item.done", "output_index": 0,
+                "item": {
+                    "type": "function_call", "name": "sample_lookup",
+                    "call_id": "call_1", "arguments": '{"city":"宿州"}',
+                },
+            },
+            {"type": "response.completed", "response": {}},
+        ])))
+
+        self.assertEqual(len(message.tool_calls), 1)
+        self.assertEqual(message.tool_calls[0]["args"], {"city": "宿州"})
+
+    def test_read_response_prefers_completed_output_over_partial_stream(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        message = asyncio.run(model._read_response(FakeWebSocket([
+            {"type": "response.output_text.delta", "delta": "partial"},
+            *completed_events("final"),
+        ])))
+
+        self.assertEqual(message.content, "final")
+
+    def test_send_retry_stops_after_second_failure(self) -> None:
+        first_ws = PersistentFakeWebSocket([], send_error=ConnectionError("first"))
+        second_ws = PersistentFakeWebSocket([], send_error=ConnectionError("second"))
+        model = OpenAICodexModel(model="test-model", token_provider=FakeTokenProvider())
+        sockets = iter([first_ws, second_ws])
+
+        async def connect(*args, **kwargs):
+            return next(sockets)
+
+        try:
+            with patch.object(codex_oauth.websockets, "connect", side_effect=connect) as mocked:
+                with self.assertRaisesRegex(ConnectionError, "second"):
+                    model.invoke([HumanMessage(content="hello")])
+            self.assertEqual(mocked.call_count, 2)
+            self.assertTrue(first_ws.closed)
+            self.assertTrue(second_ws.closed)
+        finally:
+            model.close()
+
+    def test_log_io_failure_does_not_fail_or_replay_model_call(self) -> None:
+        events = completed_events("done")
+        events[-1]["response"]["usage"] = {
+            "input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+        }
+        ws = PersistentFakeWebSocket([events])
+        model = OpenAICodexModel(model="test-model", token_provider=FakeTokenProvider())
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        try:
+            with (
+                patch.object(codex_oauth.websockets, "connect", side_effect=connect),
+                patch.object(codex_oauth.Path, "mkdir", side_effect=PermissionError("read-only")),
+                self.assertLogs(codex_oauth.logger, level="WARNING"),
+            ):
+                message = model.invoke([HumanMessage(content="hello")])
+            self.assertEqual(message.content, "done")
+            self.assertEqual(len(ws.sent), 1)
+            self.assertEqual(model.get_usage_summary()["responses"], 1)
+        finally:
+            model.close()
+
     def test_sync_requests_reuse_one_persistent_connection(self) -> None:
         ws = PersistentFakeWebSocket([completed_events("first"), completed_events("second")])
         provider = FakeTokenProvider()
@@ -940,7 +1073,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         async def connect(*args, **kwargs):
             return next(sockets)
 
-        middleware = create_codex_model_retry_middleware(model)[0]
+        middleware = create_model_retry_middleware()
         try:
             with (
                 patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect,
@@ -979,7 +1112,7 @@ class CodexOAuthModelTests(unittest.TestCase):
 
     def test_codex_retry_middleware_exhausts_five_retries_and_reraises(self) -> None:
         model = OpenAICodexModel(model="test-model", stream_max_retries=5)
-        middleware = create_codex_model_retry_middleware(model)[0]
+        middleware = create_model_retry_middleware()
         attempts = 0
 
         def fail(_request):
@@ -998,7 +1131,7 @@ class CodexOAuthModelTests(unittest.TestCase):
 
     def test_codex_retry_middleware_async_path_retries(self) -> None:
         model = OpenAICodexModel(model="test-model", stream_max_retries=1)
-        middleware = create_codex_model_retry_middleware(model)[0]
+        middleware = create_model_retry_middleware()
         attempts = 0
 
         async def scenario() -> str:

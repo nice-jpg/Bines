@@ -56,7 +56,7 @@ class EventHubTests(unittest.TestCase):
         self.assertTrue(is_xy_operation(EventHub.swipe_down))
         self.assertIsNotNone(dangerous_policy_for(EventHub.run_package))
         self.assertIsNotNone(dangerous_policy_for(EventHub.close_package))
-        self.assertIsNone(dangerous_policy_for(EventHub.uiautomate))
+        self.assertFalse(hasattr(EventHub, "uiautomate"))
 
     def test_touch_action_returns_uiautomate_result_after_success(self) -> None:
         logger = FakeLogger()
@@ -67,11 +67,12 @@ class EventHubTests(unittest.TestCase):
 
         result = hub.tap(11, 22)
 
-        self.assertIn("验证码", result)
+        self.assertIn("验证码", result[0]["summary"])
+        self.assertIn("page_xml", result[1])
         self.assertEqual(sleeper.calls, [1.2])
         self.assertEqual(hub.device.calls, [("act", "tap", (11, 22)), ("dump_ui",)])
-        self.assertIn(("captcha", "Detected captcha signal in UI hierarchy", {"source": "uiautomate"}), logger.records)
-        self.assertIn(("popup", "Detected popup signal in UI hierarchy", {"source": "uiautomate"}), logger.records)
+        self.assertIn(("captcha", "Detected captcha signal in UI hierarchy", {"source": "page_view"}), logger.records)
+        self.assertIn(("popup", "Detected popup signal in UI hierarchy", {"source": "page_view"}), logger.records)
 
     def test_touch_action_returns_and_logs_error_result_after_failure(self) -> None:
         logger = FakeLogger()
@@ -83,7 +84,7 @@ class EventHubTests(unittest.TestCase):
 
         result = hub.swipe_up(10, 100)
 
-        self.assertEqual(result, error)
+        self.assertEqual(result, (error, None))
         self.assertEqual(sleeper.calls, [])
         self.assertEqual(hub.device.calls, [("act", "swipe_up", (10, 100))])
         self.assertEqual(logger.records, [("command_error", "adb failed", {"args": ["adb"]})])
@@ -106,28 +107,29 @@ class EventHubTests(unittest.TestCase):
             ],
         )
 
-    def test_uiautomate_does_not_sleep_when_called_directly(self) -> None:
+    def test_page_view_does_not_sleep_when_called_directly(self) -> None:
         sleeper = FakeSleeper()
         hub = EventHub(sleep_func=sleeper)
-        hub.device = FakeDevice(ui_result="<hierarchy></hierarchy>")
+        hub.device = FakeDevice(ui_result='<hierarchy><node text="hello"/></hierarchy>')
 
-        result = hub.uiautomate()
+        result, artifact = hub.page_bridge.call("page_view", {})
 
-        self.assertEqual(result, "<h></h>")
+        self.assertEqual(result["summary"], "hello")
+        self.assertIn("page_xml", artifact)
         self.assertEqual(sleeper.calls, [])
         self.assertEqual(hub.device.calls, [("dump_ui",)])
 
-    def test_touch_action_returns_plain_xml_without_collection_wrapper(self) -> None:
+    def test_touch_action_returns_region_view_without_collection_wrapper(self) -> None:
         sleeper = FakeSleeper()
         hub = EventHub(sleep_func=sleeper)
-        hub.device = FakeDevice(ui_result="<hierarchy></hierarchy>")
+        hub.device = FakeDevice(ui_result='<hierarchy><node text="hello"/></hierarchy>')
         hub._actions_checked = True
 
-        direct = hub.uiautomate()
+        direct = hub.page_bridge.call("page_view", {})
         swiped = hub.swipe_up(10, 100)
 
-        self.assertEqual(direct, "<h></h>")
-        self.assertEqual(swiped, "<h></h>")
+        self.assertEqual(direct[0], swiped[0])
+        self.assertNotIn("xml", swiped[0])
 
     def test_close_package_calls_device_without_ui_capture(self) -> None:
         hub = EventHub()

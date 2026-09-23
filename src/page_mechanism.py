@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import json
 import os
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ from types import ModuleType
 from typing import Any, Mapping
 
 from codex_apply_patch import apply_patch_in_memory, parse_patch
+
+from src.page_view import ReadOnlyPageView
 
 
 PAGE_MECHANISM_DIR = Path(__file__).resolve().parent / "prompts" / "page_mechanism"
@@ -298,11 +301,53 @@ class PageMechanism:
                 sort_keys=True,
             )
 
-    def sniff_run(self, current_path: str, xml: str) -> str:
-        result = self.run_page_script(current_path, xml)
+    def read_collection_guide(self, current_path: str) -> dict:
+        page_dir, _, error = self._page_dir(current_path)
+        if error:
+            raise ValueError(error)
+        path = page_dir / "COLLECT.md"
+        if path.is_symlink() or path.resolve().parent != page_dir.resolve():
+            raise ValueError("COLLECT.md must stay in the page directory")
+        content = path.read_text(encoding="utf-8")
+        metadata, _, body = content.partition("\n")
+        required = json.loads(metadata).get("required_aliases")
+        if not isinstance(required, list) or not required or any(
+            not isinstance(alias, str) or not re.fullmatch(r"0|[1-9][0-9]*", alias) for alias in required
+        ) or len(set(required)) != len(required) or not body.strip():
+            raise ValueError("COLLECT.md needs JSON required_aliases followed by an English guide")
+        return {"content": content, "required_aliases": required,
+                "fingerprint": hashlib.sha256(content.encode()).hexdigest()}
+
+    def write_collection_guide(self, current_path: str, content: str) -> dict:
+        page_dir, _, error = self._page_dir(current_path)
+        if error:
+            raise ValueError(error)
+        metadata, _, body = content.partition("\n")
+        aliases = json.loads(metadata).get("required_aliases")
+        if not isinstance(aliases, list) or not aliases or not body.strip() or any(
+            not isinstance(alias, str) or not re.fullmatch(r"0|[1-9][0-9]*", alias) for alias in aliases
+        ) or len(set(aliases)) != len(aliases):
+            raise ValueError('First line must be {"required_aliases":["1"]}, followed by an English guide')
+        path = page_dir / "COLLECT.md"
+        if path.is_symlink() or path.resolve().parent != page_dir.resolve():
+            raise ValueError("COLLECT.md must stay in the page directory")
+        with self._run_patch_lock:
+            temporary = None
+            try:
+                with NamedTemporaryFile(mode="w", encoding="utf-8", dir=page_dir, delete=False) as handle:
+                    temporary = handle.name
+                    handle.write(content)
+                os.replace(temporary, path)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
+        return self.read_collection_guide(current_path)
+
+    def sniff_run(self, current_path: str, view: ReadOnlyPageView) -> str:
+        result = self.run_page_script(current_path, view)
         return json.dumps(result, ensure_ascii=False, sort_keys=True)
 
-    def run_page_script(self, current_path: str, xml: str) -> dict[str, Any]:
+    def run_page_script(self, current_path: str, view: ReadOnlyPageView) -> dict[str, Any]:
         page_dir, canonical_path, error = self._page_dir(current_path)
         if error:
             return _script_error("page_path_error", error, canonical_path=canonical_path)
@@ -311,18 +356,23 @@ class PageMechanism:
             return _script_error("missing_run_agent_py", "run.agent.py was not found.", canonical_path=canonical_path)
 
         try:
+            if not isinstance(view, ReadOnlyPageView):
+                raise TypeError("run(view) requires a frozen ReadOnlyPageView; XML scripts are not supported")
+            view.require_aliases(self.read_collection_guide(current_path)["required_aliases"])
             module = _load_run_module(run_path)
             try:
                 run = module.run
             except AttributeError:
                 return _script_error(
                     "missing_run_function",
-                    "run.agent.py must define run(xml).",
+                    "run.agent.py must define run(view).",
                     canonical_path=canonical_path,
                 )
             if not callable(run):
-                return _script_error("missing_run_function", "run.agent.py must define run(xml).", canonical_path=canonical_path)
-            output = run(xml)
+                return _script_error("missing_run_function", "run.agent.py must define run(view).", canonical_path=canonical_path)
+            if list(inspect.signature(run).parameters) != ["view"]:
+                raise TypeError("run.agent.py must define run(view); migrate the old XML script")
+            output = run(view)
             _assert_json_object(output)
         except Exception as exc:  # noqa: BLE001 - script failures are repair signals for collector.
             return {

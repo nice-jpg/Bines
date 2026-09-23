@@ -47,6 +47,7 @@ Core operations return the documented success value or an error result:
 - `execute_file(device_file_path, args=None, root=False) -> str | ErrorResult`
 - `list_files(device_dir) -> list[str] | ErrorResult`
 - `push_file(local_path, device_dir) -> str | ErrorResult`
+- `pull_file(device_path, local_path) -> str | ErrorResult`
 - `get_supported_actions(device_dir=DEFAULT_ACTION_DIR) -> list[str] | ErrorResult`
 - `add_action(local_path, device_dir=DEFAULT_ACTION_DIR) -> str | ErrorResult`
 - `act(action_name, xy, device_dir=DEFAULT_ACTION_DIR, input_device=DEFAULT_INPUT_DEVICE) -> str | ErrorResult`
@@ -54,6 +55,10 @@ Core operations return the documented success value or an error result:
 `dump_ui()` disables window, transition, and animator scales before running the
 custom `/data/local/tmp/project -d` dump helper to reduce idle-state failures on
 dynamic pages. `close_package()` executes `adb shell am force-stop`.
+
+Collector captures screenshots with screenshot(), then pulls the remote PNG to
+a temporary local file using pull_file(). It returns image content to the model,
+not the device path. UI XML remains internal to PageBridge.
 
 Current `act()` behavior:
 

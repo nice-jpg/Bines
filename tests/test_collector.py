@@ -1,1156 +1,387 @@
 from __future__ import annotations
 
+import base64
 import json
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import pytest
 
-from collector import (
-    CollectorCoderSession,
-    CollectorCoderToolbox,
-    CollectorManager,
-    CollectorSavedInstanceMap,
-    CollectorToolbox,
-    create_collector_tools,
-)
-from device.results import make_error_result
-from page_mechanism import PageMechanism
+from src.collector import CollectorToolbox, CollectorHistory, CollectorManager
+from src.page_mechanism import PageMechanism, PagePolicy
+from src.tools.page_bridge import PageBridge
+from src.page_view import ReadOnlyPageView, MissingPageAlias
+
+PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6WAAAAABJRU5ErkJggg==")
+GUIDE = '{"required_aliases":["1"]}\n\n# Product region\nFind the product text region by its role and position.'
+SCRIPT = 'def run(view):\n    region = view.select_aaid(1)\n    return {"items": [{"name": e["value"]} for e in view.page_read(region["id"])["entries"]]}\n'
 
 
-def coder_sections(content):
-    return {
-        title.split(":")[0]: json.loads(body)
-        for section in content.split("## ")[1:]
-        for title, body in [section.split("\n\n", 1)]
-    }
+def xml(text):
+    return f'<hierarchy><node class="android.widget.Button" text="{text}" clickable="true" bounds="[0,200][1000,1800]"/></hierarchy>'
 
 
-class FakeEventHub:
-    def __init__(self) -> None:
+class FakeHub:
+    def __init__(self):
+        self.text = "cup"
         self.calls = []
-        self.xml = "<h><n t=\"cup\"/></h>"
+        self.page_bridge = PageBridge(lambda: xml(self.text))
+        self.device = SimpleNamespace(pull_file=self.pull)
 
-    def uiautomate(self):
-        self.calls.append(("uiautomate",))
-        return self.xml
+    def screenshot(self):
+        self.calls.append("screenshot")
+        return "/sdcard/screen.png"
+
+    def pull(self, remote, local):
+        Path(local).write_bytes(PNG)
+        return local
 
     def swipe_up(self, x, y):
-        self.calls.append(("swipe_up", x, y))
-        return self.xml
+        self.calls.append("swipe")
+        self.text = "bowl"
+        return self.page_bridge.refresh()
 
-    def swipe_up_long(self, x, y):
-        self.calls.append(("swipe_up_long", x, y))
-        return self.xml
-
-    def swipe_to_random(self, x, y):
-        self.calls.append(("swipe_to_random", x, y))
-        return self.xml
-
-    def swipe_down(self, x, y):
-        self.calls.append(("swipe_down", x, y))
-        return self.xml
+    swipe_up_long = swipe_up
+    swipe_down = swipe_up
+    swipe_to_random = swipe_up
 
     def tap(self, x, y):
-        self.calls.append(("tap", x, y))
-        return self.xml
+        self.calls.append("tap")
+        self.text = "cup"
+        return self.page_bridge.refresh()
 
 
-def test_collector_tools_exclude_click_and_back_navigation(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
-
-    event_hub = FakeEventHub()
-    tools = create_collector_tools(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=event_hub,
-        page_path="meituan",
-    )
-    names = [tool.name for tool in tools]
-
-    assert names == [
-        "collector_uiautomate",
-        "collector_swipe_up",
-        "collector_swipe_up_long",
-        "collector_swipe_to_random",
-        "collector_swipe_down",
-        "collector_tap",
-        "consult_coder",
-        "sniff_run",
-        "save_baseline",
-        "save_merchant_profile",
-    ]
-    assert "tap" not in names
-    assert "swipe_back" not in names
-    assert "eval_collection" not in names
-
-    by_name = {tool.name: tool for tool in tools}
-    by_name["collector_swipe_up_long"].invoke({"x": 100, "y": 1800})
-    by_name["collector_swipe_to_random"].invoke({"x": 200, "y": 1600})
-    assert event_hub.calls == [
-        ("swipe_up_long", 100, 1800),
-        ("swipe_to_random", 200, 1600),
-    ]
+def setup(tmp_path, *, history=None, visit="a"):
+    page = tmp_path / "pages" / "meituan"
+    page.mkdir(parents=True, exist_ok=True)
+    for name, content in (("PAGE.md", "Merchant"), ("task.md", "Collect"), ("COLLECT.md", GUIDE), ("run.agent.py", SCRIPT)):
+        if not (page / name).exists():
+            (page / name).write_text(content)
+    mechanism = PageMechanism(tmp_path / "pages", page_policies={"meituan": PagePolicy(role="merchant", requires_collector=True, max_product_entry_taps=1)})
+    hub = FakeHub()
+    toolbox = CollectorToolbox(mechanism=mechanism, event_hub=hub, page_path="meituan",
+        page_visit_id=visit, history=history or CollectorHistory(tmp_path / "history"),
+        merchant_schema={"name": ""}, collection_schema={"items": [{"name": ""}]},
+        requires_merchant_profile=True)
+    toolbox._page_call("page_view", {})
+    toolbox.read_collection_guide()
+    toolbox.screenshot()
+    toolbox.save_merchant_profile('{"name":"Merchant"}')
+    return toolbox
 
 
-def test_run_agent_py_reads_are_deduplicated_and_external_changes_refresh_content(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    run_path = page_dir / "run.agent.py"
-    original = "def run(xml: str):\n    return {'items': []}\n"
-    run_path.write_text(original, encoding="utf-8")
-    toolbox = CollectorCoderToolbox(
-        mechanism=PageMechanism(tmp_path),
-        page_path="meituan",
-    )
-
-    first = json.loads(toolbox.read_run_agent_py())
-    repeated = json.loads(toolbox.read_run_agent_py())
-    applied = json.loads(
-        toolbox.apply_run_agent_py_patch(
-            (
-                "*** Begin Patch\n*** Update File: run.agent.py\n@@\n"
-                "-    return {'items': []}\n+    return {'items': [xml]}\n*** End Patch"
-            )
-        )
-    )
-    after_patch = json.loads(toolbox.read_run_agent_py())
-    forced_after_patch = json.loads(toolbox.read_run_agent_py(force=True))
-    external = "def run(xml: str):\n    return {'items': [{'external': xml}]}\n"
-    run_path.write_text(external, encoding="utf-8")
-    after_external_change = json.loads(toolbox.read_run_agent_py())
-
-    assert first["content"] == original
-    assert first["content_omitted"] is False
-    assert repeated["content_omitted"] is True
-    assert "content" not in repeated
-    assert applied["ok"] is True
-    assert "content" not in applied
-    assert after_patch["content_omitted"] is True
-    assert "content" not in after_patch
-    assert forced_after_patch["content_omitted"] is False
-    assert "return {'items': [xml]}" in forced_after_patch["content"]
-    assert after_external_change["content_omitted"] is False
-    assert after_external_change["content"] == external
+def mark(toolbox):
+    root = json.loads(toolbox._page_call("page_view", {}))
+    key = root["regions"][0]["id"]
+    toolbox._page_call("page_node", {"key": key})
+    toolbox._page_call("update_aaid", {"id": key, "value": "1"})
 
 
-def test_read_run_agent_py_reports_missing_script_without_fake_content(tmp_path: Path) -> None:
-    (tmp_path / "meituan").mkdir()
-    toolbox = CollectorCoderToolbox(
-        mechanism=PageMechanism(tmp_path),
-        page_path="meituan",
-    )
+def verify(toolbox, name):
+    mark(toolbox)
+    result = json.loads(toolbox.capture_validation_case())
+    assert "run_results" not in result
+    toolbox.screenshot()
+    toolbox.save_baseline(json.dumps({"items": [{"name": name}]}))
+    return json.loads(toolbox.sniff_run())
 
-    result = json.loads(toolbox.read_run_agent_py())
 
+def train(toolbox):
+    verify(toolbox, "cup")
+    toolbox.return_to_live_page()
+    toolbox.collector_swipe_to_random(500, 1200)
+    result = verify(toolbox, "bowl")
+    assert result["eval_grades"]["ready"]
+    return result
+
+
+def test_visual_workflow_locks_state_and_hides_output(tmp_path):
+    t = setup(tmp_path)
+    mark(t)
+    result = json.loads(t.capture_validation_case())
+    assert result["awaiting"] == "screenshot_then_save_baseline"
+    with pytest.raises(ValueError, match="screenshot"):
+        t.save_baseline('{"items":[{"name":"cup"}]}')
+    with pytest.raises(ValueError, match="frozen"):
+        t.collector_swipe_up(1, 1000)
+    before = t.event_hub.calls[:]
+    t._page_call("page_view", {})
+    assert t.event_hub.calls == before
+    image = t.screenshot()
+    assert image[1]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert json.loads(t.save_baseline('{"items":[{"name":"cup"}]}'))["saved"]
+    report = json.loads(t.sniff_run())
+    assert report["eval_grades"]["score"] == 100
+    assert not report["eval_grades"]["ready"]
+    with pytest.raises(ValueError, match="overwritten"):
+        t.save_baseline('{"items":[]}')
+
+
+def test_two_states_require_random_sample_and_restore(tmp_path):
+    t = setup(tmp_path)
+    verify(t, "cup")
+    t.return_to_live_page()
+    t.collector_swipe_up(1, 1000)
+    verify(t, "bowl")
+    assert not t.training_result()["ready"]
+    t.return_to_live_page()
+    t.collector_swipe_to_random(1, 1000)
+    verify(t, "bowl")
+    assert t.training_result()["ready"]
+    assert not t.restore_to_top()["restored"]
+    t.return_to_live_page()
+    t.collector_tap(1, 500)
+    assert t.restore_to_top()["restored"]
+    assert "tap" in t.event_hub.calls
+
+
+def test_failed_case_cannot_be_evaded_or_rebased(tmp_path):
+    t = setup(tmp_path)
+    mark(t)
+    t.capture_validation_case()
+    t.screenshot()
+    t.save_baseline('{"items":[{"name":"wrong"}]}')
+    report = json.loads(t.sniff_run())
+    assert report["eval_grades"]["score"] < 100
+    for action in (lambda: t.abandon_validation("snapshot_mismatch"),
+                   lambda: t.collector_tap(1, 500)):
+        with pytest.raises(ValueError):
+            action()
+    t.return_to_live_page()
+    assert json.loads(t.sniff_run())["eval_grades"]["score"] < 100
+
+
+def test_patch_invalidates_training_and_preserves_scoped_file_tools(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    first = json.loads(t.read_run_agent_py())
+    assert first["content"]
+    assert json.loads(t.read_run_agent_py())["content_omitted"]
+    patch = "*** Begin Patch\n*** Update File: run.agent.py\n@@\n def run(view):\n+    # Stable extraction contract.\n*** End Patch\n"
+    assert json.loads(t.apply_run_agent_py_patch(patch))["ok"]
+    assert not t.training_result()["ready"]
+    assert json.loads(t.sniff_run())["eval_grades"]["ready"]
+    forbidden = patch.replace("run.agent.py", "../run.agent.py")
+    assert not json.loads(t.apply_run_agent_py_patch(forbidden))["ok"]
+
+
+def test_history_persists_all_visual_cases_and_reloads(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    t.return_to_live_page()
+    t.collector_tap(1, 500)
+    t.persist_history()
+    files = list((tmp_path / "history").rglob("record.json"))
+    assert len(files) == 2
+    stored = json.loads(files[0].read_text())
+    assert stored["image"].startswith("data:image/png;base64,")
+    assert stored["baseline"] is not None
+    assert stored["snapshot"]["aliases"] == {"1": [0]}
+    second = setup(tmp_path, visit="b")
+    assert len(second.historical_ids) == 2
+    key = next(iter(second.historical_ids))
+    before = list(second.event_hub.calls)
+    second.load_validation_case(key)
+    second.screenshot()
+    assert second.event_hub.calls == before
+    with pytest.raises(ValueError):
+        second.collector_swipe_up(1, 1000)
+    with pytest.raises(ValueError):
+        second.save_baseline('{"items":[]}')
+
+
+def test_guide_change_requires_reannotation_of_history(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    t.return_to_live_page()
+    t.collector_tap(1, 500)
+    t.persist_history()
+    second = setup(tmp_path, visit="b")
+    key = next(iter(second.historical_ids))
+    second.load_validation_case(key)
+    original = second.cases[key]["baseline"]
+    second._page_call("page_read", {})
+    second.screenshot()
+    second.write_collection_guide(GUIDE + "\nUse control state to distinguish nearby regions.")
+    result = json.loads(second.sniff_run())
+    assert result["eval_grades"]["cases"][key]["errors"] == ["remark_required"]
+    mark(second)
+    result = json.loads(second.sniff_run())
+    assert result["eval_grades"]["cases"][key]["score"] == 100
+    assert second.cases[key]["baseline"] == original
+
+
+def test_script_regression_against_history_blocks_readiness(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    t.return_to_live_page()
+    t.collector_tap(1, 500)
+    t.persist_history()
+    second = setup(tmp_path, visit="b")
+    key = next(iter(second.historical_ids))
+    expected = second.cases[key]["baseline"]["items"][0]["name"]
+    second.mechanism.write_run_agent_py("meituan", 'def run(view):\n    return {"items": []}\n')
+    second.load_validation_case(key)
+    report = json.loads(second.sniff_run())
+    assert report["eval_grades"]["cases"][key]["score"] < 100
+    assert expected
+    assert not second.training_result()["ready"]
+
+
+def test_guide_creation_requires_both_view_and_image(tmp_path):
+    t = setup(tmp_path)
+    (tmp_path / "pages/meituan/COLLECT.md").unlink()
+    t._saw_screenshot = False
+    assert json.loads(t.read_collection_guide())["error_type"] == "guide_missing"
+    with pytest.raises(ValueError):
+        t.write_collection_guide(GUIDE)
+    t._page_call("page_read", {})
+    t.screenshot()
+    assert json.loads(t.write_collection_guide(GUIDE))["ok"]
+    with pytest.raises(ValueError):
+        t.write_collection_guide('{"required_aliases":["x1"]}\nInvalid alias')
+    with pytest.raises(ValueError):
+        t.mechanism.write_collection_guide("../escape", GUIDE)
+
+
+def test_view_has_no_mutating_tools_and_restores_paths(tmp_path):
+    t = setup(tmp_path)
+    mark(t)
+    snapshot = t.event_hub.page_bridge.snapshot()
+    view = ReadOnlyPageView(snapshot)
+    assert view.select_aaid(1)["id"] >= 0
+    assert not hasattr(view, "update_aaid")
+    assert not hasattr(view, "xml")
+    assert view.page_read()["entries"][0]["value"] == "cup"
+    snapshot["aliases"] = {}
+    assert view.select_aaid(1)
+    with pytest.raises(MissingPageAlias):
+        ReadOnlyPageView(snapshot).select_aaid(1)
+
+
+def test_tools_are_fixed_without_coder_and_report_errors(tmp_path):
+    t = setup(tmp_path)
+    tools = {tool.name: tool for tool in t.create_tools()}
+    assert {"read_run_agent_py", "apply_run_agent_py_patch", "screenshot", "load_validation_case"} <= tools.keys()
+    assert "consult_coder" not in tools
+    assert "uiautomate" not in tools
+    before = list(tools)
+    mark(t)
+    t.capture_validation_case()
+    result = json.loads(tools["collector_swipe_up"].invoke({"x": 1, "y": 1000}))
     assert result["ok"] is False
-    assert result["error_type"] == "MissingRunAgentPy"
-    assert "content" not in result
+    assert before == [tool.name for tool in t.create_tools()]
 
 
-def test_collector_coder_exposes_only_page_script_file_tools(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': []}\n",
-        encoding="utf-8",
-    )
+def test_abandon_only_unscored_samples(tmp_path):
+    t = setup(tmp_path)
+    mark(t)
+    t.capture_validation_case()
+    t.screenshot()
+    assert json.loads(t.abandon_validation("snapshot_mismatch"))["abandoned"]
+    assert not t.cases
 
-    toolbox = CollectorCoderToolbox(
-        mechanism=PageMechanism(tmp_path),
-        page_path="meituan",
-    )
 
-    assert [tool.name for tool in toolbox.create_tools()] == [
-        "read_run_agent_py",
-        "apply_run_agent_py_patch",
-    ]
-
-
-def test_collector_coder_reuses_agent_thread_and_sends_only_new_cases(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': []}\n",
-        encoding="utf-8",
-    )
-    built = []
-    invocations = []
-
-    class FakeCoderAgent:
-        def invoke(self, payload, config=None):
-            invocations.append((payload, config))
-            return {
-                "messages": [
-                    *payload["messages"],
-                    {"role": "assistant", "content": "patched"},
-                ]
-            }
-
-    def create_agent(**kwargs):
-        built.append(kwargs)
-        return FakeCoderAgent()
-
-    session = CollectorCoderSession(
-        model="model",
-        mechanism=PageMechanism(tmp_path),
-        page_path="meituan",
-        page_visit_id="visit-1",
-        page_description="merchant page",
-        collection_schema={"items": [{"name": ""}]},
-        create_agent_factory=create_agent,
-    )
-    first_case = {
-        "case_id": "case-1",
-        "xml": "<page><item text='cup'/></page>",
-        "r1": {"items": [{"name": "cup"}]},
-    }
-    second_case = {
-        "case_id": "case-2",
-        "xml": "<page><item text='bowl'/></page>",
-        "r1": {"items": [{"name": "bowl"}]},
-    }
-
-    first = json.loads(
-        session.implement(training_cases=[first_case], evaluation={"score": 0})
-    )
-    second = json.loads(
-        session.implement(
-            training_cases=[first_case, second_case],
-            evaluation={"score": 50, "errors": ["cases[1].result.items[0].name"]},
-            instruction=(
-                "The second repeated item container has the same width and child topology as the first, "
-                "but its label is split across sibling nodes; locate the repeated container structurally."
-            ),
-        )
-    )
-
-    assert len(built) == 1
-    assert [tool.name for tool in built[0]["tools"]] == [
-        "read_run_agent_py",
-        "apply_run_agent_py_patch",
-    ]
-    assert "checkpointer" not in built[0]
-    assert first["turn"] == 1
-    assert second["turn"] == 2
-    assert first["history_messages"] == 2
-    assert second["history_messages"] == 4
-    assert first["new_training_cases"] == 1
-    assert second["new_training_cases"] == 1
-    first_payload = coder_sections(invocations[0][0]["messages"][0]["content"])
-    second_payload = coder_sections(invocations[1][0]["messages"][-1]["content"])
-    assert invocations[1][0]["messages"][:2] == invocations[0][0]["messages"] + [
-        {"role": "assistant", "content": "patched"}
-    ]
-    assert first_payload["New cases"] == [{k: v for k, v in first_case.items() if k != "r1"}]
-    assert second_payload["New cases"] == [{k: v for k, v in second_case.items() if k != "r1"}]
-    assert second_payload["Task context and output contract"]["template_parent_path"] == "meituan"
-    assert second_payload["Task context and output contract"]["page_description"] is None
-    assert second_payload["Evaluation grades"]["score"] == 50
-    assert second_payload["Evaluation grades"]["errors"] == [
-        "cases[1].result.items[0].name"
-    ]
-    assert "same width and child topology" in second_payload["Collector diagnosis"]
-    assert invocations[0][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
-    assert invocations[1][1]["configurable"]["thread_id"] == "collector-coder:visit-1"
-    assert session.message_history() == tuple(
-        [
-            *invocations[1][0]["messages"],
-            {"role": "assistant", "content": "patched"},
-        ]
-    )
-
-
-def test_collector_coder_marks_third_failed_attempt_for_macro_review(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': []}\n",
-        encoding="utf-8",
-    )
-    invocations = []
-
-    class FakeCoderAgent:
-        def invoke(self, payload, config=None):
-            invocations.append(payload)
-            return {
-                "messages": [
-                    *payload["messages"],
-                    {"role": "assistant", "content": "patched"},
-                ]
-            }
-
-    session = CollectorCoderSession(
-        model="model",
-        mechanism=PageMechanism(tmp_path),
-        page_path="meituan",
-        page_visit_id="visit-stagnation",
-        page_description="merchant page",
-        collection_schema={"items": []},
-        create_agent_factory=lambda **_kwargs: FakeCoderAgent(),
-    )
-    cases = [{"case_id": "case-1", "xml": "<page/>", "r1": {"items": []}}]
-
-    session.implement(training_cases=cases, evaluation={"score": 20})
-    session.implement(training_cases=cases, evaluation={"score": 45})
-    session.implement(training_cases=cases, evaluation={"score": 45})
-
-    histories = [
-        coder_sections(invocation["messages"][-1]["content"])["Optimization history"]
-        for invocation in invocations
-    ]
-    assert [history["attempt"] for history in histories] == [1, 2, 3]
-    assert [history["prior_scores"] for history in histories] == [[], [20], [20, 45]]
-    assert [history["current_score"] for history in histories] == [20, 45, 45]
-    assert [history["stagnation_review_required"] for history in histories] == [
-        False,
-        False,
-        True,
-    ]
-    assert histories[0]["prior_script_metrics"] == []
-    assert histories[0]["current_script_metrics"]["lines"] == 2
-    assert histories[2]["prior_script_metrics"] == [
-        histories[0]["current_script_metrics"],
-        histories[1]["current_script_metrics"],
-    ]
-
-
-def test_collector_consult_coder_supplies_accumulated_pairs_and_batch_result(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': []}\n",
-        encoding="utf-8",
-    )
-    received = []
-
-    class FakeCoderSession:
-        def implement(self, **kwargs):
-            received.append(kwargs)
-            return json.dumps({"ok": True})
-
-    event_hub = FakeEventHub()
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=event_hub,
-        page_path="meituan",
-        collection_schema='{"items": [{"name": ""}]}',
-        coder_session=FakeCoderSession(),
-    )
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
-    event_hub.xml = "<h><n t=\"bowl\"/></h>"
-    toolbox.collector_swipe_up(100, 1000)
-    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
-    toolbox.sniff_run()
-
-    rejected = json.loads(toolbox.consult_coder("handle repeated card variants"))
-    diagnosis = (
-        "Both states use repeated item containers with the same width and child hierarchy, but labels may be split "
-        "across sibling nodes. The current script returns no cards, so identify the shared container structurally."
-    )
-    result = json.loads(toolbox.consult_coder(diagnosis))
-
-    assert rejected["error_type"] == "CollectorCoderDiagnosisInsufficient"
-    assert rejected["minimum_characters"] == 60
-    assert result["ok"] is True
-    assert len(received) == 1
-    assert len(received[0]["training_cases"]) == 2
-    assert received[0]["training_cases"][1]["xml"] == event_hub.xml
-    assert received[0]["training_cases"][0]["r1"] == {"items": [{"name": "cup"}]}
-    assert received[0]["evaluation"]["eval_grades"]["score"] < 100
-    assert received[0]["instruction"] == diagnosis
-    assert [call[0] for call in event_hub.calls].count("uiautomate") == 2
-
-
-def test_collector_saved_instances_require_coder_to_cover_every_visit_for_path(
-    tmp_path: Path,
-) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': [{'name': 'new'}]}\n",
-        encoding="utf-8",
-    )
-    saved_instances = CollectorSavedInstanceMap()
-
-    first_hub = FakeEventHub()
-    first = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=first_hub,
-        page_path="meituan",
-        collection_schema='{"items": [{"name": ""}]}',
-        saved_instances=saved_instances,
-        page_visit_id="visit-a",
-    )
-    first.collector_uiautomate()
-    first.save_baseline('{"items": [{"name": "old-a"}]}')
-    first_hub.xml = '<h state="second"><n t="old-b"/></h>'
-    first.collector_swipe_up(100, 1000)
-    first.save_baseline('{"items": [{"name": "old-b"}]}')
-
-    received = []
-
-    class FakeCoderSession:
-        def implement(self, **kwargs):
-            received.append(kwargs)
-            return json.dumps({"ok": True})
-
-    second_hub = FakeEventHub()
-    second_hub.xml = '<h merchant="new" state="first"/>'
-    second = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=second_hub,
-        page_path="meituan",
-        collection_schema='{"items": [{"name": ""}]}',
-        coder_session=FakeCoderSession(),
-        saved_instances=saved_instances,
-        page_visit_id="visit-b",
-    )
-    second.collector_uiautomate()
-    second.save_baseline('{"items": [{"name": "new"}]}')
-    second_hub.xml = '<h merchant="new" state="second"/>'
-    second.collector_swipe_up(100, 1000)
-    second.save_baseline('{"items": [{"name": "new"}]}')
-
-    sniffed = json.loads(second.sniff_run())
-    diagnosis = (
-        "The script matches the current visit but fails earlier instances of the shared template. "
-        "Use repeated container hierarchy and field placement to recognize the business value across variants."
-    )
-    consulted = json.loads(second.consult_coder(diagnosis))
-
-    instances = saved_instances.instances_for_path("meituan")
-    assert [instance["page_visit_id"] for instance in instances] == ["visit-a", "visit-b"]
-    assert [len(instance["cases"]) for instance in instances] == [2, 2]
-    assert len(sniffed["cases"]) == 4
-    assert sniffed["eval_grades"]["score"] < 100
-    assert second.training_result()["ready"] is False
-    assert second.training_result()["saved_instances"] == 2
-    assert second.training_result()["corpus_cases"] == 4
-    assert second.training_result()["validated_corpus_cases"] == 2
-    assert consulted["ok"] is True
-    assert len(received) == 1
-    assert {case["page_visit_id"] for case in received[0]["training_cases"]} == {
-        "visit-a",
-        "visit-b",
-    }
-    assert len(received[0]["training_cases"]) == 4
-
-
-def test_collector_skips_coder_when_existing_script_already_scores_100(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "from xml.etree import ElementTree as ET\n"
-        "def run(xml: str):\n"
-        "    return {'items': [{'name': ET.fromstring(xml).find('n').attrib['t']}]}\n",
-        encoding="utf-8",
-    )
-
-    class CoderMustNotRun:
-        def implement(self, **kwargs):
-            raise AssertionError("coder must be skipped for an already optimal script")
-
-    event_hub = FakeEventHub()
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=event_hub,
-        page_path="meituan",
-        collection_schema='{"items": [{"name": ""}]}',
-        coder_session=CoderMustNotRun(),
-    )
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
-    event_hub.xml = '<h><n t="bowl"/></h>'
-    toolbox.collector_swipe_up(100, 1000)
-    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
-
-    result = json.loads(toolbox.consult_coder())
-
-    assert result["ok"] is True
-    assert result["skipped"] is True
-    assert result["reason"] == "existing_script_already_optimal"
-    assert result["evaluation"]["score"] == 100
-    assert result["verification"]["ready"] is True
-    assert [call[0] for call in event_hub.calls].count("uiautomate") == 2
-
-
-def test_collector_rejects_coder_consultation_before_two_distinct_pairs(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': []}\n",
-        encoding="utf-8",
-    )
-
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=FakeEventHub(),
-        page_path="meituan",
-        collection_schema='{"items": []}',
-        coder_session=SimpleNamespace(implement=lambda **_: "must not run"),
-    )
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": []}')
-
-    result = json.loads(toolbox.consult_coder())
-
-    assert result["ok"] is False
-    assert result["error_type"] == "CollectorTrainingCasesInsufficient"
-    assert result["recorded_cases"] == 1
-    assert result["required_cases"] == 2
-
-
-def test_collector_sniff_run_executes_current_page_script(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
-    (page_dir / "task.md").write_text("task", encoding="utf-8")
-    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    return {'items': [{'name': 'cup'}]}\n", encoding="utf-8")
-    tools = {
-        tool.name: tool
-        for tool in create_collector_tools(
-            mechanism=PageMechanism(tmp_path),
-            event_hub=FakeEventHub(),
-            page_path="meituan",
-        )
-    }
-
-    tools["collector_uiautomate"].func()
-    tools["save_baseline"].func('{"items": [{"name": "cup"}]}')
-    result = json.loads(tools["sniff_run"].func())
-
-    assert set(result) == {"cases", "ground_truths", "run_results", "eval_grades"}
-    case_id = result["cases"][0]["case_id"]
-    assert "r1" not in result["cases"][0]
-    assert result["run_results"] == result["ground_truths"] == {case_id: {"items": [{"name": "cup"}]}}
-    assert result["eval_grades"]["score"] == 100
-    assert result["eval_grades"]["errors"] == []
-    assert result["eval_grades"]["missing"] == []
-    assert len(result["eval_grades"]["cases"]) == 1
-    assert result["eval_grades"]["ready"] is False
-    assert len(result["cases"]) == 1
-
-
-def test_sniff_run_uses_saved_baseline_and_replacement(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
-    (page_dir / "task.md").write_text("task", encoding="utf-8")
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n"
-        "    return {'items': [{'name': 'cup'}]}\n",
-        encoding="utf-8",
-    )
-    tools = {
-        tool.name: tool
-        for tool in create_collector_tools(
-            mechanism=PageMechanism(tmp_path),
-            event_hub=FakeEventHub(),
-            page_path="meituan",
-        )
-    }
-
-    tools["collector_uiautomate"].func()
-    missing = json.loads(tools["sniff_run"].func())
-    saved = json.loads(tools["save_baseline"].func('{"items": [{"name": "cup"}]}'))
-    matched = json.loads(tools["sniff_run"].func())
-    tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
-    replaced = json.loads(tools["sniff_run"].func())
-
-    assert missing["eval_grades"]["score"] == 0
-    assert "missing_baseline" in missing["eval_grades"]["errors"]
-    assert saved["baseline_saved"] is True
-    assert matched["eval_grades"]["score"] == 100
-    assert replaced["eval_grades"]["score"] < 100
-    assert replaced["eval_grades"]["errors"] == ["cases[0].result.items[0].name"]
-
-
-def test_sniff_run_keeps_evaluating_saved_pairs_after_page_moves(tmp_path: Path) -> None:
-    class MovingEventHub(FakeEventHub):
-        def swipe_up(self, x, y):
-            self.xml = '<h><n t="bowl"/></h>'
-            return super().swipe_up(x, y)
-
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
-    tools = {
-        tool.name: tool
-        for tool in create_collector_tools(
-            mechanism=PageMechanism(tmp_path),
-            event_hub=MovingEventHub(),
-            page_path="meituan",
-        )
-    }
-
-    tools["collector_uiautomate"].func()
-    tools["save_baseline"].func('{"items": []}')
-    tools["collector_swipe_up"].func(100, 1000)
-    result = json.loads(tools["sniff_run"].func())
-
-    assert result["eval_grades"]["score"] == 100
-    assert len(result["cases"]) == 1
-
-
-def test_same_script_must_pass_two_distinct_swiped_states(tmp_path: Path) -> None:
-    class MovingEventHub(FakeEventHub):
-        def swipe_up(self, x, y):
-            self.xml = '<h><n t="bowl"/></h>'
-            return super().swipe_up(x, y)
-
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
-    (page_dir / "task.md").write_text("task", encoding="utf-8")
-    (page_dir / "run.agent.py").write_text(
-        "from xml.etree import ElementTree as ET\n"
-        "def run(xml: str):\n"
-        "    name = ET.fromstring(xml).find('n').attrib['t']\n"
-        "    return {'items': [{'name': name}]}\n",
-        encoding="utf-8",
-    )
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=MovingEventHub(),
-        page_path="meituan",
-    )
-
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
-    first = json.loads(toolbox.sniff_run())
-    toolbox.collector_swipe_up(100, 1000)
-    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
-    second = json.loads(toolbox.sniff_run())
-
-    assert first["eval_grades"]["score"] == 100
-    assert first["eval_grades"]["ready"] is False
-    assert second["eval_grades"]["score"] == 100
-    assert second["eval_grades"]["ready"] is True
-    assert toolbox.training_result()["validated_states"] == 2
-
-    coder_toolbox = CollectorCoderToolbox(
-        mechanism=toolbox.mechanism,
-        page_path="meituan",
-    )
-    patched = json.loads(
-        coder_toolbox.apply_run_agent_py_patch(
-            (
-                "*** Begin Patch\n*** Update File: run.agent.py\n@@\n"
-                " from xml.etree import ElementTree as ET\n"
-                "+# Script version changed without changing extraction behavior.\n"
-                " def run(xml: str):\n"
-                "*** End Patch"
-            )
-        )
-    )
-    invalidated = toolbox.training_result()
-    assert patched["ok"] is True
-    assert invalidated["ready"] is False
-    assert invalidated["evaluation"]["errors"] == ["script_changed_since_evaluation"]
-
-
-def test_hardcoded_current_state_script_fails_cross_state_verification(tmp_path: Path) -> None:
-    class MovingEventHub(FakeEventHub):
-        def swipe_up(self, x, y):
-            self.xml = '<h><n t="bowl"/></h>'
-            return super().swipe_up(x, y)
-
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': [{'name': 'cup'}]}\n",
-        encoding="utf-8",
-    )
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=MovingEventHub(),
-        page_path="meituan",
-    )
-
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
-    first = json.loads(toolbox.sniff_run())
-    toolbox.collector_swipe_up(100, 1000)
-    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
-    second = json.loads(toolbox.sniff_run())
-
-    assert first["eval_grades"]["score"] == 100
-    assert second["eval_grades"]["score"] < 100
-    assert second["eval_grades"]["errors"] == ["cases[1].result.items[0].name"]
-    assert toolbox.training_result()["ready"] is False
-
-
-def test_sniff_run_reports_device_error_without_running_page_script(tmp_path: Path) -> None:
-    class ErrorEventHub(FakeEventHub):
-        def uiautomate(self):
-            return make_error_result("command_error", "adb failed")
-
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text("raise AssertionError('must not load')\n", encoding="utf-8")
-    tools = {
-        tool.name: tool
-        for tool in create_collector_tools(
-            mechanism=PageMechanism(tmp_path),
-            event_hub=ErrorEventHub(),
-            page_path="meituan",
-        )
-    }
-
-    result = json.loads(tools["sniff_run"].func())
-
-    assert result["eval_grades"]["ready"] is False
-    assert result["eval_grades"]["execution_error"]["error_type"] == "command_error"
-    assert result["eval_grades"]["score"] == 0
-    assert result["eval_grades"]["errors"] == ["uiautomate_error"]
-
-
-def test_sniff_run_keeps_failed_case_aligned_with_ground_truth(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml):\n    raise ValueError('invalid card')\n", encoding="utf-8"
-    )
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path), event_hub=FakeEventHub(), page_path="meituan"
-    )
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": []}')
-
-    report = json.loads(toolbox.sniff_run())
-
-    case_id = report["cases"][0]["case_id"]
-    assert report["ground_truths"] == {case_id: {"items": []}}
-    assert report["run_results"] == {case_id: None}
-    grade = report["eval_grades"]["cases"][0]
-    assert grade["case_id"] == case_id
-    assert grade["score"] < 100
-    assert grade["execution_error"]["error_type"] == "ValueError"
-    assert report["eval_grades"]["ready"] is False
-
-
-def test_coder_receives_replaced_truth_and_actual_result_without_repeating_xml(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text("def run(xml):\n    return {}\n", encoding="utf-8")
-
-    class FakeCoderAgent:
-        def invoke(self, payload, config=None):
-            return {"messages": [*payload["messages"], {"role": "assistant", "content": "patched"}]}
-
-    session = CollectorCoderSession(
-        model="model", mechanism=PageMechanism(tmp_path), page_path="meituan",
-        page_visit_id="visit-1", page_description="merchant", collection_schema={"items": []},
-        create_agent_factory=lambda **kwargs: FakeCoderAgent(),
-    )
-    case = {"case_id": "case-1", "xml": "<page/>", "r1": {"items": []}}
-    report = {"run_results": {"case-1": {"items": []}}, "eval_grades": {"score": 0}}
-    session.implement(training_cases=[case], evaluation=report)
-    case["r1"] = {"items": [{"name": "corrected"}]}
-    session.implement(training_cases=[case], evaluation=report, instruction="Investigate field ownership.")
-
-    sections = coder_sections(session.message_history()[-2]["content"])
-    assert sections["New cases"] == []
-    assert sections["Ground truths"] == {"case-1": case["r1"]}
-    assert sections["Run results"] == report["run_results"]
-    assert sections["Evaluation grades"] == report["eval_grades"]
-    assert sections["Collector diagnosis"] == "Investigate field ownership."
-
-
-def test_prepare_collector_uses_tool_verification_not_final_ai_text(tmp_path: Path) -> None:
-    captured = {}
-
-    class MovingEventHub(FakeEventHub):
-        def swipe_up(self, x, y):
-            self.xml = '<h><n t="bowl"/></h>'
-            return super().swipe_up(x, y)
-
+def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkeypatch):
+    t = setup(tmp_path)
     class FakeAgent:
-        def __init__(self, tools) -> None:
-            self.tools = {tool.name: tool for tool in tools}
-
-        def invoke(self, payload, config=None):
-            captured["payload"] = payload
-            captured["config"] = config
-            self.tools["collector_uiautomate"].func()
-            self.tools["save_merchant_profile"].func('{"name": "商家A"}')
-            self.tools["save_baseline"].func('{"items": [{"name": "cup"}]}')
-            self.tools["sniff_run"].func()
-            self.tools["collector_swipe_up"].func(100, 1000)
-            self.tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
-            self.tools["sniff_run"].func()
-            self.tools["collector_tap"].func(500, 300)
-            return {"messages": [{"role": "assistant", "content": "Ready. Score 100."}]}
-
-    def create_agent(**kwargs):
-        captured["kwargs"] = kwargs
-        return FakeAgent(kwargs["tools"])
-
-    page_dir = tmp_path / "meituan" / "美食" / "商家"
-    page_dir.mkdir(parents=True)
-    (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
-    (page_dir / "task.md").write_text("task", encoding="utf-8")
-    (page_dir / "run.agent.py").write_text(
-        "from xml.etree import ElementTree as ET\n"
-        "def run(xml: str):\n"
-        "    name = ET.fromstring(xml).find('n').attrib['t']\n"
-        "    return {'items': [{'name': name}]}\n",
-        encoding="utf-8",
-    )
-
-    manager = CollectorManager(
-        model="model",
-        mechanism=PageMechanism(tmp_path),
-        event_hub=MovingEventHub(),
-        create_agent_factory=create_agent,
-    )
-    result = json.loads(
-        manager.prepare_collector(
-            page_path="meituan/美食/商家",
-            page_description="merchant page",
-            merchant_schema='{"name": ""}',
-            collection_schema='{"items": [{"name": ""}]}',
-            runtime=SimpleNamespace(
-                state={
-                    "page_context_path": "meituan/美食/商家",
-                    "page_visit_id": "visit-merchant",
-                }
-            ),
-        )
-    )
-
-    assert result["ok"] is True
-    assert result["collector_message"] == "Ready. Score 100."
-    assert result["trained"] is True
-    assert result["verification"]["ready"] is True
-    assert result["verification"]["validated_states"] == 2
-    assert manager.training_registry.is_trained("visit-merchant", "meituan/美食/商家") is True
-    assert result["restoration"]["restored"] is True
-    assert captured["kwargs"]["name"] == "collector"
-    assert captured["kwargs"]["system_prompt"]
-    assert captured["config"]["recursion_limit"] == 1000
-    assert "merchant page" in captured["payload"]["messages"][0]["content"]
+        def __init__(self, tools):
+            self.toolbox = next(tool for tool in tools if tool.name == "sniff_run").func.__wrapped__.__self__
+        def invoke(self, payload, config):
+            box = self.toolbox
+            box._page_call("page_view", {})
+            box.read_collection_guide()
+            box.screenshot()
+            box.save_merchant_profile('{"name":"Merchant"}')
+            train(box)
+            box.return_to_live_page()
+            box.collector_tap(1, 500)
+            return {"messages": [{"content": "Ready."}]}
+    monkeypatch.setattr("src.collector.core.create_runtime", lambda **kw: FakeAgent(kw["tools"]))
+    manager = CollectorManager(model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
+    manager.history = CollectorHistory(tmp_path / "history")
+    result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
+        '{"items":[{"name":""}]}', SimpleNamespace(state={"page_context_path":"meituan","page_visit_id":"visit"})))
+    assert result["verification"]["ready"]
+    assert result["collector_message"] == "Ready."
+    assert result["trained"]
+    assert len(manager.history.load("meituan")) == 2
 
 
-def test_prepare_collector_final_ai_claim_cannot_mark_script_trained() -> None:
-    class FakeAgent:
-        def __init__(self, content: str) -> None:
-            self.content = content
-
-        def invoke(self, payload, config=None):
-            return {"messages": [{"role": "assistant", "content": self.content}]}
-
-    for content in ['{"ready": true, "score": 100}', "Ready. Score 100.", "not json"]:
-        def create_agent(**kwargs):
-            return FakeAgent(content)
-
-        manager = CollectorManager(
-            model="model",
-            event_hub=FakeEventHub(),
-            create_agent_factory=create_agent,
-        )
-        result = json.loads(
-            manager.prepare_collector(
-                page_path="meituan/美食/商家",
-                page_description="merchant",
-                merchant_schema='{"name": ""}',
-                collection_schema='{"items": []}',
-                runtime=SimpleNamespace(
-                    state={
-                        "page_context_path": "meituan/美食/商家",
-                        "page_visit_id": f"visit-{content}",
-                    }
-                ),
-            )
-        )
-
-        assert result["trained"] is False
-        assert result["verification"]["ready"] is False
-        assert manager.training_registry.is_trained(f"visit-{content}", "meituan/美食/商家") is False
+def test_ready_does_not_unlock_device_while_view_is_frozen(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    with pytest.raises(ValueError):
+        t.collector_tap(1, 500)
 
 
-def test_merchant_profile_is_required_but_not_part_of_item_scoring(tmp_path: Path) -> None:
-    class MovingEventHub(FakeEventHub):
-        def swipe_up(self, x, y):
-            self.xml = '<h><n t="bowl"/></h>'
-            return super().swipe_up(x, y)
+def test_batch_sampling_never_runs_script_and_regression_never_moves_device(tmp_path, monkeypatch):
+    t = setup(tmp_path)
+    calls = []
+    original = t.mechanism.run_page_script
 
-    page_dir = tmp_path / "meituan" / "美食" / "商家"
-    page_dir.mkdir(parents=True)
-    (page_dir / "run.agent.py").write_text(
-        "from xml.etree import ElementTree as ET\n"
-        "def run(xml: str):\n"
-        "    return {'items': [{'name': ET.fromstring(xml).find('n').attrib['t']}]}\n",
-        encoding="utf-8",
-    )
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=MovingEventHub(),
-        page_path="meituan/美食/商家",
-        merchant_schema='{"name": "", "distance": ""}',
-        collection_schema='{"items": [{"name": ""}]}',
-        requires_merchant_profile=True,
-    )
+    def run(*args):
+        calls.append(args)
+        return original(*args)
 
-    toolbox.collector_uiautomate()
-    invalid = json.loads(toolbox.save_merchant_profile('{"name": "", "distance": "1km"}'))
-    saved = json.loads(toolbox.save_merchant_profile('{"name": "商家A", "distance": "1km"}'))
-    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
-    first = json.loads(toolbox.sniff_run())
-    toolbox.collector_swipe_up(100, 1000)
-    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
-    second = json.loads(toolbox.sniff_run())
-
-    assert invalid["saved"] is False
-    assert invalid["errors"] == ["merchant.name"]
-    assert saved["saved"] is True
-    assert first["eval_grades"]["score"] == 100
-    assert second["eval_grades"]["score"] == 100
-    assert second["eval_grades"]["ready"] is True
+    monkeypatch.setattr(t.mechanism, "run_page_script", run)
+    for name in ("cup", "bowl"):
+        mark(t)
+        t.capture_validation_case()
+        t.screenshot()
+        saved = json.loads(t.save_baseline(json.dumps({"items": [{"name": name}]})))
+        assert saved["saved"] and "eval_grades" not in saved
+        t.return_to_live_page()
+        if name == "cup":
+            t.collector_swipe_to_random(500, 1200)
+    assert not calls
+    assert len(t.history.load("meituan")) == 2
+    before = t.event_hub.calls[:]
+    ids = set(t.cases)
+    report = json.loads(t.sniff_run())
+    assert report["eval_grades"]["ready"]
+    assert len(calls) == 2
+    assert t.event_hub.calls == before
+    assert t.active_id is None and set(t.cases) == ids
 
 
-def test_restore_to_top_requires_successful_reset_tap_without_device_checks(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
-    event_hub = FakeEventHub()
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=event_hub,
-        page_path="meituan",
-    )
-    before = toolbox.training_result()
-
-    restoration = toolbox.restore_to_top()
-
-    assert restoration == {
-        "restored": False,
-        "strategy": "reset_tap",
-        "tap_attempted": False,
-        "tap_succeeded": False,
-        "error": "reset_tap_not_executed",
-    }
-    assert event_hub.calls == []
-    assert toolbox.training_result() == before
+def test_failing_evidence_survives_restart_before_success(tmp_path):
+    t = setup(tmp_path)
+    mark(t)
+    t.capture_validation_case()
+    t.screenshot()
+    t.save_baseline('{"items":[{"name":"wrong"}]}')
+    second = setup(tmp_path, visit="b")
+    assert len(second.historical_ids) == 1
+    assert json.loads(second.sniff_run())["eval_grades"]["score"] < 100
+    assert "tap" not in t.event_hub.calls
 
 
-def test_collector_tap_is_locked_until_multi_state_verification_is_ready(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan" / "美食" / "商家"
-    page_dir.mkdir(parents=True)
-    (page_dir / "run.agent.py").write_text(
-        "from xml.etree import ElementTree as ET\n"
-        "def run(xml: str):\n"
-        "    name = ET.fromstring(xml).find('n').attrib['t']\n"
-        "    return {'items': [{'name': name}]}\n",
-        encoding="utf-8",
-    )
-    event_hub = FakeEventHub()
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=event_hub,
-        page_path="meituan/美食/商家",
-        merchant_schema='{"name": ""}',
-        collection_schema='{"items": [{"name": ""}]}',
-        requires_merchant_profile=True,
-    )
-
-    locked = json.loads(toolbox.collector_tap(500, 300))
-    toolbox.collector_uiautomate()
-    toolbox.save_merchant_profile('{"name": "商家A"}')
-    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
-    toolbox.sniff_run()
-    toolbox.collector_swipe_up(100, 1000)
-    event_hub.xml = '<h><n t="bowl"/></h>'
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
-    toolbox.sniff_run()
-    tapped = toolbox.collector_tap(500, 300)
-    repeated = json.loads(toolbox.collector_tap(500, 300))
-    restoration = toolbox.restore_to_top()
-
-    assert locked["ok"] is False
-    assert locked["error_type"] == "CollectorTapLocked"
-    assert event_hub.calls[-1][0] == "tap"
-    assert isinstance(tapped, str)
-    assert repeated["error_type"] == "CollectorTapAlreadyUsed"
-    assert restoration["restored"] is True
-    assert restoration["strategy"] == "reset_tap"
-    assert restoration["tap_succeeded"] is True
-    assert "top_state_fingerprint" not in restoration
+def test_screenshot_tool_returns_image_blocks_to_langchain(tmp_path):
+    from langchain_core.messages import ToolMessage
+    t = setup(tmp_path)
+    tool = next(tool for tool in t.create_tools() if tool.name == "screenshot")
+    message = tool.invoke({"type": "tool_call", "id": "screen", "name": "screenshot", "args": {}})
+    assert isinstance(message, ToolMessage)
+    assert isinstance(message.content, list)
+    assert message.content[1]["type"] == "image_url"
 
 
-def test_collector_tap_stays_visible_and_rejects_calls_until_verification_ready(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan" / "美食" / "商家"
-    page_dir.mkdir(parents=True)
-    (page_dir / "run.agent.py").write_text(
-        "from xml.etree import ElementTree as ET\n"
-        "def run(xml: str):\n"
-        "    name = ET.fromstring(xml).find('n').attrib['t']\n"
-        "    return {'items': [{'name': name}]}\n",
-        encoding="utf-8",
-    )
-    event_hub = FakeEventHub()
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=event_hub,
-        page_path="meituan/美食/商家",
-        merchant_schema='{"name": ""}',
-        collection_schema='{"items": [{"name": ""}]}',
-        requires_merchant_profile=True,
-    )
-    tools = toolbox.create_tools()
-    tool_names = [tool.name for tool in tools]
-    assert "collector_tap" in tool_names
-    locked = json.loads(toolbox.collector_tap(500, 300))
-    assert locked["error_type"] == "CollectorTapLocked"
-
-    toolbox.collector_uiautomate()
-    toolbox.save_merchant_profile('{"name": "商家A"}')
-    toolbox.save_baseline('{"items": [{"name": "cup"}]}')
-    toolbox.sniff_run()
-    toolbox.collector_swipe_up(100, 1000)
-    event_hub.xml = '<h><n t="bowl"/></h>'
-    toolbox.collector_uiautomate()
-    toolbox.save_baseline('{"items": [{"name": "bowl"}]}')
-    toolbox.sniff_run()
-    assert toolbox.collector_tap(500, 300) == event_hub.xml
-    already_used = json.loads(toolbox.collector_tap(500, 300))
-    assert already_used["error_type"] == "CollectorTapAlreadyUsed"
-    assert [tool.name for tool in toolbox.create_tools()] == tool_names
+def test_frozen_view_pagination_and_copied_query_results(tmp_path):
+    t = setup(tmp_path)
+    mark(t)
+    view = ReadOnlyPageView(t.event_hub.page_bridge.snapshot())
+    first = view.page_read(offset=0, limit=1)
+    assert len(first["entries"]) == 1
+    first["entries"][0]["value"] = "changed"
+    assert view.page_read()["entries"][0]["value"] == "cup"
+    assert view.page_read(offset=1, limit=1)["entries"] == []
 
 
-def test_collector_tap_rejects_non_merchant_page_calls_without_being_hidden(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n    return {'items': []}\n",
-        encoding="utf-8",
-    )
-    event_hub = FakeEventHub()
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=event_hub,
-        page_path="meituan",
-    )
-
-    assert "collector_tap" in [tool.name for tool in toolbox.create_tools()]
-    result = json.loads(toolbox.collector_tap(500, 300))
-
-    assert result["ok"] is False
-    assert result["error_type"] == "CollectorTapNotApplicable"
-    assert event_hub.calls == []
-
-
-def test_merchant_profile_cannot_be_saved_after_scrolling(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan" / "美食" / "商家"
-    page_dir.mkdir(parents=True)
-    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    return {'items': []}\n", encoding="utf-8")
-    toolbox = CollectorToolbox(
-        mechanism=PageMechanism(tmp_path),
-        event_hub=FakeEventHub(),
-        page_path="meituan/美食/商家",
-        merchant_schema='{"name": ""}',
-        collection_schema='{"items": []}',
-        requires_merchant_profile=True,
-    )
-
-    toolbox.collector_uiautomate()
-    toolbox.collector_swipe_up(100, 1000)
-    result = json.loads(toolbox.save_merchant_profile('{"name": "商家A"}'))
-
-    assert result["saved"] is False
-    assert result["error_type"] == "MerchantProfileStateError"
-
-
-def test_prepare_collector_rejects_stale_page_visit_before_building_agent(tmp_path: Path) -> None:
-    page_dir = tmp_path / "meituan"
-    page_dir.mkdir()
-    (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
-    (page_dir / "task.md").write_text("task", encoding="utf-8")
-    manager = CollectorManager(model="model", mechanism=PageMechanism(tmp_path), event_hub=FakeEventHub())
-
-    try:
-        manager.prepare_collector(
-            page_path="meituan",
-            page_description="home",
-            merchant_schema="{}",
-            collection_schema='{"items": []}',
-            runtime=SimpleNamespace(
-                state={"page_context_path": "meituan/外卖", "page_visit_id": "visit-stale"}
-            ),
-        )
-    except ValueError as exc:
-        assert "does not match current page" in str(exc)
-    else:
-        raise AssertionError("stale collector assignment must be rejected")
-
-
-def test_restore_failure_prevents_training_completion(tmp_path: Path) -> None:
-    class RestoreErrorEventHub(FakeEventHub):
-        def swipe_up(self, x, y):
-            self.xml = '<h><n t="bowl"/></h>'
-            return super().swipe_up(x, y)
-
-        def tap(self, x, y):
-            self.calls.append(("tap", x, y))
-            return make_error_result("command_error", "cannot restore")
-
-    class FakeAgent:
-        def __init__(self, tools) -> None:
-            self.tools = {tool.name: tool for tool in tools}
-
-        def invoke(self, payload, config=None):
-            self.tools["collector_uiautomate"].func()
-            self.tools["save_merchant_profile"].func('{"name": "商家A"}')
-            self.tools["save_baseline"].func('{"items": [{"name": "cup"}]}')
-            self.tools["sniff_run"].func()
-            self.tools["collector_swipe_up"].func(100, 1000)
-            self.tools["save_baseline"].func('{"items": [{"name": "bowl"}]}')
-            self.tools["sniff_run"].func()
-            self.tools["collector_tap"].func(500, 300)
-            return {"messages": [{"role": "assistant", "content": "ready"}]}
-
-    page_dir = tmp_path / "meituan" / "美食" / "商家"
-    page_dir.mkdir(parents=True)
-    (page_dir / "PAGE.md").write_text("home", encoding="utf-8")
-    (page_dir / "task.md").write_text("task", encoding="utf-8")
-    (page_dir / "run.agent.py").write_text(
-        "from xml.etree import ElementTree as ET\n"
-        "def run(xml: str):\n"
-        "    return {'items': [{'name': ET.fromstring(xml).find('n').attrib['t']}]}\n",
-        encoding="utf-8",
-    )
-    manager = CollectorManager(
-        model="model",
-        mechanism=PageMechanism(tmp_path),
-        event_hub=RestoreErrorEventHub(),
-        create_agent_factory=lambda **kwargs: FakeAgent(kwargs["tools"]),
-    )
-
-    result = json.loads(
-        manager.prepare_collector(
-            page_path="meituan/美食/商家",
-            page_description="merchant",
-            merchant_schema='{"name": ""}',
-            collection_schema='{"items": [{"name": ""}]}',
-            runtime=SimpleNamespace(
-                state={
-                    "page_context_path": "meituan/美食/商家",
-                    "page_visit_id": "visit-restore-error",
-                }
-            ),
-        )
-    )
-
-    assert result["verification"]["ready"] is True
-    assert result["restoration"]["restored"] is False
-    assert result["restoration"]["tap_attempted"] is True
-    assert result["restoration"]["tap_succeeded"] is False
-    assert result["trained"] is False
-    assert manager.training_registry.is_trained(
-        "visit-restore-error", "meituan/美食/商家"
-    ) is False
+def test_legacy_xml_script_is_rejected(tmp_path):
+    t = setup(tmp_path)
+    mark(t)
+    t.mechanism.write_run_agent_py("meituan", 'def run(xml):\n    return {"items":[]}\n')
+    output = t.mechanism.run_page_script("meituan", ReadOnlyPageView(t.event_hub.page_bridge.snapshot()))
+    assert not output["ok"]
+    assert output["error_type"] == "TypeError"

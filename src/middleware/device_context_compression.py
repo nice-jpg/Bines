@@ -30,7 +30,12 @@ SHORT_LIVED_PAGE_TOOLS = frozenset(
         "swipe_to_random",
         "tap",
         "tap_in_page",
-        "uiautomate",
+        "page_view",
+        "page_catalog",
+        "page_read",
+        "page_node",
+        "select_aaid",
+        "update_ratio",
         "screenshot",
     }
 )

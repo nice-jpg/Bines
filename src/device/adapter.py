@@ -128,6 +128,11 @@ class AndroidDevice:
             return _command_error_result(result)
         return remote_path
 
+    def pull_file(self, device_path: str, local_path: str) -> str | ErrorResult:
+        """Copy a device file to a caller-selected local path."""
+        result = self._run_adb(["pull", device_path, local_path])
+        return local_path if result.ok else _command_error_result(result)
+
     def get_supported_actions(self, device_dir: str = DEFAULT_ACTION_DIR) -> list[str] | ErrorResult:
         mkdir_result = self.shell(["mkdir", "-p", device_dir])
         if is_error_result(mkdir_result):
@@ -159,6 +164,7 @@ class AndroidDevice:
         x, y = xy
         action_path = _remote_join(device_dir, action_name)
         act_script_path = '/data/local/tmp/pi_input_replay'
+        print(f'nice-debug: perform {action_name} at {xy}')
         return self.execute_file(
             act_script_path,
             [input_device, action_path, str(int(x)), str(int(y))],

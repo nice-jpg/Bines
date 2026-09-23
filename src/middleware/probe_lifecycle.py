@@ -342,7 +342,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         if self.mechanism.is_merchant_page(current_path):
             tools = [
                 "prepare_collector",
-                "uiautomate",
+                "page_view",
                 "swipe_up",
                 "swipe_up_long",
                 "swipe_down",
@@ -351,7 +351,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
             if state.get(MERCHANT_COLLECTION_DONE) is True:
                 tools.append("navigate_back")
             return tools
-        return ["uiautomate", "tap_in_page", "navigate_to", "navigate_back", "authorize_probe_completion"]
+        return ["page_view", "tap_in_page", "navigate_to", "navigate_back", "authorize_probe_completion"]
 
 
 def _latest_ai_message(messages: Sequence[Any]) -> AIMessage | None:

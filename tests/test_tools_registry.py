@@ -63,7 +63,11 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertLess(tool_names.index("captcha_authenticated"), tool_names.index("tap_in_page"))
         self.assertLess(tool_names.index("think"), tool_names.index("tap_in_page"))
 
-        schemas = {tool.name: tool.tool_call_schema.model_json_schema() for tool in collect_conductor_tools()}
+        schemas = {
+            tool.name: tool.tool_call_schema if isinstance(tool.tool_call_schema, dict)
+            else tool.tool_call_schema.model_json_schema()
+            for tool in collect_conductor_tools()
+        }
         for tool_name in ("run_package", "close_package"):
             schema = schemas[tool_name]
             self.assertEqual(set(schema["properties"]), {"package_name", "justification"})
@@ -108,7 +112,7 @@ class ToolsRegistryTests(unittest.TestCase):
                 tools[name].metadata[OPERATION_EFFECT_POLICY_METADATA_KEY],
                 SCROLL_PAGE_CHANGE_POLICY,
             )
-        for name in ("tap_in_page", "navigate_back", "run_package", "close_package", "uiautomate"):
+        for name in ("tap_in_page", "navigate_back", "run_package", "close_package", "page_view"):
             self.assertNotIn(OPERATION_EFFECT_POLICY_METADATA_KEY, tools[name].metadata or {})
 
     def test_notifications_are_limited_to_probe_lifecycle_milestones(self) -> None:
@@ -123,7 +127,7 @@ class ToolsRegistryTests(unittest.TestCase):
             "swipe_up",
             "swipe_up_long",
             "swipe_down",
-            "uiautomate",
+            "page_view",
             "screenshot",
         ):
             self.assertNotIn(EXTERNAL_OPERATION_POLICY_METADATA_KEY, tools[name].metadata or {})

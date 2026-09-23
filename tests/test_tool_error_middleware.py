@@ -9,7 +9,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langgraph.errors import GraphInterrupt
-from middleware.tool_error import ToolErrorMiddleware, ToolMessage, make_tool_error_message
+from src.agent_runtime._tool_error import ToolErrorMiddleware, make_tool_error_message
+from langchain_core.messages import ToolMessage
 
 
 class ToolErrorMiddlewareTests(unittest.TestCase):

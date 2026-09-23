@@ -84,7 +84,7 @@ def _request(tool_name: str, state: dict, **args):
 
 
 def _message(name: str, content: str = FULL_XML) -> ToolMessage:
-    return ToolMessage(content=content, tool_call_id=f"{name}-1", name=name)
+    return ToolMessage(content='{"summary": "page"}', artifact={"page_xml": content}, tool_call_id=f"{name}-1", name=name)
 
 
 def test_initial_state_activates_context_without_manual_phase() -> None:
@@ -120,7 +120,7 @@ def test_prelaunch_model_request_keeps_complete_tool_contract(tmp_path: Path) ->
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
     tools = [
         SimpleNamespace(name=name)
-        for name in ("run_package", "uiautomate", "navigate_to", "prepare_collector")
+        for name in ("run_package", "page_view", "navigate_to", "prepare_collector")
     ]
     request = FakeModelRequest(
         state=_state(path="", **{PAGE_CONTEXT_APP_ROOT: "", PAGE_VISIT_ID: ""}),
@@ -133,7 +133,7 @@ def test_prelaunch_model_request_keeps_complete_tool_contract(tmp_path: Path) ->
     assert prepared.tools is tools
     assert [tool.name for tool in prepared.tools] == [
         "run_package",
-        "uiautomate",
+        "page_view",
         "navigate_to",
         "prepare_collector",
     ]
@@ -270,7 +270,7 @@ def test_overlay_close_does_not_consume_merchant_entry_tap(tmp_path: Path) -> No
 
 def test_overlay_keeps_model_tool_contract_stable(tmp_path: Path) -> None:
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
-    tools = [SimpleNamespace(name=name) for name in ("tap_in_page", "navigate_to", "uiautomate", "notify_user")]
+    tools = [SimpleNamespace(name=name) for name in ("tap_in_page", "navigate_to", "page_view", "notify_user")]
     request = FakeModelRequest(
         state=_state(**{PAGE_CONTEXT_OVERLAY: True}),
         tools=tools,
@@ -290,8 +290,8 @@ def test_only_first_device_action_from_one_ai_message_executes(tmp_path: Path) -
     calls: list[str] = []
 
     first = middleware.wrap_tool_call(
-        _request("uiautomate", state),
-        lambda _: calls.append("first") or _message("uiautomate"),
+        _request("page_view", state),
+        lambda _: calls.append("first") or _message("page_view"),
     )
     second = middleware.wrap_tool_call(
         _request("swipe_up", state, x=1, y=1000),
@@ -311,13 +311,13 @@ def test_device_action_limit_does_not_require_ai_message_id(tmp_path: Path) -> N
         AIMessage(
             content="",
             tool_calls=[
-                {"name": "uiautomate", "args": {}, "id": "call-1", "type": "tool_call"},
+                {"name": "page_view", "args": {}, "id": "call-1", "type": "tool_call"},
                 {"name": "swipe_up", "args": {"x": 1, "y": 1000}, "id": "call-2", "type": "tool_call"},
             ],
         )
     ]
 
-    first = middleware.wrap_tool_call(_request("uiautomate", state), lambda _: _message("uiautomate"))
+    first = middleware.wrap_tool_call(_request("page_view", state), lambda _: _message("page_view"))
     second = middleware.wrap_tool_call(_request("swipe_up", state, x=1, y=1000), lambda _: _message("swipe_up"))
 
     assert isinstance(first, ToolMessage)

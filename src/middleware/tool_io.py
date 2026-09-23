@@ -16,6 +16,15 @@ from langgraph.types import Command
 ToolResult = ToolMessage | Command
 
 
+def page_xml(result: ToolResult) -> str:
+    """Read internal page evidence without parsing model-visible content."""
+    messages = tool_messages(result)
+    if not messages:
+        return ""
+    artifact = messages[-1].artifact
+    return str(artifact.get("page_xml") or "") if isinstance(artifact, Mapping) else ""
+
+
 @dataclass(frozen=True)
 class ToolInvocation:
     """Validated, immutable view of one LangChain tool-call request."""

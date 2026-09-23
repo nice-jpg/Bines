@@ -116,7 +116,7 @@ def test_page_guard_rejection_does_not_emit_notice() -> None:
     notice_middleware, service = _middleware()
     page_middleware = PageContextMiddleware()
     tool = _tool(
-        "uiautomate",
+        "page_view",
         {EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy("Read the current page.")},
     )
     request = _request(

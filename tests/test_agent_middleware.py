@@ -9,6 +9,7 @@ from pathlib import Path
 import langgraph.checkpoint.memory  # noqa: F401 - preload real dependencies before local stubs.
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import nTrace
 import agent as _agent_dependency_preload  # noqa: E402,F401
 import collector as _collector_dependency_preload  # noqa: E402,F401
 
@@ -153,15 +154,17 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
             middleware_names,
             [
                 "NTraceStartMiddleware",
+                "ModelRetryMiddleware",
                 "ProbeControlMiddleware",
                 "CollectionPersistenceMiddleware",
                 "ToolExecutionPolicyMiddleware",
                 "ConductorContextMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
+                "ToolErrorMiddleware",
                 "NTraceEndMiddleware",
             ],
         )
-        hitl = captured["middleware"][5]
+        hitl = captured["middleware"][6]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
@@ -172,18 +175,18 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         tool_runtime = collect_calls[0]
         self.assertIs(tool_runtime["collector_manager"].mechanism, tool_runtime["mechanism"])
         self.assertIs(tool_runtime["collector_manager"].event_hub, tool_runtime["event_hub"])
-        control = captured["middleware"][1]
+        control = captured["middleware"][2]
         self.assertIs(control.mechanism, tool_runtime["mechanism"])
-        persistence = captured["middleware"][2]
+        persistence = captured["middleware"][3]
         self.assertIs(persistence.mechanism, tool_runtime["mechanism"])
-        conductor_context = captured["middleware"][4]
+        conductor_context = captured["middleware"][5]
         self.assertIs(conductor_context.mechanism, tool_runtime["mechanism"])
-        execution_policy = captured["middleware"][3]
+        execution_policy = captured["middleware"][4]
         self.assertIs(execution_policy._notice.service, notice_service)
 
     def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:
         self.test_build_agent_registers_request_compression_without_summarization()
-        middleware = importlib.import_module("middleware")
+        middleware = importlib.import_module("src.middleware")
 
         hitl = middleware.create_captcha_human_in_the_loop_middleware()
 
@@ -194,7 +197,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
     def test_captcha_middleware_starts_authentication_tool_once_before_interrupt(self) -> None:
         self.test_build_agent_registers_request_compression_without_summarization()
-        middleware = importlib.import_module("middleware")
+        middleware = importlib.import_module("src.middleware")
 
         calls = []
 
@@ -207,7 +210,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
         hitl = middleware.create_captcha_human_in_the_loop_middleware([FakeTool()])
         hitl._should_interrupt = lambda tool_call, config, state, runtime: True
-        captcha_module = importlib.import_module("middleware.captcha_human_in_loop")
+        captcha_module = importlib.import_module("src.middleware.captcha_human_in_loop")
         state = {
             "messages": [
                 captcha_module.AIMessage(content=""),

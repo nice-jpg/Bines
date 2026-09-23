@@ -13,4 +13,4 @@ No need to do more things here.
 - The page contains configured secondary entries such as `美食` and `外卖`.
 - There are plenty of goods below. Just ignore them since their belonging merchant are missing.
 - There may be some popups suggest location be configured, such as `开启定位`. Ignore them.
-- XML may not match the visible layout; use screenshot when target position is unclear.
+- Abstract regions may not match the visible layout; use screenshot when target position is unclear.

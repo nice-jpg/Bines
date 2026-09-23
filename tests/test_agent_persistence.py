@@ -5,22 +5,22 @@ import itertools
 from types import SimpleNamespace
 
 from src.agent import AgentRunResult, AgentRuntime
-from src.conductor_persistence import ConductorPersistenceLayer, ConductorResponse
-from src.middleware.probe_state import PROBE_COMPLETED, PROBE_RUNNING, PROBE_STATUS
+from src.agent_runtime import AgentPersistenceLayer, AgentResponse
 
 
 def _result(
     content: str,
     *,
-    status: str = PROBE_RUNNING,
+    complete: bool = False,
     stopped_by: str = "create_agent",
     interrupted: bool = False,
 ) -> AgentRunResult:
     return AgentRunResult(
         output=content,
-        state={PROBE_STATUS: status},
+        state={},
         stopped_by=stopped_by,
         interrupted=interrupted,
+        completion_allowed=complete,
     )
 
 
@@ -34,7 +34,7 @@ def _completed(summary: str = "done") -> AgentRunResult:
                 "next_action": None,
             }
         ),
-        status=PROBE_COMPLETED,
+        complete=True,
         stopped_by="completed",
     )
 
@@ -46,11 +46,11 @@ class FakeRuntime:
         self.pending_kind: str | None = None
         self.calls: list[tuple] = []
 
-    def run_turn(self, messages, *, session_id, tools, max_iterations):
-        self.calls.append(("run", list(messages), session_id, tools, max_iterations))
+    def run_turn(self, messages, *, session_id, max_iterations):
+        self.calls.append(("run", list(messages), session_id, max_iterations))
         return self.initial
 
-    def continue_turn(self, *, session_id, reason, max_iterations):
+    def _continue_turn(self, *, session_id, reason, max_iterations):
         self.calls.append(("continue", session_id, reason, max_iterations))
         return self.continuations.pop(0)
 
@@ -78,7 +78,7 @@ def test_unresolved_response_continues_same_session_until_structured_completion(
         )
     )
     runtime = FakeRuntime(unresolved, [_completed("probe complete")])
-    persistence = ConductorPersistenceLayer(runtime)
+    persistence = AgentPersistenceLayer(runtime)
 
     result = persistence.run_turn(
         [{"role": "user", "content": "probe"}],
@@ -88,7 +88,7 @@ def test_unresolved_response_continues_same_session_until_structured_completion(
 
     assert [call[0] for call in runtime.calls] == ["run", "continue"]
     assert runtime.calls[1][1] == "thread-1"
-    assert runtime.calls[1][2] == "conductor_reported_unresolved"
+    assert runtime.calls[1][2] == "agent_reported_unresolved"
     assert result.stopped_by == "completed"
     assert result.structured_response == {
         "resolved": True,
@@ -98,39 +98,40 @@ def test_unresolved_response_continues_same_session_until_structured_completion(
     }
 
 
-def test_claimed_completion_is_rejected_while_probe_state_is_running() -> None:
+def test_claimed_completion_is_rejected_when_runtime_has_not_approved() -> None:
     claimed = _completed()
     claimed = AgentRunResult(
         output=claimed.output,
-        state={PROBE_STATUS: PROBE_RUNNING},
+        state={},
         stopped_by="create_agent",
+        completion_allowed=False,
     )
     runtime = FakeRuntime(claimed, [_completed()])
 
-    result = ConductorPersistenceLayer(runtime).run_turn([], session_id="thread-2")
+    result = AgentPersistenceLayer(runtime).run_turn([], session_id="thread-2")
 
-    assert runtime.calls[1][2] == "probe_state_running_is_not_complete"
+    assert runtime.calls[1][2] == "task_state_is_not_complete"
     assert result.structured_response is not None
     assert result.structured_response["resolved"] is True
 
 
 def test_malformed_completion_response_is_repaired_in_same_context() -> None:
     runtime = FakeRuntime(
-        _result("task finished", status=PROBE_COMPLETED, stopped_by="completed"),
+        _result("task finished", complete=True, stopped_by="completed"),
         [_completed()],
     )
 
-    result = ConductorPersistenceLayer(runtime).run_turn([], session_id="thread-3")
+    result = AgentPersistenceLayer(runtime).run_turn([], session_id="thread-3")
 
     assert runtime.calls[1][2] == "structured_response_required"
-    assert ConductorResponse.parse(result.output) is not None
+    assert AgentResponse.parse(result.output) is not None
 
 
 def test_structured_response_rejects_extra_fields_and_invalid_next_action() -> None:
-    assert ConductorResponse.parse(
+    assert AgentResponse.parse(
         '{"resolved": true, "summary": "done", "result": {}, "next_action": null, "extra": 1}'
     ) is None
-    assert ConductorResponse.parse(
+    assert AgentResponse.parse(
         '{"resolved": false, "summary": "pending", "result": {}, "next_action": null}'
     ) is None
 
@@ -141,7 +142,7 @@ def test_transport_and_recursion_interrupts_resume_automatically() -> None:
         runtime = FakeRuntime(interrupted, [_completed(kind)])
         runtime.pending_kind = kind
 
-        result = ConductorPersistenceLayer(runtime).run_turn([], session_id=f"thread-{kind}")
+        result = AgentPersistenceLayer(runtime).run_turn([], session_id=f"thread-{kind}")
 
         assert [call[0] for call in runtime.calls] == ["run", "resume"]
         assert result.structured_response["summary"] == kind
@@ -152,23 +153,10 @@ def test_human_interrupt_is_not_resumed_without_user_input() -> None:
     runtime = FakeRuntime(interrupted, [])
     runtime.pending_kind = "human"
 
-    result = ConductorPersistenceLayer(runtime).run_turn([], session_id="thread-human")
+    result = AgentPersistenceLayer(runtime).run_turn([], session_id="thread-human")
 
     assert result is interrupted
     assert [call[0] for call in runtime.calls] == ["run"]
-
-
-def test_optional_persistence_limit_returns_structured_unresolved_result() -> None:
-    runtime = FakeRuntime(_result("not json"), [])
-
-    result = ConductorPersistenceLayer(runtime, max_continuations=0).run_turn(
-        [],
-        session_id="thread-limit",
-    )
-
-    assert result.stopped_by == "persistence_limit"
-    assert result.structured_response["resolved"] is False
-    assert result.structured_response["result"]["error_type"] == "persistence_limit"
 
 
 def test_agent_runtime_continuation_appends_only_internal_instruction_to_same_thread() -> None:
@@ -194,11 +182,12 @@ def test_agent_runtime_continuation_appends_only_internal_instruction_to_same_th
     runtime.tools = []
     runtime.name = "test"
     runtime.agent = agent
+    runtime._trace = SimpleNamespace(update=lambda **_kwargs: None)
     runtime.sessions = {"thread-context": [{"role": "user", "content": "original"}]}
     runtime._stateless_counter = itertools.count(1)
     runtime._pending_interrupts = {}
 
-    result = runtime.continue_turn(
+    result = runtime._continue_turn(
         session_id="thread-context",
         reason="work_remaining",
         max_iterations=17,

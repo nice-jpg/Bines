@@ -233,18 +233,28 @@ def test_apply_run_agent_py_patch_commit_failure_preserves_file_and_removes_temp
     assert list(page_dir.glob(".run.agent.py.*.tmp")) == []
 
 
-def test_sniff_run_uses_only_current_xml_and_persists_latest_json_state(tmp_path: Path) -> None:
+def _view(text):
+    from src.tools.page_bridge import PageBridge
+    from src.page_view import ReadOnlyPageView
+    bridge = PageBridge(lambda: f'<hierarchy><node text="{text}" class="android.widget.Button" bounds="[0,200][1000,1800]"/></hierarchy>')
+    content, _ = bridge.refresh()
+    bridge.query("update_aaid", {"id": content["regions"][0]["id"], "value": "1"})
+    return ReadOnlyPageView(bridge.snapshot())
+
+
+def test_sniff_run_uses_current_view_and_persists_latest_json_state(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
     (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n"
-        "    return {'items': [{'name': xml}]}\n",
+        "def run(view):\n"
+        "    return {'items': [{'name': view.page_read(view.select_aaid(1)['id'])['entries'][0]['value']}]}\n",
         encoding="utf-8",
     )
     mechanism = PageMechanism(tmp_path)
 
-    first = json.loads(mechanism.sniff_run("meituan", "one"))
-    second = json.loads(mechanism.sniff_run("meituan", "two"))
+    (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
+    first = json.loads(mechanism.sniff_run("meituan", _view("one")))
+    second = json.loads(mechanism.sniff_run("meituan", _view("two")))
 
     assert first["ok"] is True
     assert first["result"] == {"items": [{"name": "one"}]}
@@ -255,9 +265,10 @@ def test_sniff_run_uses_only_current_xml_and_persists_latest_json_state(tmp_path
 def test_run_agent_py_exception_returns_structured_repair_signal(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+    (page_dir / "run.agent.py").write_text("def run(view):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+    (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
 
-    result = json.loads(PageMechanism(tmp_path).sniff_run("meituan", "<xml/>"))
+    result = json.loads(PageMechanism(tmp_path).sniff_run("meituan", _view("cup")))
 
     assert result["ok"] is False
     assert result["error_type"] == "ValueError"

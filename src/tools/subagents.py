@@ -24,7 +24,7 @@ def create_subagent_tools(manager: SubagentManager) -> list[StructuredTool]:
                 "context. Delegated subagents receive a copy of the main agent runtime context. "
                 "Keep instructions focused on the goal, known constraints, output requirements, "
                 "and allowed tool scope; do not include merchant descriptions, product summaries, "
-                "or page details that the subagent can obtain with query_manual, uiautomate, "
+                "or page details that the subagent can obtain with query_manual, page_view, "
                 "or screenshot."
             ),
         ),

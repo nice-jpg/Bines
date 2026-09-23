@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -20,6 +21,7 @@ from middleware.probe_state import (
 )
 from page_mechanism import CollectorTrainingRegistry, PageMechanism
 from tools.content_provider import CollectionWorkbookSink, ContentProvider, _read_xlsx
+from src.tools.page_bridge import PageBridge
 
 
 def _request(
@@ -41,7 +43,12 @@ def _request(
 
 
 def _tool_message(tool_name: str, content: str = "cup") -> ToolMessage:
-    return ToolMessage(content=content, tool_call_id=f"{tool_name}-1", name=tool_name)
+    if tool_name == "prepare_collector":
+        return ToolMessage(content=content, tool_call_id=f"{tool_name}-1", name=tool_name)
+    bridge = PageBridge(lambda: f'<hierarchy><node text="{content}" class="android.widget.Button" bounds="[0,200][1000,1800]"/></hierarchy>')
+    view, _ = bridge.refresh()
+    bridge.query("update_aaid", {"id": view["regions"][0]["id"], "value": "1"})
+    return ToolMessage(content=json.dumps({"summary": content}), artifact={"page_snapshot": bridge.snapshot()}, tool_call_id=f"{tool_name}-1", name=tool_name)
 
 
 def _message(result: ToolMessage | Command) -> ToolMessage:
@@ -65,12 +72,13 @@ def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, Collec
     page_dir = tmp_path / "pages" / "meituan" / "美食" / "商家"
     page_dir.mkdir(parents=True)
     (page_dir / "run.agent.py").write_text(
-        "def run(xml: str):\n"
+        "def run(view):\n"
         "    return {\n"
-        "        'items': [{'name': xml, 'price': '10'}],\n"
+        "        'items': [{'name': view.page_read(view.select_aaid(1)['id'])['entries'][0]['value'], 'price': '10'}],\n"
         "    }\n",
         encoding="utf-8",
     )
+    (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
     mechanism = PageMechanism(tmp_path / "pages")
     registry = CollectorTrainingRegistry()
     sink = CollectionWorkbookSink(ContentProvider(tmp_path / "workspace"))
@@ -97,14 +105,36 @@ def _mark_trained(
     )
 
 
-def test_wrap_tool_call_does_not_persist_before_collector_training(tmp_path: Path) -> None:
+def test_missing_alias_is_silent_and_breaks_empty_swipe_evidence(tmp_path):
+    middleware, registry, workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    request = _request("swipe_up")
+    request.state[MERCHANT_COLLECTION_DONE] = True
+    request.state[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] = 2
+    message = _tool_message("swipe_up")
+    message.artifact["page_snapshot"]["aliases"] = {}
+    result = middleware.wrap_tool_call(request, lambda _: message)
+    assert _message(result) is message
+    assert registry.is_trained("visit-a", request.state[PAGE_CONTEXT_PATH])
+    _apply_state(request.state, result)
+    assert request.state[MERCHANT_COLLECTION_DONE] is False
+    assert request.state[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 0
+    assert _read_xlsx(workbook_path) == []
+
+
+def test_wrap_tool_call_does_not_collect_before_training(tmp_path: Path, monkeypatch) -> None:
     middleware, _registry, workbook_path = _middleware(tmp_path)
+    def unexpected_run(*args):
+        raise AssertionError("Untrained scripts must not run")
+    monkeypatch.setattr(middleware.mechanism, "run_page_script", unexpected_run)
 
     result = middleware.wrap_tool_call(_request("swipe_up"), lambda _request: _tool_message("swipe_up"))
     payload = _payload(result)
 
-    assert payload["collection"]["ok"] is True
-    assert payload["persistence"]["reason"] == "collector_not_trained"
+    assert "page_snapshot" in _message(result).artifact
+    assert "xml" not in payload
+
+    assert payload == {"summary": "cup"}
     assert _read_xlsx(workbook_path) == []
 
 
@@ -118,8 +148,9 @@ def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) ->
     first_payload = _payload(first)
     second_payload = _payload(second)
 
-    assert first_payload["persistence"]["appended_items"] == 1
-    assert second_payload["persistence"]["appended_items"] == 0
+    assert first_payload == second_payload == {"summary": "cup"}
+    assert first.update[COLLECTION_LATEST_NEW_COUNT] == 1
+    assert second.update[COLLECTION_LATEST_NEW_COUNT] == 0
     assert _read_xlsx(workbook_path) == [["name", "distance"], ["商家A", "1km"]]
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
 
@@ -133,7 +164,8 @@ def test_long_swipe_uses_the_same_collection_persistence_path(tmp_path: Path) ->
         lambda _request: _tool_message("swipe_up_long", "cup"),
     )
 
-    assert _payload(result)["persistence"]["appended_items"] == 1
+    assert _payload(result) == {"summary": "cup"}
+    assert result.update[COLLECTION_LATEST_NEW_COUNT] == 1
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
 
 
@@ -214,7 +246,7 @@ def test_non_swipe_tools_do_not_overwrite_collection_progress(tmp_path: Path) ->
     )
     _apply_state(runtime.state, swipe_result)
 
-    for tool_name in ("uiautomate", "tap_in_page"):
+    for tool_name in ("page_view", "tap_in_page"):
         middleware.wrap_tool_call(
             _request(tool_name),
             lambda _request, name=tool_name: _tool_message(name, "cup"),
@@ -277,8 +309,7 @@ def test_prepare_collector_initializes_merchant_sheet_from_registry(tmp_path: Pa
     )
     payload = _payload(result)
 
-    assert payload["persistence"]["ok"] is True
-    assert payload["persistence"]["merchant_sheet"] == "商家A"
+    assert payload == {"ok": True, "trained": True, "page_visit_id": "visit-a"}
     assert result.update[COLLECTION_VISIT_SUMMARIES] == {
         "visit-a": {
             "page_path": "meituan/美食/商家",
@@ -343,10 +374,10 @@ def test_wrap_tool_call_initializes_sheet_but_does_not_append_for_same_page_read
     middleware, registry, workbook_path = _middleware(tmp_path)
     _mark_trained(registry)
 
-    for tool_name in ("tap_in_page", "uiautomate"):
+    for tool_name in ("tap_in_page", "page_view"):
         result = middleware.wrap_tool_call(_request(tool_name), lambda _request: _tool_message(tool_name, "cup"))
         payload = _payload(result)
-        assert payload["persistence"]["appended_items"] == 0
+        assert payload == {"summary": "cup"}
 
     assert _read_xlsx(workbook_path) == [["name", "distance"], ["商家A", "1km"]]
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"]]
@@ -358,7 +389,7 @@ def test_navigation_xml_does_not_run_page_script(tmp_path: Path) -> None:
 
     for tool_name in ("navigate_to", "navigate_back"):
         result = middleware.wrap_tool_call(_request(tool_name), lambda _request: _tool_message(tool_name, "cup"))
-        assert _message(result).content == "cup"
+    assert json.loads(_message(result).content) == {"summary": "cup"}
 
     assert _read_xlsx(workbook_path) == []
 
@@ -372,7 +403,7 @@ def test_overlay_close_xml_does_not_run_old_page_script(tmp_path: Path) -> None:
         lambda _request: _tool_message("tap_in_page", "new-page-xml"),
     )
 
-    assert _message(result).content == "new-page-xml"
+    assert json.loads(_message(result).content) == {"summary": "new-page-xml"}
     assert _read_xlsx(workbook_path) == []
 
 
@@ -385,14 +416,15 @@ def test_wrap_tool_call_uses_tool_call_name_not_result_content_to_trigger(tmp_pa
         lambda _request: _tool_message("think", "this content mentions swipe_up and merchant data"),
     )
 
-    assert _message(result).content == "this content mentions swipe_up and merchant data"
+    assert json.loads(_message(result).content) == {"summary": "this content mentions swipe_up and merchant data"}
     assert _read_xlsx(workbook_path) == []
 
 
-def test_wrap_tool_call_returns_structured_collection_error_without_persisting(tmp_path: Path) -> None:
+def test_script_error_is_silent_without_persisting(tmp_path: Path, caplog) -> None:
     page_dir = tmp_path / "pages" / "meituan" / "美食" / "商家"
     page_dir.mkdir(parents=True)
-    (page_dir / "run.agent.py").write_text("def run(xml: str):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+    (page_dir / "run.agent.py").write_text("def run(view):\n    raise ValueError('bad parse')\n", encoding="utf-8")
+    (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
     mechanism = PageMechanism(tmp_path / "pages")
     registry = CollectorTrainingRegistry()
     _mark_trained(registry)
@@ -405,6 +437,40 @@ def test_wrap_tool_call_returns_structured_collection_error_without_persisting(t
     result = middleware.wrap_tool_call(_request("swipe_up"), lambda _request: _tool_message("swipe_up"))
     payload = _payload(result)
 
-    assert payload["collection"]["ok"] is False
-    assert payload["collection"]["error_type"] == "ValueError"
-    assert payload["persistence"]["reason"] == "collection_not_ok"
+    assert payload == {"summary": "cup"}
+    assert _message(result).status == "success"
+    assert "bad parse" in caplog.text
+    assert result.update[MERCHANT_COLLECTION_DONE] is False
+    assert _read_xlsx(tmp_path / "workspace" / "result.xlsx") == []
+
+
+def test_async_collection_preserves_original_message(tmp_path):
+    middleware, registry, workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    message = _tool_message("swipe_up")
+
+    async def handler(request):
+        return message
+
+    result = asyncio.run(middleware.awrap_tool_call(_request("swipe_up"), handler))
+    assert _message(result) is message
+    assert result.update[COLLECTION_LATEST_NEW_COUNT] == 1
+    assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
+
+
+def test_persistence_failure_is_silent_and_cannot_confirm_completion(tmp_path, monkeypatch, caplog):
+    middleware, registry, _ = _middleware(tmp_path)
+    _mark_trained(registry)
+    request = _request("swipe_up")
+    message = _tool_message("swipe_up")
+
+    def fail(**kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(middleware.workbook_sink, "persist_run_result", fail)
+    result = middleware.wrap_tool_call(request, lambda _: message)
+    assert _message(result) is message
+    assert "disk unavailable" in caplog.text
+    _apply_state(request.state, result)
+    done = middleware.is_done(SimpleNamespace(state=request.state, tool_call_id="done"))
+    assert _payload(done)["done"] is False

@@ -7,7 +7,7 @@
 - If captcha or human verification appears, follow the global captcha flow.
 
 ## Page Operation
-- Use XML first to identify safe controls and scroll areas; use screenshot only when XML is insufficient.
+- Use page_view, page_read and page_node first to identify safe controls and scroll areas; use screenshot only when the abstract view is insufficient.
 - If products are already visible, do not tap any tab or category.
 - Only when the product area is not active, use at most one `tap_in_page` before scrolling to open a product-level entrance such as `菜品` or `团购`.
 - Never tap left-side categories or category anchors. They jump over uncollected products.

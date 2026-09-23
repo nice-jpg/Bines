@@ -23,7 +23,7 @@
 ## Collection Target
 - Merchant fields: merchant name, rating, distance.
 - Product fields: product name, price, original price, discount price, monthly sales.
-- Product names, prices, and sales text may be split across nearby XML nodes; extraction should associate fragments by product card/container rather than fixed absolute coordinates.
+- Product names, prices, and sales may be split across nearby view regions; the collector uses COLLECT.md annotations and screenshot-confirmed baselines to validate run(view).
 - The same merchant page class may present a single product list, tabbed menu, or left-category/right-product layout.
 - IMPORTANT: focus on infomation below '温馨提示：请适量点餐' when collecting products.
 
@@ -36,7 +36,7 @@
 }
 ```
 
-The collector saves this profile from the initial top-of-page XML. It is not returned by `run.agent.py` and is not part of item extraction scoring.
+The collector saves this profile from the initial top-of-page evidence. It is not returned by `run.agent.py` and is not part of item extraction scoring.
 
 ## Collection Schema
 ```json

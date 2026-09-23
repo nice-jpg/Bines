@@ -88,7 +88,7 @@ def placeholder_paths(messages) -> list[str]:
 
 def test_keeps_only_three_latest_short_lived_tool_pairs_in_active_manual() -> None:
     messages = [user("probe"), manual("meituan", "home")]
-    for index, name in enumerate(("uiautomate", "tap_in_page", "swipe_up", "screenshot", "swipe_down")):
+    for index, name in enumerate(("page_view", "tap_in_page", "swipe_up", "screenshot", "swipe_down")):
         messages.extend(call_pair(f"call-{index}", name))
 
     compacted = compact_device_messages(messages)
@@ -126,7 +126,7 @@ def test_navigate_to_collapses_parent_and_keeps_child_manual_full() -> None:
         *call_pair("think-1", "think", "home reasoning"),
         *call_pair("nav-1", "navigate_to", "child xml", x=10, y=20, next_path="meituan/外卖"),
         manual("meituan/外卖", "takeout", "TAKEOUT MANUAL"),
-        *call_pair("read-1", "uiautomate", "current xml"),
+        *call_pair("read-1", "page_view", "current xml"),
     ]
 
     compacted = compact_device_messages(messages)
@@ -193,7 +193,7 @@ def test_navigate_back_discards_child_and_restores_parent_frame() -> None:
         *call_pair("child-work", "prepare_collector", "collector ready"),
         *call_pair("nav-back", "navigate_back", "home xml", next_path="meituan"),
         manual("meituan", "home-2", "HOME MANUAL CURRENT"),
-        *call_pair("home-current", "uiautomate", "current home xml"),
+        *call_pair("home-current", "page_view", "current home xml"),
     ]
 
     compacted = compact_device_messages(messages)
@@ -305,7 +305,7 @@ def test_new_user_block_reanchors_manual_without_changing_prior_block() -> None:
         *call_pair("think-1", "think", "first result"),
     ]
     first_projection = compact_device_messages(first_block)
-    extended = [*first_block, user("second request"), *call_pair("read-1", "uiautomate", "xml")]
+    extended = [*first_block, user("second request"), *call_pair("read-1", "page_view", "xml")]
 
     second_projection = compact_device_messages(extended)
 
@@ -320,7 +320,7 @@ def test_new_user_block_reanchors_manual_without_changing_prior_block() -> None:
 
 def test_expired_tool_call_removes_its_entire_ai_turn_and_all_results() -> None:
     calls = (
-        ("old-read", "uiautomate", {}),
+        ("old-read", "page_view", {}),
         ("keep-collector", "prepare_collector", {}),
         ("tap", "tap_in_page", {"x": 1, "y": 2}),
         ("up", "swipe_up", {"x": 1, "y": 2}),
@@ -355,14 +355,14 @@ def test_filters_openai_raw_tool_calls_and_keeps_matching_results() -> None:
                                 "id": call_id,
                                 "type": "function",
                                 "function": {
-                                    "name": "uiautomate",
+                                    "name": "page_view",
                                     "arguments": "{}",
                                 },
                             }
                         ]
                     },
                 },
-                tool_result(call_id, "uiautomate", f"xml-{index}"),
+                tool_result(call_id, "page_view", f"xml-{index}"),
             ]
         )
 
@@ -396,9 +396,9 @@ def test_supports_langchain_message_objects() -> None:
             [
                 AIMessage(
                     content="",
-                    tool_calls=[{"id": f"call-{index}", "name": "uiautomate", "args": {}}],
+                    tool_calls=[{"id": f"call-{index}", "name": "page_view", "args": {}}],
                 ),
-                ToolMessage(content=f"xml-{index}", tool_call_id=f"call-{index}", name="uiautomate"),
+                ToolMessage(content=f"xml-{index}", tool_call_id=f"call-{index}", name="page_view"),
             ]
         )
 
@@ -426,9 +426,9 @@ def test_removes_langchain_ai_message_together_with_expired_tool_result() -> Non
             [
                 AIMessage(
                     content=f"device operation {index}",
-                    tool_calls=[{"id": f"call-{index}", "name": "uiautomate", "args": {}}],
+                    tool_calls=[{"id": f"call-{index}", "name": "page_view", "args": {}}],
                 ),
-                ToolMessage(content=f"xml-{index}", tool_call_id=f"call-{index}", name="uiautomate"),
+                ToolMessage(content=f"xml-{index}", tool_call_id=f"call-{index}", name="page_view"),
             ]
         )
 
@@ -453,7 +453,7 @@ def test_middleware_projects_only_request_messages_and_does_not_mutate_state() -
     middleware = DeviceContextCompressionMiddleware()
     messages = [user("probe"), manual("meituan", "home")]
     for index in range(4):
-        messages.extend(call_pair(f"call-{index}", "uiautomate"))
+        messages.extend(call_pair(f"call-{index}", "page_view"))
     state = {"messages": list(messages)}
     system_prompt = SystemMessage(content="stable base prompt")
     request = FakeRequest(messages=list(messages), state=state, system_message=system_prompt)
@@ -496,7 +496,7 @@ def test_middleware_reads_collection_summaries_from_graph_state() -> None:
 
 def test_async_middleware_matches_sync_projection() -> None:
     middleware = DeviceContextCompressionMiddleware()
-    messages = [user("probe"), manual("meituan", "home"), *call_pair("read", "uiautomate")]
+    messages = [user("probe"), manual("meituan", "home"), *call_pair("read", "page_view")]
     request = FakeRequest(messages=messages, state={"messages": messages})
 
     async def handler(prepared):

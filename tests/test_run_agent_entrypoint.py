@@ -108,9 +108,9 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 calls["model_close"] += 1
 
         fake_agent = types.ModuleType("src.agent")
-        fake_agent.AgentRuntime = FakeRuntime
+        fake_agent.build_conductor_runtime = FakeRuntime
         fake_persistence = types.ModuleType("src.conductor_persistence")
-        fake_persistence.ConductorPersistenceLayer = FakePersistenceLayer
+        fake_persistence.AgentPersistenceLayer = FakePersistenceLayer
         fake_channel = types.ModuleType("src.channel.feishu")
         fake_channel.FeishuChannelRuntime = FakeChannel
         fake_channel.load_feishu_config = lambda: "config"
@@ -239,9 +239,9 @@ class RunAgentEntrypointTests(unittest.TestCase):
                 calls["model_close"] += 1
 
         fake_agent = types.ModuleType("src.agent")
-        fake_agent.AgentRuntime = FakeRuntime
+        fake_agent.build_conductor_runtime = FakeRuntime
         fake_persistence = types.ModuleType("src.conductor_persistence")
-        fake_persistence.ConductorPersistenceLayer = FakePersistenceLayer
+        fake_persistence.AgentPersistenceLayer = FakePersistenceLayer
         fake_channel = types.ModuleType("src.channel.feishu")
         fake_channel.FeishuChannelRuntime = FakeChannel
         fake_channel.load_feishu_config = lambda: "config"

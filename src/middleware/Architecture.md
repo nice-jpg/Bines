@@ -6,7 +6,7 @@
 
 以下任一内容发生变化时，必须在同一个变更中同步更新本文档：
 
-- `src/agent.py` 中 middleware 的注册、删除或顺序调整；
+- `src/agent.py` 或 `src/agent_runtime` 中 middleware 的注册、删除或顺序调整；
 - composite middleware 的内部调用顺序；
 - middleware 使用的 graph state 字段、工具 metadata 或服务依赖；
 - middleware 对 `ModelRequest`、`ToolCallRequest`、`ToolMessage`、`Command` 或 interrupt 的输入输出契约；
@@ -14,22 +14,77 @@
 
 ## 组合入口
 
-conductor 由 `src/agent.py:build_agent()` 组装。注册顺序如下：
+conductor 的业务依赖由 `src/agent.py:build_agent()` 组装；通用运行能力由
+`src/agent_runtime/_stability.py` 统一添加。注册顺序如下：
 
 1. `NTraceStartMiddleware`
-2. `ModelRetryMiddleware`，仅 `OpenAICodexModel` 启用
+2. `ModelRetryMiddleware`，所有模型统一使用瞬时传输错误策略
 3. `ProbeControlMiddleware`
 4. `CollectionPersistenceMiddleware`
 5. `ToolExecutionPolicyMiddleware`
 6. `ConductorContextMiddleware`
 7. `CaptchaHumanInTheLoopMiddleware`
-8. `NTraceEndMiddleware`
+8. `ToolErrorMiddleware`
+9. `NTraceEndMiddleware`
+
+### 运行层边界
+
+`src/agent_runtime` 不导入页面机制、设备工具、采集或业务 middleware。
+模块对外提供 create_runtime(name, model, tools, system_prompt, middleware=())，参数均为 keyword-only；
+middleware 只用于传入业务策略，Trace、模型重试、ToolError 和 checkpointer 不接受外部注入。
+
+- `AgentRuntime` 持有编译后的 graph、私有 Trace、会话结果和待恢复 checkpoint 标识。
+  run_turn 将新增消息转换为输入；同一 thread 的历史由 InMemorySaver 保存，不重复提交历史。
+  resume_turn 对递归上限、模型传输失败使用 invoke(None)，对人工中断使用 Command(resume=...)。
+  执行结果统一为 AgentRunResult，包含 state、stopped_by、interrupts 和 completion_allowed。
+- `AgentPersistenceLayer` 验收结构化完成回复及 runtime 的 completion_allowed。
+  未形成有效结论时，在同一 thread 追加内部续跑指令；递归、网络和 liveness 中断自动恢复。
+  人工中断仍返回调用方等待输入。永久配置、鉴权和协议错误归一化为 execution_interrupt，
+  保留 checkpoint，但不会无限重试；修复原因后可显式恢复。
+- `_ConductorRuntime` 位于业务构建模块，只负责探测输入补充、初始 graph state 和业务完成判断。
+  通用运行层不需要了解 canonical path、商家 readiness 或 probe 字段。
+  验证码与 liveness 的业务恢复载荷也由该适配层转换；通用 runtime 原样传递恢复输入。
+- collector 使用相同 create_runtime 构建；它的视觉验证与最终验收仍由 CollectorManager 管理，
+  不使用 conductor 的结构化完成协议。
+- agent graph 和 Trace 名称统一使用调用方显式传入的 name，不读取名称环境变量；开关与服务地址由 NTrace 读取
+  NTRACE_ENABLED 和 NTRACE_SERVER_URL；不在 graph 上动态添加 _ntrace 属性。
+  checkpoint 恢复和自动续跑均使用 Trace 的 resume=True 保留关联。
+- 当前 InMemorySaver 只保证同进程恢复，不承诺进程重启后的持久化。
 
 LangChain 对不同 hook 使用两种顺序：
 
 - `before_model` 按注册顺序执行，结果写入 graph state 后传给下一节点；
 - `after_model` 按注册顺序的逆序执行；
 - `wrap_model_call` 和 `wrap_tool_call` 采用嵌套调用，注册靠前者位于外层，请求由外向内传递，结果由内向外返回。
+
+### Reco 页面桥接边界
+
+`EventHub` 持有 `src/tools/page_bridge.py:PageBridge`。设备 dump 是内部能力，
+原始 Android XML 直接通过 Reco 的公开 `PageSession.build_tree(xml_string)` 构造区域树，
+已有会话通过 `sync()` 更新，保留 Reco 能够匹配的区域 ID 和别名。
+不再创建临时 XML 文件。相似度和弹窗检测仍使用内部 XML；
+采集脚本只接收从同一快照重建的只读 Reco 视图，不接收 XML。
+
+conductor 与 collector 均暴露 `Reco/model_interface.py:TOOLS` 的七个原始 schema：
+`page_view`、`page_catalog`、`page_read`、`page_node`、`update_aaid`、`select_aaid`、`update_ratio`。
+不再暴露 `uiautomate` 或 `collector_uiautomate`。
+无 key 且 offset 为 0 的 `page_view` 刷新设备快照；子区域读取、分页和别名操作使用同一快照。
+成功设备动作自动刷新树并返回根视图。应用启动时清空旧树和别名。
+树属于共享设备实例；页面任务路径、访问 ID 和完成状态仍属于各 thread 的 graph state。
+
+LangChain 工具使用 `response_format="content_and_artifact"`：
+
+- `ToolMessage.content` 是 Reco 公开区域结果，不包含 XML 或原始节点属性。
+- `ToolMessage.artifact.page_xml` 是内部原始 XML；模型序列化只读取 content。
+- `artifact.page_snapshot` 保存 XML、区域子节点路径形式的别名、快照 ID 和时间。
+  重建时将路径解析为当前公开 ID，不依赖 sync 产生的临时 ID。
+- `tool_io.page_xml()` 为 middleware 提供统一快照读取，禁止从 content 解析 XML。
+- 静默采集保留原始工具消息及 artifact，不向模型追加采集或落盘结果。
+- collector 在冻结视图后调用 screenshot，根据真实图片提交不可覆盖的视觉基准。
+  首次脚本输出在基准保存前隐藏；不存在独立 coder，也不向 agent 暴露历史 XML。
+
+所有页面工具的集合固定。未训练页面仍受 readiness 门禁约束；overlay 状态允许区域读取定位关闭控件。
+区域读取类结果参与当前页面最近三组短期工具调用的压缩，别名赋值记录保留。
 
 因此，注册顺序不仅表示模块清单，也决定状态能否在正确阶段被观察和提交。
 
@@ -274,11 +329,11 @@ collector 的工具调用不经过 conductor 的页面状态、采集落盘和�
 
 ### 4. ModelRetryMiddleware
 
-文件：`src/codex/model_retry.py`，实现使用 LangChain `ModelRetryMiddleware`。
+文件：`src/agent_runtime/_model_retry.py`，实现使用 LangChain `ModelRetryMiddleware`。
 
 **职责**
 
-- 仅为 `OpenAICodexModel` 包裹模型调用；
+- 包裹所有模型调用，不导入或判断项目模型适配器的类型；内部固定最多重试 5 次；
 - 对 `ConnectionClosed`、`EOFError`、`OSError`、`TimeoutError` 以及 WebSocket 握手 `500/502/503/504` 执行有限退避重试；
 - 不重试鉴权、协议、参数和业务错误；
 - 重试耗尽后继续抛出异常，由上层 runtime 转换为可恢复 transport interrupt。
@@ -512,7 +567,7 @@ result
 **职责**
 
 - 让原始工具先执行并通过内层可靠性校验；
-- 只处理成功的 `prepare_collector` 和 XML 工具结果；
+- 只处理成功的 `prepare_collector` 和带内部页面快照的指定工具结果；
 - 自行构造并持有 `CollectionWorkbookSink`，共享外部 `PageMechanism` 和 `CollectorTrainingRegistry`；
 - 提供与同一采集状态契约绑定的 conductor 工具 `is_done`。
 
@@ -525,7 +580,7 @@ result
 **输出**
 
 - 不相关、失败或不应采集的结果原样返回；
-- XML 工具成功时，用 JSON 包装为 `xml`、`page_path`、`collection`、`persistence`；
+- 页面工具成功时原样保留 ToolMessage，包括 content、状态和内部 artifact；采集与落盘仅为后台副作用；
 - 有采集进度变化时返回 `Command(update=...)` 更新消息和 graph state；
 - `prepare_collector` 成功后初始化商家索引和 Sheet，并更新访问摘要。
 
@@ -559,7 +614,7 @@ result
 **职责**
 
 - 仅根据 typed `OperationEffectPolicy` metadata 选择需要验证的设备操作；
-- 操作前通过共享 `EventHub` 获取 XML 快照；
+- 操作前通过共享 `EventHub.page_bridge.refresh()` 构造抽象视图并获取内部 XML 快照；
 - precheck 失败时阻止真实设备操作。
 
 **输入**
@@ -592,13 +647,17 @@ result
 - 不修改 tool result；
 - 副作用是在真实操作前发送通知。
 
-### 8. ToolExecutionPolicyMiddleware: raw tool execution
+### 8. ToolErrorMiddleware: raw tool execution
 
 **职责**
 
 - 调用 LangChain 提供的真实 tool handler；
 - 将普通 Python 异常转换为模型可见的失败 `ToolMessage`；
 - `GraphInterrupt` 和其他 LangGraph control-flow 异常继续抛出，不被当作工具错误吞掉。
+
+该层由 agent_runtime 内部创建，位于业务工具策略内侧。异常先转换成失败结果，
+再返回通知、可靠性、归档和导航策略，因此不会把执行失败当作成功操作。
+ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 
 **输入**
 
@@ -613,7 +672,7 @@ result
 
 **职责**
 
-- 从成功工具结果中读取操作后 XML；
+- 从成功工具结果的 `artifact.page_xml` 读取操作后 XML；
 - 使用内部 `PageSimilarityEvaluator` 对比前后 XML；
 - `navigate_to` 仅在相似度严格小于 `0.50` 时有效；
 - swipe 操作仅在相似度位于闭区间 `[0.05, 0.95]` 时有效；
@@ -633,21 +692,22 @@ result
 
 **职责**
 
-- 对 `tap_in_page`、swipe 和 `uiautomate` 的成功 XML 执行当前页面 `run.agent.py`；
+- 训练前完全跳过脚本执行与落盘；训练后对 `tap_in_page`、swipe 和 `page_view` 的内部快照构造 `ReadOnlyPageView`，静默执行当前页面 `run(view)`；
+- 脚本或必要别名检查失败时仅记录内部日志，不改变工具返回、不撤销 readiness，不在页面操作阶段要求 agent 修复；清除连续空滑证据和完成标记，防止错误被当作零新增；
 - 仅在 merchant page、当前访问已训练且 profile 有效时落盘；
-- `tap_in_page` 与 `uiautomate` 只允许初始化/提取，不追加商品；
+- `tap_in_page` 与 `page_view` 只允许初始化/提取，不追加商品；其他 Reco 查询不触发采集；
 - swipe 使用 workbook 全量去重后的 `appended_items` 更新最新新增量、连续空滑次数和访问摘要；
 - 连续三次有效采集 swipe 新增为零后，`is_done` 才返回 `done=true`；
-- 执行失败、overlay、紧凑弹窗和落盘跳过不覆盖已有完成进度。
+- overlay、紧凑弹窗和落盘跳过不覆盖已有完成进度；执行或落盘失败保留已采集数量，但重置连续空滑次数和完成标记。
 
 **输入**
 
-- 已通过可靠性校验的 XML tool result；
+- 已通过可靠性校验、带 page_snapshot artifact 的抽象页面 tool result；
 - page mechanism、training registry、merchant profile、workbook sink 和 collection state。
 
 **输出**
 
-- 包装后的采集结果；
+- 原始工具结果，不添加 collection/persistence 内容；仅显式调用 `is_done` 时返回采集完成判断；
 - 可选 `Command`，更新 `collection_initialized`、`collection_latest_new_count`、`collection_consecutive_empty_swipes`、`merchant_collection_done` 和 `collection_visit_summaries`。
 
 ### 11. ProbeControlMiddleware: page transition
@@ -736,8 +796,37 @@ middleware 之间只接受 LangChain `ToolMessage` 或 LangGraph `Command`。`sr
 collector 由 `build_collector_runtime()` 单独创建，不注册任何 conductor 页面控制、落盘、工具策略、上下文压缩或 HITL middleware。其顺序为：
 
 1. `NTraceStartMiddleware.before_model` 创建 collector host span；
-2. 可选 `ModelRetryMiddleware` 包裹 Codex WebSocket 模型调用；
+2. `ModelRetryMiddleware` 使用通用的瞬时传输错误重试策略；
 3. `NTraceEndMiddleware.before_model` 关闭本轮刚建立的 host span；
-4. `NTraceEndMiddleware.wrap_model_call` 记录 collector 实际模型请求和响应。
+4. `CollectorModelMiddleware.wrap_model_call` 设置 parallel_tool_calls=false，工具集合保持固定；
+5. `ToolErrorMiddleware` 统一处理实际工具执行错误，不拦截 LangGraph control flow；
+6. `NTraceEndMiddleware.wrap_model_call` 记录 collector 实际模型请求和响应。
 
-collector 的页面能力、baseline、`sniff_run`、coder 会话和还原流程由 collector 自己的固定工具集合及 manager/session 实现，不经过 conductor middleware。这样 collector 上下文和 conductor graph state 不会被压缩、导航或 probe 生命周期规则交叉修改。
+collector 的页面能力、视觉 baseline、脚本增量修改、指南和还原流程由
+`CollectorToolbox` 管理，不经过 conductor middleware。工具执行在实例锁内串行；
+冻结验证或历史模式禁止滑动和点击，根视图查询只读取冻结快照。
+通过当前验证后才能返回实时视图；全部验证通过后才解锁一次顶部还原点击。
+
+### Collector 数据与验证
+
+- `COLLECT.md` 首行包含 required_aliases 数字字符串数组，其余是英文定位指南。
+  指南不存在时必须先读取区域和截图，再生成指南。每个状态显式标记必要别名。
+- 脚本接口严格为 `run(view)`；只读视图复用 Reco 的 page_view、page_catalog、
+  page_read、page_node、select_aaid，保留分页语义，不提供标记写入或设备操作。
+  这是接口隔离，不是任意 Python 代码的安全沙箱。
+- capture_validation_case 仅注册和冻结标记后的完整视图；screenshot 提供视觉证据，
+  save_baseline 校验并持久化视觉基准，不执行脚本或评分。保存后即可返回实时视图继续随机采样。
+  sniff_run 是唯一测试入口，只对已准备的当前及历史用例执行脚本，不采样、不操作设备；
+  未完成视觉基准的用例必须先准备完毕。首次全量通过时无需读取或修改代码。
+  评分输出分为 cases、ground_truths、run_results、eval_grades。JSON 比较由确定性工具完成。
+- 至少两个不同当前状态（包含随机滑动状态）及同路径全部历史通过后才允许还原。
+  指南变化使旧标记版本失效，需要逐个载入历史重新标记；视觉基准不可修改。
+  脚本变化使所有旧评分失效，必须重新全量运行。
+- `CollectorHistory` 在基准保存时保留全部视觉用例，包括脚本尚未通过的用例，原子写入
+  workspace/collector_history/<canonical_path>/<page_visit_id>/<case_id>/record.json。
+  记录保存内部源快照、别名路径、PNG data URL、视觉基准、schema 和指南。
+  兼容读取旧的 visit/record.json；同一 case ID 优先采用新位置的记录。
+  旧的无截图 XML 基准不会自动升级。
+- screenshot 通过 AndroidDevice.pull_file 拉取真实 PNG，作为 ToolMessage 图片块返回。
+  Codex 序列化将图片转换为 function_call_output 的 input_image，而非文本化 base64。
+  协议依据：[OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)。

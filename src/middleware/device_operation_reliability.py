@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable
 import json
 from typing import Any
 
@@ -11,17 +11,15 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 if __package__ and __package__.startswith("src."):
-    from src.device.results import is_error_result
     from src.middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-    from src.middleware.tool_io import ToolInvocation, require_tool_result, tool_messages, tool_succeeded
+    from src.middleware.tool_io import ToolInvocation, require_tool_result, page_xml, tool_succeeded
     from src.tools.event_hub import EventHub
     from src.tools.event_logger import WorkspaceEventLogger
     from src.tools.operation_effect import OperationEffectPolicy, operation_effect_policy_from_metadata
     from src.tools.page_similarity import PageSimilarityError, PageSimilarityEvaluator
 else:  # Supports running tests and python src/run_agent.py with src on sys.path.
-    from device.results import is_error_result
     from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-    from middleware.tool_io import ToolInvocation, require_tool_result, tool_messages, tool_succeeded
+    from middleware.tool_io import ToolInvocation, require_tool_result, page_xml, tool_succeeded
     from tools.event_hub import EventHub
     from tools.event_logger import WorkspaceEventLogger
     from tools.operation_effect import OperationEffectPolicy, operation_effect_policy_from_metadata
@@ -46,9 +44,10 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         if policy is None:
             return handler(request)
 
-        before_xml = self.event_hub.uiautomate()
-        if is_error_result(before_xml):
+        _, snapshot = self.event_hub.page_bridge.refresh()
+        if snapshot is None:
             return self._unverifiable(request, "device_operation_precheck_failed")
+        before_xml = snapshot["page_xml"]
         result = handler(request)
         return self._evaluate(request, result, before_xml, policy)
 
@@ -62,9 +61,10 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         if policy is None:
             return await handler(request)
 
-        before_xml = self.event_hub.uiautomate()
-        if is_error_result(before_xml):
+        _, snapshot = self.event_hub.page_bridge.refresh()
+        if snapshot is None:
             return self._unverifiable(request, "device_operation_precheck_failed")
+        before_xml = snapshot["page_xml"]
         result = await handler(request)
         return self._evaluate(request, result, before_xml, policy)
 
@@ -137,20 +137,7 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
 
 
 def _result_xml(result: ToolMessage | Command) -> str:
-    messages = tool_messages(result)
-    if not messages:
-        return ""
-    content = messages[-1].content
-    if not isinstance(content, str):
-        return ""
-    stripped = content.lstrip()
-    if not stripped.startswith("{"):
-        return content
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
-        return ""
-    return str(payload.get("xml") or "") if isinstance(payload, Mapping) else ""
+    return page_xml(result)
 
 
 def _effect_error(
