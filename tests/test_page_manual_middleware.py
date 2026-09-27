@@ -15,7 +15,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from middleware.page_context import (
     PAGE_CONTEXT_ACTIVE,
-    PAGE_CONTEXT_OVERLAY,
     PAGE_CONTEXT_PATH,
     PAGE_VISIT_ID,
 )
@@ -51,7 +50,6 @@ def _state(*, path: str = "meituan/外卖", visit_id: str = "visit-1", messages=
         PAGE_CONTEXT_ACTIVE: True,
         PAGE_CONTEXT_PATH: path,
         PAGE_VISIT_ID: visit_id,
-        PAGE_CONTEXT_OVERLAY: overlay,
         "messages": list(messages or []),
     }
 
@@ -133,21 +131,6 @@ def test_missing_marker_after_summarization_restores_manual(tmp_path: Path) -> N
     assert "takeout page" in _manual_from(update).content
 
 
-def test_overlay_instruction_is_transient_and_base_prompt_is_unchanged(tmp_path: Path) -> None:
-    middleware = PageManualMiddleware(mechanism=_mechanism(tmp_path))
-    history = [HumanMessage(content="probe")]
-    state = _state(messages=history, overlay=True)
-    base = SystemMessage(content="stable base")
-    request = FakeModelRequest(state=state, messages=history, system_message=base)
-
-    prepared = middleware._prepare_model_request(request)
-
-    assert prepared.system_message is base
-    assert prepared.messages[:-1] == history
-    assert "overlay_instruction" in prepared.messages[-1].content
-    assert state["messages"] == history
-
-
 def test_async_hooks_match_sync_behavior(tmp_path: Path) -> None:
     middleware = PageManualMiddleware(mechanism=_mechanism(tmp_path))
     state = _state()
@@ -156,17 +139,6 @@ def test_async_hooks_match_sync_behavior(tmp_path: Path) -> None:
 
     assert "takeout task" in _manual_from(update).content
 
-    async def handler(request):
-        return request
-
-    history = [HumanMessage(content="probe")]
-    request = FakeModelRequest(
-        state=_state(messages=history, overlay=True),
-        messages=history,
-        system_message=SystemMessage(content="stable base"),
-    )
-    prepared = asyncio.run(middleware.awrap_model_call(request, handler))
-    assert "overlay_instruction" in prepared.messages[-1].content
 
 
 class RecordingChatModel(BaseChatModel):

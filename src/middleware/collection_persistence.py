@@ -20,10 +20,8 @@ logger = logging.getLogger(__name__)
 
 try:
     from src.middleware.page_context import (
-        PAGE_CONTEXT_OVERLAY,
         PAGE_CONTEXT_PATH,
         PAGE_VISIT_ID,
-        is_compact_popup_result,
     )
     from src.middleware.probe_state import (
         COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
@@ -38,10 +36,8 @@ try:
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import (
-        PAGE_CONTEXT_OVERLAY,
         PAGE_CONTEXT_PATH,
         PAGE_VISIT_ID,
-        is_compact_popup_result,
     )
     from middleware.probe_state import (
         COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
@@ -191,9 +187,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         if not isinstance(result.content, str):
             return result
         state = invocation.state
-        if state.get(PAGE_CONTEXT_OVERLAY, False):
-            return result
-        if is_compact_popup_result(result):
+        if tool_name == "tap_in_page" and invocation.args.get("purpose") == "dismiss_overlay":
             return result
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         visit_id = str(state.get(PAGE_VISIT_ID) or "")

@@ -15,7 +15,6 @@ from langgraph.types import Command
 from middleware.page_context import (
     PAGE_CONTEXT_ACTIVE,
     PAGE_CONTEXT_APP_ROOT,
-    PAGE_CONTEXT_OVERLAY,
     PAGE_CONTEXT_PATH,
     PAGE_CONTEXT_PENDING_PATH,
     PAGE_COLLECTION_STARTED,
@@ -65,7 +64,6 @@ def _state(path: str = "meituan/外卖", **overrides) -> dict:
         PAGE_CONTEXT_APP_ROOT: "meituan",
         PAGE_CONTEXT_PATH: path,
         PAGE_CONTEXT_PENDING_PATH: "",
-        PAGE_CONTEXT_OVERLAY: False,
         PAGE_VISIT_ID: "visit-current",
         PAGE_PRODUCT_ENTRY_TAPS: 0,
         PAGE_COLLECTION_STARTED: False,
@@ -93,7 +91,6 @@ def test_initial_state_activates_context_without_manual_phase() -> None:
         PAGE_CONTEXT_APP_ROOT: "",
         PAGE_CONTEXT_PATH: "",
         PAGE_CONTEXT_PENDING_PATH: "",
-        PAGE_CONTEXT_OVERLAY: False,
         PAGE_VISIT_ID: "",
         PAGE_PRODUCT_ENTRY_TAPS: 0,
         PAGE_COLLECTION_STARTED: False,
@@ -184,7 +181,7 @@ def test_navigation_validates_before_device_and_commits_target(tmp_path: Path) -
     assert valid.update[PAGE_VISIT_ID] != _state()[PAGE_VISIT_ID]
 
 
-def test_navigation_popup_defers_target_until_same_page_close(tmp_path: Path) -> None:
+def test_navigation_compact_hint_does_not_defer_target(tmp_path: Path) -> None:
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
     state = _state()
     navigation = middleware.wrap_tool_call(
@@ -197,13 +194,10 @@ def test_navigation_popup_defers_target_until_same_page_close(tmp_path: Path) ->
         lambda _: _message("tap_in_page", FULL_XML),
     )
 
-    assert PAGE_CONTEXT_PATH not in navigation.update
-    assert navigation.update[PAGE_CONTEXT_PENDING_PATH] == "meituan/外卖/美食"
-    assert navigation.update[PAGE_CONTEXT_OVERLAY] is True
-    assert closed.update[PAGE_CONTEXT_PATH] == "meituan/外卖/美食"
-    assert closed.update[PAGE_CONTEXT_PENDING_PATH] == ""
-    assert closed.update[PAGE_CONTEXT_OVERLAY] is False
-    assert closed.update[PAGE_VISIT_ID] != state[PAGE_VISIT_ID]
+    assert navigation.update[PAGE_CONTEXT_PATH] == "meituan/外卖/美食"
+    assert navigation.update[PAGE_CONTEXT_PENDING_PATH] == ""
+    assert isinstance(closed, ToolMessage)
+    assert navigation.update[PAGE_VISIT_ID] != state[PAGE_VISIT_ID]
 
 
 def test_navigate_back_commits_declared_absolute_path(tmp_path: Path) -> None:
@@ -257,22 +251,45 @@ def test_overlay_close_does_not_consume_merchant_entry_tap(tmp_path: Path) -> No
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
     state = _state(
         path="meituan/外卖/美食/商家",
-        **{PAGE_CONTEXT_OVERLAY: True},
     )
     result = middleware.wrap_tool_call(
-        _request("tap_in_page", state, x=1, y=2),
+        _request("tap_in_page", state, x=1, y=2, purpose="dismiss_overlay"),
         lambda _: _message("tap_in_page", FULL_XML),
     )
 
-    assert result.update[PAGE_CONTEXT_OVERLAY] is False
-    assert PAGE_PRODUCT_ENTRY_TAPS not in result.update
+    assert isinstance(result, ToolMessage)
+
+
+def test_compact_hint_does_not_block_device_actions(tmp_path: Path) -> None:
+    middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
+    for name in ("swipe_up", "screenshot"):
+        calls = []
+        middleware.wrap_tool_call(
+            _request(name, _state()),
+            lambda _: calls.append(name) or _message(name),
+        )
+        assert calls == [name]
+
+
+def test_explicit_dismissal_does_not_require_compact_hint(tmp_path: Path) -> None:
+    middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
+    state = _state(
+        path="meituan/外卖/美食/商家",
+        **{PAGE_COLLECTION_STARTED: True},
+    )
+    expected = _message("tap_in_page")
+    result = middleware.wrap_tool_call(
+        _request("tap_in_page", state, x=1, y=2, purpose="dismiss_overlay"),
+        lambda _: expected,
+    )
+    assert result is expected
 
 
 def test_overlay_keeps_model_tool_contract_stable(tmp_path: Path) -> None:
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
     tools = [SimpleNamespace(name=name) for name in ("tap_in_page", "navigate_to", "page_view", "notify_user")]
     request = FakeModelRequest(
-        state=_state(**{PAGE_CONTEXT_OVERLAY: True}),
+        state=_state(),
         tools=tools,
         system_message=SystemMessage(content="base"),
     )

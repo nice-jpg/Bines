@@ -18,7 +18,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
 
 
 class ConductorContextMiddleware(AgentMiddleware[PageContextState]):
-    """Persist the active manual, project history, and append transient page context."""
+    """Persist the active manual and project history for model requests."""
 
     state_schema = PageContextState
 
@@ -38,20 +38,14 @@ class ConductorContextMiddleware(AgentMiddleware[PageContextState]):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        return self._compression.wrap_model_call(
-            request,
-            lambda projected: self._manual.wrap_model_call(projected, handler),
-        )
+        return self._compression.wrap_model_call(request, handler)
 
     async def awrap_model_call(
         self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        async def after_compression(projected: ModelRequest) -> ModelResponse:
-            return await self._manual.awrap_model_call(projected, handler)
-
-        return await self._compression.awrap_model_call(request, after_compression)
+        return await self._compression.awrap_model_call(request, handler)
 
 
 __all__ = ["ConductorContextMiddleware"]

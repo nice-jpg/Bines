@@ -32,9 +32,9 @@ Page context protocol:
 7. After collector readiness, operate the page according to task.md.
 
 Overlay behavior:
-- A compact blocking overlay does not change the current business page or manual.
-- While the runtime reports an overlay, immediately use tap_in_page on its visible close, cancel, dismiss, or equivalent control.
-- If an overlay interrupts navigate_to or navigate_back, the runtime commits the declared target only after the overlay is closed.
+- Judge from the page view whether an overlay blocks the task. If the target is unclear, use screenshot to confirm it and choose the next action yourself. Runtime does not detect or track overlays.
+- If you decide to dismiss an overlay, call tap_in_page with purpose="dismiss_overlay". Use purpose="page_interaction" for ordinary controls. This declared intent, not geometry, distinguishes dismissal from product entry clicks.
+- Successful navigation commits the declared path. Inspect the result before deciding whether to dismiss anything or continue; dismissing a popup never changes the business path.
 - The runtime disables parallel tool calls and executes at most one external device action from each model response.
 
 Collection boundary:

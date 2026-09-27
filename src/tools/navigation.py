@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.tools import StructuredTool
 
@@ -29,7 +29,7 @@ class NavigationTools:
     def __init__(self, *, event_hub: EventHub) -> None:
         self.event_hub = event_hub
 
-    def tap_in_page(self, x: int, y: int) -> Any:
+    def tap_in_page(self, x: int, y: int, purpose: Literal["page_interaction", "dismiss_overlay"] = "page_interaction") -> Any:
         """Tap a control that is guaranteed to remain on the current business page."""
 
         return self.event_hub.tap(x, y)
@@ -61,7 +61,8 @@ def create_navigation_tools(
             description=(
                 "Tap a visible control that stays on the current business page, such as a filter, "
                 "sort option, tab, expand control, or popup close button. Never use it to enter or "
-                "leave a business page. Returns current abstract page view."
+                "leave a business page. Set purpose=dismiss_overlay only when you judge this tap dismisses "
+                "an overlay; otherwise use page_interaction. Returns current abstract page view."
             ),
         ),
         StructuredTool.from_function(

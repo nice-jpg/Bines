@@ -14,7 +14,6 @@ from langgraph.types import Command
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from middleware.page_context import (
-    PAGE_CONTEXT_OVERLAY,
     PAGE_CONTEXT_PATH,
     PAGE_CONTEXT_PENDING_PATH,
     PAGE_VISIT_ID,
@@ -51,7 +50,6 @@ def _state(*, message: AIMessage | None = None, path: str = "meituan/外卖/美�
         PROBE_VISITED_LEAF_PATHS: (),
         PAGE_CONTEXT_PATH: path,
         PAGE_CONTEXT_PENDING_PATH: "",
-        PAGE_CONTEXT_OVERLAY: False,
         PAGE_VISIT_ID: "visit-1",
         "messages": [message or AIMessage(content="任务还需继续", id="ai-1")],
     }

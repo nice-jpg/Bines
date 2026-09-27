@@ -15,9 +15,7 @@ from langgraph.types import Command, interrupt
 
 try:
     from src.middleware.page_context import (
-        PAGE_CONTEXT_OVERLAY,
         PAGE_CONTEXT_PATH,
-        PAGE_CONTEXT_PENDING_PATH,
         PAGE_VISIT_ID,
     )
     from src.middleware.tool_io import (
@@ -43,9 +41,7 @@ try:
     from src.tools.event_logger import WorkspaceEventLogger
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import (
-        PAGE_CONTEXT_OVERLAY,
         PAGE_CONTEXT_PATH,
-        PAGE_CONTEXT_PENDING_PATH,
         PAGE_VISIT_ID,
     )
     from middleware.tool_io import (
@@ -90,8 +86,8 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
                 name="authorize_probe_completion",
                 description=(
                     "Request deterministic authorization to finish the active application probe. "
-                    "Call only after all configured leaf pages have been visited, no navigation or "
-                    "overlay is pending, and the conductor has returned from every merchant page. "
+                    "Call only after all configured leaf pages have been visited and the conductor "
+                    "has returned from every merchant page. "
                     "A successful authorization must be followed by close_package."
                 ),
             )
@@ -284,10 +280,6 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         targets = tuple(str(item) for item in state.get(PROBE_TARGET_LEAF_PATHS) or ())
         visited = set(str(item) for item in state.get(PROBE_VISITED_LEAF_PATHS) or ())
         missing.extend(f"unvisited_leaf:{path}" for path in targets if path not in visited)
-        if state.get(PAGE_CONTEXT_OVERLAY):
-            missing.append("overlay_active")
-        if state.get(PAGE_CONTEXT_PENDING_PATH):
-            missing.append("navigation_pending")
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         if not current_path:
             missing.append("application_not_open")
@@ -321,8 +313,6 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
     def _continuation_reason(self, state: Mapping[str, Any]) -> str:
         if state.get(PROBE_STATUS) == PROBE_COMPLETION_AUTHORIZED:
             return "application_close_required"
-        if state.get(PAGE_CONTEXT_OVERLAY):
-            return "overlay_active"
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         if current_path and self.mechanism.is_merchant_page(current_path):
             if state.get(MERCHANT_COLLECTION_DONE) is not True:
@@ -334,8 +324,6 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         return "completion_not_authorized"
 
     def _permitted_tools(self, state: Mapping[str, Any]) -> list[str]:
-        if state.get(PAGE_CONTEXT_OVERLAY):
-            return ["tap_in_page"]
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         if not current_path:
             return ["run_package"]

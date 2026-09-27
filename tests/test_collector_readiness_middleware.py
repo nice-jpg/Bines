@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from langchain_core.messages import ToolMessage
 
 from middleware.collector_readiness import CollectorReadinessMiddleware
-from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
 from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
 
@@ -38,7 +38,6 @@ def _state(visit_id: str = "visit-a", *, overlay: bool = False) -> dict:
     return {
         PAGE_CONTEXT_PATH: "meituan/美食/商家",
         PAGE_VISIT_ID: visit_id,
-        PAGE_CONTEXT_OVERLAY: overlay,
     }
 
 
@@ -67,8 +66,10 @@ def test_untrained_visit_rejects_page_operation_but_overlay_close_is_allowed(tmp
         _tool_request("swipe_up", _state()),
         lambda _: called.append("swipe") or ToolMessage(content="xml", tool_call_id="swipe_up-1"),
     )
+    close_request = _tool_request("tap_in_page", _state(overlay=True))
+    close_request.tool_call["args"]["purpose"] = "dismiss_overlay"
     allowed = middleware.wrap_tool_call(
-        _tool_request("tap_in_page", _state(overlay=True)),
+        close_request,
         lambda _: called.append("close") or ToolMessage(content="xml", tool_call_id="tap_in_page-1"),
     )
 

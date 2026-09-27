@@ -6,7 +6,6 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 import hashlib
 import json
-import re
 from threading import Lock
 from typing import Annotated, Any
 from uuid import uuid4
@@ -29,7 +28,6 @@ try:
     from src.middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
-        page_xml,
         tool_succeeded,
         with_state_update,
     )
@@ -39,7 +37,6 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
-        page_xml,
         tool_succeeded,
         with_state_update,
     )
@@ -50,7 +47,6 @@ PAGE_CONTEXT_ACTIVE = "page_context_active"
 PAGE_CONTEXT_APP_ROOT = "page_context_app_root"
 PAGE_CONTEXT_PATH = "page_context_path"
 PAGE_CONTEXT_PENDING_PATH = "page_context_pending_path"
-PAGE_CONTEXT_OVERLAY = "page_context_overlay"
 PAGE_VISIT_ID = "page_visit_id"
 PAGE_PRODUCT_ENTRY_TAPS = "page_product_entry_taps"
 PAGE_COLLECTION_STARTED = "page_collection_started"
@@ -67,7 +63,6 @@ class PageContextState(AgentState):
     page_context_app_root: NotRequired[Annotated[str, _replace_state_value]]
     page_context_path: NotRequired[Annotated[str, _replace_state_value]]
     page_context_pending_path: NotRequired[Annotated[str, _replace_state_value]]
-    page_context_overlay: NotRequired[Annotated[bool, _replace_state_value]]
     page_visit_id: NotRequired[Annotated[str, _replace_state_value]]
     page_product_entry_taps: NotRequired[Annotated[int, _replace_state_value]]
     page_collection_started: NotRequired[Annotated[bool, _replace_state_value]]
@@ -87,9 +82,6 @@ DEVICE_ACTION_TOOLS = frozenset(
         "screenshot",
     }
 )
-BOUNDS_RE = re.compile(r'\[(\d+),(\d+)\]\[(\d+),(\d+)\]')
-DEFAULT_VIEWPORT_WIDTH = 1080
-DEFAULT_VIEWPORT_HEIGHT = 2400
 
 
 class PageContextMiddleware(AgentMiddleware[PageContextState]):
@@ -155,8 +147,6 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         tool_name = invocation.name
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
 
-        if state.get(PAGE_CONTEXT_OVERLAY, False) and tool_name in DEVICE_ACTION_TOOLS - {"tap_in_page", "close_package", "page_view"}:
-            return _context_error(request, "overlay_requires_close", "Close the overlay with tap_in_page first.")
         if not current_path and tool_name in (DEVICE_ACTION_TOOLS | PAGE_TOOL_NAMES) - {"run_package", "close_package"}:
             return _context_error(request, "application_not_open", "Call run_package before page operations.")
 
@@ -170,7 +160,7 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
             error = self._navigation_error(state, str(args.get("next_path") or ""))
             if error:
                 return _context_error(request, "invalid_navigation_target", error)
-        if tool_name == "tap_in_page" and not state.get(PAGE_CONTEXT_OVERLAY, False):
+        if tool_name == "tap_in_page" and args.get("purpose") != "dismiss_overlay":
             policy = self.mechanism.page_policy(current_path)
             taps_used = int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0))
             if policy.role == "merchant" and state.get(PAGE_COLLECTION_STARTED, False):
@@ -243,26 +233,13 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
             update = _page_context_state(False, "")
         elif tool_name in {"navigate_to", "navigate_back"}:
             target = _canonical_path(args.get("next_path"))
-            if is_compact_popup_result(result):
-                update = {PAGE_CONTEXT_PENDING_PATH: target, PAGE_CONTEXT_OVERLAY: True}
-            else:
-                update = _page_visit_update(target)
+            update = _page_visit_update(target)
         elif tool_name == "tap_in_page":
-            if is_compact_popup_result(result):
-                update = {PAGE_CONTEXT_OVERLAY: True}
-            elif state.get(PAGE_CONTEXT_OVERLAY, False):
-                pending = str(state.get(PAGE_CONTEXT_PENDING_PATH) or "")
-                update = _page_visit_update(pending) if pending else {
-                    PAGE_CONTEXT_PENDING_PATH: "",
-                    PAGE_CONTEXT_OVERLAY: False,
-                }
-            elif self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
+            if args.get("purpose") != "dismiss_overlay" and self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
                 update = {PAGE_PRODUCT_ENTRY_TAPS: int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0)) + 1}
         elif tool_name in {"swipe_up", "swipe_up_long", "swipe_down"}:
             if self.mechanism.page_policy(str(state.get(PAGE_CONTEXT_PATH) or "")).role == "merchant":
                 update = {PAGE_COLLECTION_STARTED: True}
-        elif tool_name == "page_view" and is_compact_popup_result(result):
-            update = {PAGE_CONTEXT_OVERLAY: True}
 
         return with_state_update(typed_result, update) if update else result
 
@@ -285,7 +262,6 @@ def _page_context_state(
         PAGE_CONTEXT_APP_ROOT: app_root,
         PAGE_CONTEXT_PATH: path,
         PAGE_CONTEXT_PENDING_PATH: "",
-        PAGE_CONTEXT_OVERLAY: False,
         PAGE_VISIT_ID: uuid4().hex if new_visit and path else "",
         PAGE_PRODUCT_ENTRY_TAPS: 0,
         PAGE_COLLECTION_STARTED: False,
@@ -298,29 +274,11 @@ def _page_visit_update(path: str) -> dict[str, Any]:
     return {
         PAGE_CONTEXT_PATH: path,
         PAGE_CONTEXT_PENDING_PATH: "",
-        PAGE_CONTEXT_OVERLAY: False,
         PAGE_VISIT_ID: uuid4().hex,
         PAGE_PRODUCT_ENTRY_TAPS: 0,
         PAGE_COLLECTION_STARTED: False,
         **reset_collection_state(),
     }
-
-
-def is_compact_popup_result(result: Any) -> bool:
-    xml = _xml_from_result(result)
-    if not xml:
-        return False
-    bounds = [tuple(map(int, match)) for match in BOUNDS_RE.findall(xml)]
-    if len(bounds) < 2 or len(bounds) > 40 or not (' k="1"' in xml or 'clickable="true"' in xml):
-        return False
-    left = min(item[0] for item in bounds)
-    top = min(item[1] for item in bounds)
-    right = max(item[2] for item in bounds)
-    bottom = max(item[3] for item in bounds)
-    return (
-        max(0, right - left) / DEFAULT_VIEWPORT_WIDTH < 0.9
-        or max(0, bottom - top) / DEFAULT_VIEWPORT_HEIGHT < 0.7
-    )
 
 
 def _canonical_path(value: Any) -> str:
@@ -370,14 +328,9 @@ def _context_error(request: Any, error_type: str, detail: str) -> ToolMessage:
     )
 
 
-def _xml_from_result(result: Any) -> str:
-    return page_xml(require_tool_result(result))
-
-
 __all__ = [
     "PAGE_CONTEXT_ACTIVE",
     "PAGE_CONTEXT_APP_ROOT",
-    "PAGE_CONTEXT_OVERLAY",
     "PAGE_CONTEXT_PATH",
     "PAGE_CONTEXT_PENDING_PATH",
     "PageContextMiddleware",

@@ -14,11 +14,11 @@ from langchain_core.messages import ToolMessage
 from Reco.model_interface import TOOLS as PAGE_TOOLS
 
 try:
-    from src.middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+    from src.middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
     from src.middleware.tool_io import ToolInvocation
     from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
-    from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+    from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
     from middleware.tool_io import ToolInvocation
     from page_mechanism import CollectorTrainingRegistry, PageMechanism
 
@@ -66,9 +66,10 @@ class CollectorReadinessMiddleware(AgentMiddleware):
             return None
         tool_name = invocation.name
         allowed = set(UNTRAINED_ALLOWED_TOOLS)
-        if state.get(PAGE_CONTEXT_OVERLAY, False):
+        allowed.add("screenshot")
+        allowed.update(tool["name"] for tool in PAGE_TOOLS)
+        if invocation.args.get("purpose") == "dismiss_overlay":
             allowed.add("tap_in_page")
-            allowed.update(tool["name"] for tool in PAGE_TOOLS)
         if tool_name in allowed:
             return None
         return ToolMessage(

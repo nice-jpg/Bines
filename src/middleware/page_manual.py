@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 import hashlib
 from typing import Any
 
-from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import BaseMessage, SystemMessage
 
 try:
     from src.middleware.page_context import (
         PAGE_CONTEXT_ACTIVE,
-        PAGE_CONTEXT_OVERLAY,
         PAGE_CONTEXT_PATH,
         PAGE_VISIT_ID,
         PageContextState,
@@ -21,7 +20,6 @@ try:
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import (
         PAGE_CONTEXT_ACTIVE,
-        PAGE_CONTEXT_OVERLAY,
         PAGE_CONTEXT_PATH,
         PAGE_VISIT_ID,
         PageContextState,
@@ -30,11 +28,6 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
 
 
 MANUAL_CONTEXT_KIND = "page_manual"
-OVERLAY_CONTEXT_KIND = "page_overlay"
-OVERLAY_INSTRUCTION = (
-    "<overlay_instruction>A compact blocking overlay is visible. Use tap_in_page "
-    "to close it; do not navigate or inspect another page.</overlay_instruction>"
-)
 
 
 class PageManualMiddleware(AgentMiddleware[PageContextState]):
@@ -51,20 +44,6 @@ class PageManualMiddleware(AgentMiddleware[PageContextState]):
     async def abefore_model(self, state: PageContextState, runtime: Any) -> dict[str, Any] | None:
         return self._manual_state_update(state)
 
-    def wrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], ModelResponse],
-    ) -> ModelResponse:
-        return handler(self._prepare_model_request(request))
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        return await handler(self._prepare_model_request(request))
-
     def _manual_state_update(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
         if not state.get(PAGE_CONTEXT_ACTIVE, False):
             return None
@@ -79,17 +58,6 @@ class PageManualMiddleware(AgentMiddleware[PageContextState]):
         if _has_manual_message(messages, current_path, visit_id, digest):
             return None
         return {"messages": [_manual_message(current_path, visit_id, digest, bundle)]}
-
-    def _prepare_model_request(self, request: ModelRequest) -> ModelRequest:
-        state = request.state
-        if not state.get(PAGE_CONTEXT_ACTIVE, False) or not state.get(PAGE_CONTEXT_OVERLAY, False):
-            return request
-        overlay = SystemMessage(
-            content=OVERLAY_INSTRUCTION,
-            id="page-overlay:transient",
-            additional_kwargs={"bines_context": {"kind": OVERLAY_CONTEXT_KIND}},
-        )
-        return request.override(messages=[*request.messages, overlay])
 
 
 def _manual_message(current_path: str, visit_id: str, digest: str, bundle: str) -> SystemMessage:

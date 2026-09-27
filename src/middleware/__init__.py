@@ -13,7 +13,6 @@ from .device_operation_reliability import DeviceOperationReliabilityMiddleware
 from .page_context import (
     PAGE_CONTEXT_ACTIVE,
     PAGE_CONTEXT_APP_ROOT,
-    PAGE_CONTEXT_OVERLAY,
     PAGE_CONTEXT_PATH,
     PAGE_CONTEXT_PENDING_PATH,
     PAGE_COLLECTION_STARTED,
@@ -56,7 +55,6 @@ __all__ = [
     "DeviceOperationReliabilityMiddleware",
     "PAGE_CONTEXT_ACTIVE",
     "PAGE_CONTEXT_APP_ROOT",
-    "PAGE_CONTEXT_OVERLAY",
     "PAGE_CONTEXT_PATH",
     "PAGE_CONTEXT_PENDING_PATH",
     "PAGE_COLLECTION_STARTED",

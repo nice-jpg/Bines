@@ -12,7 +12,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from middleware.collection_persistence import CollectionPersistenceMiddleware
-from middleware.page_context import PAGE_CONTEXT_OVERLAY, PAGE_CONTEXT_PATH, PAGE_VISIT_ID
+from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
 from middleware.probe_state import (
     COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
     COLLECTION_LATEST_NEW_COUNT,
@@ -36,7 +36,6 @@ def _request(
         tool=None,
         state={
             PAGE_CONTEXT_PATH: page_path,
-            PAGE_CONTEXT_OVERLAY: overlay,
             PAGE_VISIT_ID: page_visit_id,
         },
     )
@@ -398,8 +397,10 @@ def test_overlay_close_xml_does_not_run_old_page_script(tmp_path: Path) -> None:
     middleware, registry, workbook_path = _middleware(tmp_path)
     _mark_trained(registry)
 
+    request = _request("tap_in_page", overlay=True)
+    request.tool_call["args"]["purpose"] = "dismiss_overlay"
     result = middleware.wrap_tool_call(
-        _request("tap_in_page", overlay=True),
+        request,
         lambda _request: _tool_message("tap_in_page", "new-page-xml"),
     )
 

@@ -83,7 +83,7 @@ LangChain 工具使用 `response_format="content_and_artifact"`：
 - collector 在冻结视图后调用 screenshot，根据真实图片提交不可覆盖的视觉基准。
   首次脚本输出在基准保存前隐藏；不存在独立 coder，也不向 agent 暴露历史 XML。
 
-所有页面工具的集合固定。未训练页面仍受 readiness 门禁约束；overlay 状态允许区域读取定位关闭控件。
+所有页面工具的集合固定。覆盖层完全由 LLM 根据视图或截图判断；middleware 不检测、记录或提示覆盖层状态。未训练页面允许查询和截图；LLM 声明 purpose=dismiss_overlay 的同页点击可用于关闭覆盖层，其余操作仍受训练门禁约束。
 区域读取类结果参与当前页面最近三组短期工具调用的压缩，别名赋值记录保留。
 
 因此，注册顺序不仅表示模块清单，也决定状态能否在正确阶段被观察和提交。
@@ -119,7 +119,7 @@ sequenceDiagram
     Retry->>ProbeModel: invoke attempt
     ProbeModel->>ProbeModel: set parallel_tool_calls=false
     ProbeModel->>ContextWrap: constrained request
-    ContextWrap->>ContextWrap: project history and append transient overlay
+    ContextWrap->>ContextWrap: project history
     ContextWrap->>TraceModel: final model request
     TraceModel->>LLM: invoke(projected messages, fixed tools)
     LLM-->>TraceModel: ModelResponse
@@ -377,7 +377,7 @@ collector 的工具调用不经过 conductor 的页面状态、采集落盘和�
 
 ### 6. ConductorContextMiddleware.wrap_model_call
 
-文件：`src/middleware/conductor_context.py`，内部依次调用 `device_context_compression.py` 和 `page_manual.py`。
+文件：`src/middleware/conductor_context.py`，请求投影仅调用 `device_context_compression.py`；`page_manual.py` 仅用于 before_model。
 
 **职责**
 
@@ -386,7 +386,7 @@ collector 的工具调用不经过 conductor 的页面状态、采集落盘和�
 3. 将已离开的页面压缩为包含路径和采集数量的占位，返回父页面时在原位置恢复父页面 block；
 4. 当前活跃页面只保留最近三组短期页面状态工具调用及对应 AI tool-call message；
 5. 保留 package、captcha、`think`、`prepare_collector`、`is_done`、完成授权和未知工具的原文；
-6. overlay 激活时，仅对当前请求追加临时 overlay `SystemMessage`，不写回 state。
+6. 不注入运行时页面语义提示；覆盖层处理原则由固定 conductor prompt 提供。
 
 **输入**
 
@@ -399,11 +399,11 @@ collector 的工具调用不经过 conductor 的页面状态、采集落盘和�
 
 - 使用 `request.override(messages=...)` 得到的请求；
 - graph state 和基础 system prompt 保持不变；
-- overlay 指令只存在于当前请求。
+- 不生成覆盖层状态或临时覆盖层消息。
 
 **顺序原因**
 
-压缩先于临时 overlay 注入，避免 overlay 被当成持久化 manual block。它位于 tracing 内层的外侧，使 nTrace 记录模型实际看到的投影消息。
+manual 由 before_model 持久化，wrap_model_call 仅投影消息历史。它位于 tracing 内层的外侧，使 nTrace 记录模型实际看到的投影消息。
 
 ### 7. NTraceEndMiddleware.wrap_model_call
 
@@ -417,7 +417,7 @@ collector 的工具调用不经过 conductor 的页面状态、采集落盘和�
 
 **输入**
 
-- 已完成并发设置、上下文压缩和 overlay 注入的最终 `ModelRequest`。
+- 已完成并发设置、上下文压缩的最终 `ModelRequest`。
 
 **输出**
 
@@ -472,7 +472,7 @@ LangChain 将稳定的基础 `system_message` 放在 `request.messages` 之前�
 **输入**
 
 - `ProbeState` 和最新 AI message；
-- 页面、访问实例、overlay、待导航、leaf 访问和商家采集完成状态。
+- 页面、访问实例、待导航、leaf 访问和商家采集完成状态。
 
 **输出**
 
@@ -529,7 +529,7 @@ result
 
 - 校验 `run_package` 首页映射和显式导航的绝对 canonical path；
 - 在设备操作前验证目标 manual 完整存在；
-- 根据 overlay、商家点击额度和采集是否已开始限制页面操作；
+- 根据商家点击额度和采集是否已开始限制普通页面操作；middleware 不判定覆盖层，LLM 声明的 dismiss_overlay 点击不占商品入口额度；
 - 对同一 AI message 的多个设备动作执行 action claim，只允许第一个动作进入设备层；
 - 将 `parallel_tool_calls=False` 的模型约束再落实为执行期门禁。
 
@@ -548,11 +548,11 @@ result
 
 - 页面策略要求 collector 且当前 `page_visit_id + path` 尚未训练时，拒绝普通页面读取、点击和滑动；
 - 默认仅允许 `prepare_collector`、返回、关闭、思考和 captcha 工具；
-- overlay 激活时额外允许 `tap_in_page` 关闭弹窗。
+- 允许视图查询、截图和 purpose=dismiss_overlay 的同页点击。
 
 **输入**
 
-- 当前 page path、visit id、overlay 状态；
+- 当前 page path、visit id；
 - `CollectorTrainingRegistry` 中的实例级训练记录。
 
 **输出**
@@ -575,7 +575,7 @@ result
 
 - `ToolCallRequest`；
 - 内层返回的 `ToolMessage` 或 `Command`；
-- 当前 path、visit id、overlay、训练记录和 collection state。
+- 当前 path、visit id、训练记录和 collection state。
 
 **输出**
 
@@ -698,7 +698,7 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 - `tap_in_page` 与 `page_view` 只允许初始化/提取，不追加商品；其他 Reco 查询不触发采集；
 - swipe 使用 workbook 全量去重后的 `appended_items` 更新最新新增量、连续空滑次数和访问摘要；
 - 连续三次有效采集 swipe 新增为零后，`is_done` 才返回 `done=true`；
-- overlay、紧凑弹窗和落盘跳过不覆盖已有完成进度；执行或落盘失败保留已采集数量，但重置连续空滑次数和完成标记。
+- LLM 声明的 dismiss_overlay 点击不触发采集；不依据页面几何判断是否采集。落盘跳过不覆盖进度，执行或落盘失败清除连续空滑及完成证据。
 
 **输入**
 
@@ -717,8 +717,8 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 - 仅在最终工具结果成功时提交页面状态；
 - `run_package` 建立应用根路径和新的 visit id；
 - `navigate_to`、`navigate_back` 提交目标 path 和新 visit id；
-- 紧凑弹窗出现时保留原 path，将目标写入 pending path 并进入 overlay；
-- `tap_in_page` 关闭 overlay 后提交 pending path，或更新商家入口点击数；
+- 导航成功立即提交目标 path；不推断覆盖层；pending path 仅保留旧 checkpoint 兼容并清空；
+- `tap_in_page` 不提交导航，普通点击更新入口次数，LLM 声明的 dismiss_overlay 点击不占次数；生命周期完成验收不检测覆盖层；
 - merchant swipe 标记 collection started；
 - 每次新页面访问原子重置商家采集完成状态。
 
@@ -763,7 +763,7 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 
 `ProbeControlMiddleware.state_schema` 使用 `ConductorState`，合并：
 
-- `PageContextState`：应用根路径、当前路径、pending path、overlay、visit id、点击额度和采集启动状态；
+- `PageContextState`：应用根路径、当前路径、pending path、visit id、点击额度和采集启动状态；
 - `ProbeState`：probe 生命周期、leaf 访问、提前终止计数、商家完成状态和 collection summaries；
 - LangChain `AgentState.messages`。
 
