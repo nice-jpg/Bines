@@ -56,9 +56,17 @@ Core operations return the documented success value or an error result:
 custom `/data/local/tmp/project -d` dump helper to reduce idle-state failures on
 dynamic pages. `close_package()` executes `adb shell am force-stop`.
 
-Collector captures screenshots with screenshot(), then pulls the remote PNG to
+Conductor, collector and offline audits share a screenshot service that captures
+with screenshot(), then pulls the remote PNG to
 a temporary local file using pull_file(). It returns image content to the model,
 not the device path. UI XML remains internal to PageBridge.
+
+After actions, PageBridge synchronizes its complete tree with Reco.sync and sends
+page_change_hint: at most three mutually non-ancestor region IDs and update_ratio
+values, without node content or deletion events. These are search priorities, not
+exhaustive changes or proof of operation success. First capture returns the root
+view; no change returns empty regions. Complete snapshots remain in internal
+artifacts. Explicit page queries can retrieve full context at any time.
 
 Current `act()` behavior:
 

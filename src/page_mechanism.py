@@ -20,6 +20,7 @@ from typing import Any, Mapping
 from codex_apply_patch import apply_patch_in_memory, parse_patch
 
 from src.page_view import ReadOnlyPageView
+from src.collection_contract import CollectionContract
 
 
 PAGE_MECHANISM_DIR = Path(__file__).resolve().parent / "prompts" / "page_mechanism"
@@ -47,6 +48,7 @@ class CollectorTrainingRecord:
     merchant_profile: dict[str, Any] = field(default_factory=dict)
     script_fingerprint: str = ""
     restoration: dict[str, Any] = field(default_factory=dict)
+    contract_fingerprint: str = ""
 
 
 class PageMechanism:
@@ -83,6 +85,55 @@ class PageMechanism:
 
     def query_page_doc(self, current_path: str) -> str:
         return self._query_doc(current_path, "PAGE.md", "page_doc")
+
+    def _manual_section(self, current_path, section, content=None):
+        canonical = self.validate_page_manual(current_path)
+        target = (self.root / canonical / "PAGE.md").resolve()
+        if not target.is_relative_to(self.root):
+            raise ValueError("Manual escapes page root")
+        start, end = f"<!-- {section}:begin -->", f"<!-- {section}:end -->"
+        with self._run_patch_lock:
+            original = target.read_text(encoding="utf-8")
+            if original.count(start) != original.count(end) or original.count(start) > 1:
+                raise ValueError("Invalid manual section markers")
+            if start in original and original.index(start) >= original.index(end):
+                raise ValueError("Reversed manual section markers")
+            old = original.split(start, 1)[1].split(end, 1)[0].strip() if start in original else None
+            if content is None:
+                return old
+            if "<!--" in content or "-->" in content:
+                raise ValueError("Section content cannot contain control markers")
+            if old == content.strip():
+                return False
+            block = f"{start}\n{content.strip()}\n{end}"
+            updated = (original.split(start, 1)[0] + block + original.split(end, 1)[1]
+                       if old is not None else original.rstrip() + "\n\n" + block + "\n")
+            temporary = None
+            try:
+                with NamedTemporaryFile(mode="w", encoding="utf-8", dir=target.parent, delete=False) as handle:
+                    temporary = handle.name
+                    handle.write(updated)
+                os.replace(temporary, target)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
+            return True
+
+    def update_page_notes(self, current_path: str, content: str) -> bool:
+        return self._manual_section(current_path, "operation-notes", "## Operation Observations\n" + content)
+
+    def collection_contract(self, current_path: str) -> CollectionContract | None:
+        content = self._manual_section(current_path, "collection-contract")
+        if content is None:
+            return None
+        match = re.search(r"```json\s*\n(.*?)\n```", content, re.DOTALL)
+        if match is None:
+            raise ValueError("Collection Requirements must contain a JSON block")
+        return CollectionContract.from_dict(json.loads(match.group(1)))
+
+    def save_collection_contract(self, current_path, contract):
+        content = "## Collection Requirements\n```json\n" + json.dumps(contract.as_dict(), sort_keys=True) + "\n```"
+        return self._manual_section(current_path, "collection-contract", content)
 
     def query_task_doc(self, current_path: str) -> str:
         return self._query_doc(current_path, "task.md", "task_doc")
@@ -492,6 +543,7 @@ class CollectorTrainingRegistry:
         merchant_profile: Mapping[str, Any] | None = None,
         script_fingerprint: str = "",
         restoration: Mapping[str, Any] | None = None,
+        contract_fingerprint: str = "",
     ) -> None:
         self.register_visit(visit_id, current_path)
         with self._lock:
@@ -500,6 +552,7 @@ class CollectorTrainingRegistry:
             record.merchant_profile = dict(merchant_profile or {})
             record.script_fingerprint = str(script_fingerprint or "")
             record.restoration = dict(restoration or {})
+            record.contract_fingerprint = contract_fingerprint
 
     def mark_untrained(
         self,
@@ -544,6 +597,7 @@ def _copy_training_record(record: CollectorTrainingRecord) -> CollectorTrainingR
         merchant_profile=dict(record.merchant_profile),
         script_fingerprint=record.script_fingerprint,
         restoration=dict(record.restoration),
+        contract_fingerprint=record.contract_fingerprint,
     )
 
 

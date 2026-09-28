@@ -174,7 +174,6 @@ class CollectionWorkbookSink:
         self.provider = provider or ContentProvider()
         self.relative_path = relative_path
         self._merchant_sheets: dict[str, str] = {}
-        self._item_signatures: dict[str, set[str]] = {}
         if reset:
             self.provider.create_excel_file(relative_path, sheet_name=SHEET_NAME)
         else:
@@ -187,6 +186,7 @@ class CollectionWorkbookSink:
         *,
         run_result: Mapping[str, Any],
         append_items: bool,
+        contract=None,
     ) -> dict[str, Any]:
         if run_result.get("ok") is not True:
             return {"ok": True, "skipped": True, "reason": "collection_not_ok"}
@@ -208,6 +208,11 @@ class CollectionWorkbookSink:
         with _lock_workbook_path(path):
             workbook = _load_existing_workbook(path) if path.exists() else Workbook()
             try:
+                if not self._merchant_sheets and SHEET_NAME in workbook.sheetnames:
+                    rows = list(workbook[SHEET_NAME].values)
+                    if rows and "name" in rows[0]:
+                        names = [row[rows[0].index("name")] for row in rows[1:]]
+                        self._merchant_sheets.update(zip(names, [s for s in workbook.sheetnames if s != SHEET_NAME]))
                 index_sheet = _ensure_sheet(workbook, SHEET_NAME)
                 merchant_headers = _ensure_headers(index_sheet, merchant.keys())
                 merchant_row = _upsert_row_by_key(index_sheet, merchant_headers, "name", merchant_name, merchant)
@@ -219,6 +224,7 @@ class CollectionWorkbookSink:
                     merchant_sheet_name,
                     item_headers,
                     item_rows if append_items else [],
+                    contract=contract,
                 )
                 skipped_items = len(item_rows) - appended if append_items else len(item_rows)
                 _save_workbook(workbook, path)
@@ -248,7 +254,6 @@ class CollectionWorkbookSink:
         if sheet_name not in workbook.sheetnames:
             workbook.create_sheet(sheet_name)
         self._merchant_sheets[merchant_name] = sheet_name
-        self._item_signatures.setdefault(sheet_name, set())
         return sheet_name
 
     def _append_unique_items(
@@ -257,11 +262,15 @@ class CollectionWorkbookSink:
         sheet_name: str,
         headers: list[str],
         items: list[Mapping[str, Any]],
+        contract=None,
     ) -> int:
-        signatures = self._item_signatures.setdefault(sheet_name, set())
+        signature_of = contract.key if contract else _json_signature
+        signatures = {signature_of(dict(zip(headers, row))) for row in worksheet.iter_rows(min_row=2, values_only=True)}
         appended = 0
         for item in items:
-            signature = _json_signature(item)
+            if contract and contract.missing(item):
+                continue
+            signature = signature_of(item)
             if signature in signatures:
                 continue
             signatures.add(signature)

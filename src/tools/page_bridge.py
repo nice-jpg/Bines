@@ -9,6 +9,7 @@ from xml.etree.ElementTree import ParseError
 
 from langchain_core.tools import StructuredTool
 from Reco.model_interface import TOOLS, PageSession
+from .page_change_hint import change_hint
 if __package__.startswith("src."):
     from src.page_view import freeze_page, restore_page
 else:
@@ -43,13 +44,16 @@ class PageBridge:
             return result, None
         with self._lock:
             new = PageSession.build_tree(result)
+            initial = self._session is None
             if self._session is None:
                 self._session = new
             else:
                 self._session.sync(new)
             self._xml = result
             self._snapshot_info = freeze_page(self._session, result)
-            return self.query("page_view", {})
+            if initial:
+                return self.query("page_view", {})
+            return change_hint(self._session), {"page_xml": self._xml, "page_snapshot": self.snapshot()}
 
     def snapshot(self):
         with self._lock:

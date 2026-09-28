@@ -11,6 +11,7 @@ from src.collector import CollectorToolbox, CollectorHistory, CollectorManager
 from src.page_mechanism import PageMechanism, PagePolicy
 from src.tools.page_bridge import PageBridge
 from src.page_view import ReadOnlyPageView, MissingPageAlias
+from src.collection_contract import CollectionContract
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6WAAAAABJRU5ErkJggg==")
 GUIDE = '{"required_aliases":["1"]}\n\n# Product region\nFind the product text region by its role and position.'
@@ -51,16 +52,18 @@ class FakeHub:
         return self.page_bridge.refresh()
 
 
-def setup(tmp_path, *, history=None, visit="a"):
+def setup(tmp_path, *, history=None, visit="a", run="probe-a"):
     page = tmp_path / "pages" / "meituan"
     page.mkdir(parents=True, exist_ok=True)
     for name, content in (("PAGE.md", "Merchant"), ("task.md", "Collect"), ("COLLECT.md", GUIDE), ("run.agent.py", SCRIPT)):
         if not (page / name).exists():
             (page / name).write_text(content)
     mechanism = PageMechanism(tmp_path / "pages", page_policies={"meituan": PagePolicy(role="merchant", requires_collector=True, max_product_entry_taps=1)})
+    if mechanism.collection_contract("meituan") is None:
+        mechanism.save_collection_contract("meituan", CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["name"]}))
     hub = FakeHub()
     toolbox = CollectorToolbox(mechanism=mechanism, event_hub=hub, page_path="meituan",
-        page_visit_id=visit, history=history or CollectorHistory(tmp_path / "history"),
+        page_visit_id=visit, run_id=run, history=history or CollectorHistory(tmp_path / "history"),
         merchant_schema={"name": ""}, collection_schema={"items": [{"name": ""}]},
         requires_merchant_profile=True)
     toolbox._page_call("page_view", {})
@@ -301,11 +304,11 @@ def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkey
     manager = CollectorManager(model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
     manager.history = CollectorHistory(tmp_path / "history")
     result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
-        '{"items":[{"name":""}]}', SimpleNamespace(state={"page_context_path":"meituan","page_visit_id":"visit"})))
+        '{"items":[{"name":""}]}', SimpleNamespace(state={"page_context_path":"meituan","page_visit_id":"visit","probe_run_id":"probe-a"})))
     assert result["verification"]["ready"]
     assert result["collector_message"] == "Ready."
     assert result["trained"]
-    assert len(manager.history.load("meituan")) == 2
+    assert len(manager.history.load("meituan", run_id="probe-a")) == 2
 
 
 def test_ready_does_not_unlock_device_while_view_is_frozen(tmp_path):
@@ -335,7 +338,7 @@ def test_batch_sampling_never_runs_script_and_regression_never_moves_device(tmp_
         if name == "cup":
             t.collector_swipe_to_random(500, 1200)
     assert not calls
-    assert len(t.history.load("meituan")) == 2
+    assert len(t.history.load("meituan", run_id=t.run_id)) == 2
     before = t.event_hub.calls[:]
     ids = set(t.cases)
     report = json.loads(t.sniff_run())
@@ -354,6 +357,75 @@ def test_failing_evidence_survives_restart_before_success(tmp_path):
     second = setup(tmp_path, visit="b")
     assert len(second.historical_ids) == 1
     assert json.loads(second.sniff_run())["eval_grades"]["score"] < 100
+
+
+def test_new_run_excludes_old_failed_cases_but_keeps_archives(tmp_path):
+    old = setup(tmp_path, run="old-run")
+    verify(old, "obsolete-baseline")
+    archived = {p: p.read_bytes() for p in (tmp_path / "history").rglob("record.json")}
+    assert archived
+    current = setup(tmp_path, run="new-run")
+    assert not current.cases
+    assert json.loads(current.list_validation_cases()) == []
+    with pytest.raises(ValueError, match="Prepare visual cases"):
+        current.sniff_run()
+    for case_id in old.cases:
+        with pytest.raises(ValueError, match="Unknown case"):
+            current.load_validation_case(case_id)
+    result = train(current)
+    assert result["eval_grades"]["ready"]
+    assert set(result["ground_truths"]) == set(current.cases)
+    assert not set(result["ground_truths"]) & old.cases.keys()
+    assert {p: p.read_bytes() for p in archived} == archived
+
+
+def test_same_run_recreated_collector_keeps_all_prepared_cases(tmp_path):
+    first = setup(tmp_path, run="shared-run", visit="first-visit")
+    verify(first, "cup")
+    second = setup(tmp_path, run="shared-run", visit="second-visit")
+    verify(second, "cup")
+    # Recreate the toolbox and storage object, as after retrying prepare_collector.
+    resumed = setup(tmp_path, run="shared-run", visit="second-visit")
+    report = json.loads(resumed.sniff_run())
+    assert len(report["cases"]) == 2
+    assert set(report["ground_truths"]) == set(second.cases)
+    assert report["eval_grades"]["score"] == 100
+
+
+def test_prepare_collector_requires_runtime_run_identity(tmp_path, monkeypatch):
+    box = setup(tmp_path)
+    manager = CollectorManager(model="fake", mechanism=box.mechanism, event_hub=box.event_hub)
+    monkeypatch.setattr(manager, "_build_agent", lambda _: pytest.fail("must not launch collector"))
+    with pytest.raises(ValueError, match="probe_run_id"):
+        manager.prepare_collector("meituan", "page", '{"name":""}', '{"items":[{"name":""}]}',
+            SimpleNamespace(state={"page_context_path": "meituan", "page_visit_id": "visit"}))
+
+
+def test_contract_reuse_is_noop_and_repair_requires_evidence(tmp_path):
+    t = setup(tmp_path)
+    path = tmp_path / "pages/meituan/PAGE.md"
+    original = path.read_bytes(), path.stat().st_mtime_ns
+    assert json.loads(t.save_collection_contract(["name"], []))["updated"] is False
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == original
+    with pytest.raises(ValueError, match="schema"):
+        t.save_collection_contract(["unknown"], [])
+
+
+def test_missing_contract_is_defined_after_multiple_samples(tmp_path):
+    t = setup(tmp_path)
+    (tmp_path / "pages/meituan/PAGE.md").write_text("Merchant")
+    with pytest.raises(ValueError, match="multiple"):
+        t.save_collection_contract(["name"], [])
+    for name in ("cup", "bowl"):
+        mark(t)
+        t.capture_validation_case()
+        t.screenshot()
+        t.save_baseline(json.dumps({"items": [{"name": name}]}))
+        t.return_to_live_page()
+        if name == "cup":
+            t.collector_swipe_to_random(500, 1200)
+    assert json.loads(t.save_collection_contract(["name"], []))["updated"]
+    assert json.loads(t.sniff_run())["eval_grades"]["ready"]
     assert "tap" not in t.event_hub.calls
 
 

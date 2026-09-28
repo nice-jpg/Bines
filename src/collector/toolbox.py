@@ -1,12 +1,9 @@
 """Single-agent annotation, visual evidence, script repair and regression tools."""
 
-import base64
 from datetime import datetime, timezone
 from functools import wraps
 import hashlib
 import json
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from threading import RLock
 from typing import Literal
 from uuid import uuid4
@@ -14,6 +11,8 @@ from uuid import uuid4
 from langchain_core.tools import StructuredTool
 from Reco.model_interface import TOOLS
 from src.page_view import ReadOnlyPageView
+from src.collection_contract import CollectionContract
+from src.tools.screenshot import capture_png, image_url
 
 if __package__.startswith("src."):
     from src.page_mechanism import eval_collection
@@ -60,18 +59,19 @@ def shape_errors(schema, value, path="result"):
 
 
 class CollectorToolbox:
-    def __init__(self, *, mechanism, event_hub, page_path, merchant_schema="{}",
+    def __init__(self, *, mechanism, event_hub, page_path, run_id, merchant_schema="{}",
                  collection_schema="{}", requires_merchant_profile=False,
                  history=None, page_visit_id=None):
         self.mechanism = mechanism
         self.event_hub = event_hub
         self.page_path = page_path
         self.page_visit_id = page_visit_id or uuid4().hex
+        self.run_id = run_id
         self.merchant_schema = object_value(merchant_schema)
         self.collection_schema = object_value(collection_schema)
         self.requires_merchant_profile = requires_merchant_profile
         self.history = history or CollectorHistory()
-        self.cases = {case["case_id"]: case for case in self.history.load(page_path)}
+        self.cases = {case["case_id"]: case for case in self.history.load(page_path, run_id=self.run_id)}
         self.historical_ids = set(self.cases)
         self.active_id = None
         self.frozen = None
@@ -98,7 +98,50 @@ class CollectorToolbox:
         return fingerprint(self.mechanism.read_run_agent_py(self.page_path))
 
     def _stamp(self):
-        return (self._script_fingerprint(), self._guide()["fingerprint"], fingerprint(encoded(self.cases)))
+        contract = self.mechanism.collection_contract(self.page_path)
+        return (self._script_fingerprint(), self._guide()["fingerprint"], fingerprint(encoded(self.cases)),
+                contract.fingerprint if contract else None)
+
+    def read_collection_contract(self) -> str:
+        """Read existing PAGE.md identity and completeness rules; reuse them if evidence agrees."""
+        contract = self.mechanism.collection_contract(self.page_path)
+        return encoded({"contract": contract.as_dict() if contract else None})
+
+    def save_collection_contract(self, primary_key: list[str], required_fields: list[str], evidence: str = "") -> str:
+        """Save missing rules or correct an evidenced counterexample; never relax rules for clipped rows."""
+        contract = CollectionContract.from_dict({"primary_key": primary_key, "required_fields": required_fields})
+        item_schema = self.collection_schema.get("items")
+        if not isinstance(item_schema, list) or not item_schema or not isinstance(item_schema[0], dict):
+            raise ValueError("collection_schema must describe item fields")
+        fields = set(item_schema[0])
+        if not set(contract.required_fields) <= fields:
+            raise ValueError("Contract fields must exist in collection_schema.items")
+        old = self.mechanism.collection_contract(self.page_path)
+        if old == contract:
+            return encoded({"ok": True, "updated": False})
+        current = [case for key, case in self.cases.items() if key not in self.historical_ids]
+        if len({case["revision"] for case in current if case["baseline"] is not None}) < 2:
+            raise ValueError("Inspect and save multiple current states before defining rules")
+        if old and not evidence.strip():
+            raise ValueError("A concrete counterexample is required to change existing rules")
+        self._validate_contract(contract)
+        updated = self.mechanism.save_collection_contract(self.page_path, contract)
+        return encoded({"ok": True, "updated": updated, "fingerprint": contract.fingerprint})
+
+    def _validate_contract(self, contract):
+        """Reject collisions within one visual state; clipped baseline rows are not rule counterexamples."""
+        item_schema = self.collection_schema.get("items")
+        if not isinstance(item_schema, list) or not item_schema or not set(contract.required_fields) <= set(item_schema[0]):
+            raise ValueError("Contract fields must exist in collection_schema.items")
+        for case in self.cases.values():
+            seen = set()
+            for item in (case["baseline"] or {}).get("items", []):
+                if contract.missing(item):
+                    continue
+                key = contract.key(item)
+                if key in seen:
+                    raise ValueError(f"Nonunique visual key in case {case['case_id']}")
+                seen.add(key)
 
     def read_collection_guide(self) -> str:
         """Read COLLECT.md and its required numeric aliases before annotating."""
@@ -176,19 +219,19 @@ class CollectorToolbox:
         return encoded(page)
 
     def collector_swipe_up(self, x: int, y: int) -> str:
-        """Scroll the live page only outside frozen validation."""
+        """Scroll outside frozen validation; returns page_change_hint IDs to query for content."""
         return self._move(self.event_hub.swipe_up, x, y)
 
     def collector_swipe_up_long(self, x: int, y: int) -> str:
-        """Scroll the live page a long distance outside validation."""
+        """Scroll a long distance outside validation; returns page_change_hint IDs to query."""
         return self._move(self.event_hub.swipe_up_long, x, y)
 
     def collector_swipe_down(self, x: int, y: int) -> str:
-        """Scroll downward outside validation; never navigate back."""
+        """Scroll downward outside validation, never navigate; returns page_change_hint IDs to query."""
         return self._move(self.event_hub.swipe_down, x, y)
 
     def collector_swipe_to_random(self, x: int, y: int) -> str:
-        """Visit a random same-page state needed for compatibility validation."""
+        """Visit a random validation state; returns page_change_hint IDs to query for content."""
         return self._move(self.event_hub.swipe_to_random, x, y, random_state=True)
 
     def capture_validation_case(self) -> str:
@@ -202,7 +245,7 @@ class CollectorToolbox:
         ReadOnlyPageView(snapshot).require_aliases(guide["required_aliases"])
         case_id = uuid4().hex
         self.cases[case_id] = {
-            "case_id": case_id, "page_visit_id": self.page_visit_id,
+            "case_id": case_id, "page_visit_id": self.page_visit_id, "run_id": self.run_id,
             "snapshot": snapshot, "baseline": None, "image": None,
             "schema": self.collection_schema, "revision": self._revision,
             "random_state": self._random, "guide_fingerprint": guide["fingerprint"],
@@ -211,7 +254,7 @@ class CollectorToolbox:
         return encoded({"ok": True, "case_id": self.active_id, "awaiting": "screenshot_then_save_baseline"})
 
     def sniff_run(self) -> str:
-        """Run the script against all prepared current and historical cases, without device operations."""
+        """Test all prepared cases for this page in the current probe run, without device operations."""
         if not self.cases:
             raise ValueError("Prepare visual cases before running regression")
         if any(case["baseline"] is None or not case.get("image") for case in self.cases.values()):
@@ -224,18 +267,7 @@ class CollectorToolbox:
         if case and case.get("image"):
             image = case["image"]
         else:
-            remote = self.event_hub.screenshot()
-            if not isinstance(remote, str):
-                raise ValueError(f"Screenshot failed: {remote}")
-            with TemporaryDirectory(prefix="collector-image-") as directory:
-                local = str(Path(directory) / "screen.png")
-                pulled = self.event_hub.device.pull_file(remote, local)
-                if not isinstance(pulled, str):
-                    raise ValueError(f"Screenshot transfer failed: {pulled}")
-                data = Path(local).read_bytes()
-            if not data.startswith(b"\x89PNG\r\n\x1a\n"):
-                raise ValueError("Screenshot is not a PNG image")
-            image = "data:image/png;base64," + base64.b64encode(data).decode()
+            image = image_url(capture_png(self.event_hub))
             if self._revision == 0:
                 self._profile_screenshot = True
             if case:
@@ -265,6 +297,10 @@ class CollectorToolbox:
 
     def _evaluate(self):
         guide = self._guide()
+        contract = self.mechanism.collection_contract(self.page_path)
+        if contract is None:
+            raise ValueError("Define the collection contract from visual evidence before regression")
+        self._validate_contract(contract)
         outputs, grades = {}, {}
         for case_id, case in self.cases.items():
             result = None
@@ -302,7 +338,7 @@ class CollectorToolbox:
         self._marked.clear()
 
     def list_validation_cases(self) -> str:
-        """List historical/current cases without exposing internal XML or baseline images."""
+        """List this run's cases for the current page, without internal XML or baseline images."""
         return encoded([{"case_id": key, "historical": key in self.historical_ids,
                          "grade": self._grades.get(key), "guide_fingerprint": case["guide_fingerprint"]}
                         for key, case in self.cases.items()])
@@ -364,7 +400,7 @@ class CollectorToolbox:
                 "validated_states": len(current) if passing else 0, "script_fingerprint": self._script_fingerprint()}
 
     def collector_tap(self, x: int, y: int) -> str:
-        """After all cases pass, tap one same-page top-reset control; never navigate."""
+        """After all cases pass, tap a same-page top-reset control; returns page_change_hint IDs."""
         if self.active_id is not None or not self.requires_merchant_profile or self._tap_attempted or not self.training_result()["ready"]:
             raise ValueError("Reset tap is locked until full visual regression passes")
         self._tap_attempted = True
@@ -394,7 +430,8 @@ class CollectorToolbox:
                  if case["baseline"] is not None and case.get("image")]
         return self.history.commit(self.page_path, self.page_visit_id,
                                    [c for c in cases if c["case_id"] not in self.historical_ids],
-                                   [c for c in cases if c["case_id"] in self.historical_ids])
+                                   [c for c in cases if c["case_id"] in self.historical_ids],
+                                   run_id=self.run_id)
 
     def _safe(self, function):
         @wraps(function)
@@ -414,6 +451,7 @@ class CollectorToolbox:
             tools.append(StructuredTool(name=spec["name"], description=spec["description"],
                                         args_schema=spec["input_schema"], func=bind(spec["name"])))
         for function in (self.read_collection_guide, self.write_collection_guide,
+                         self.read_collection_contract, self.save_collection_contract,
                          self.read_run_agent_py, self.apply_run_agent_py_patch,
                          self.collector_swipe_up, self.collector_swipe_up_long,
                          self.collector_swipe_down, self.collector_swipe_to_random,

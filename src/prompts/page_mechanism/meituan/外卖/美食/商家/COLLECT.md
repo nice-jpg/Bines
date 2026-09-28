@@ -4,30 +4,29 @@
 
 ## Required semantic anchor
 
-Assign alias **"1"** to the main product-feed/list region in the ordering tab. It is the vertically scrolling list on the product side of the menu, located below the centered warm reminder (“温馨提示：请适量点餐”) and, in a two-column layout, to the right of the narrow category rail. The region contains a category heading or promotional banner followed by repeated purchasable product cards.
+Assign alias **"1"** to the smallest exposed region containing the visible, vertically repeated product feed beneath the ordering tab. In the common two-column layout this is the product list on the right of the category rail. In a single-column or tab-style layout, choose the repeated product-list container. If no dedicated list is exposed, use the smallest outer rendered-surface region that contains all visible product cards.
 
-Do not assign the alias to the outer page switcher, the whole menu scroller, the left category list, a single product card, the warm-reminder text, or a promotion/banner. If the menu uses a single-column or tab-style layout, choose the repeated product-list container immediately following the warm reminder rather than the tabs themselves.
+Do not anchor the merchant header, ordering-tab bar, category rail, a category heading, a single product card, a banner, reminder, or checkout bar.
 
 ## Product recognition and requested fields
 
-Within alias "1", products are repeated sibling card-like regions. A genuine product normally has a dish/product name and a purchase affordance (such as a yellow plus/add control) and/or a displayed currency price. Product cards can also contain an image, monthly-sales text, specification/flavor tags, and quantity controls. Category headings, recommendation labels, banners, notices, policy text, reminders, coupons, and pure promotional copy are not products.
+A genuine product is a repeated card/block with a prominent dish title and a displayed selling price and/or purchase affordance such as a yellow add or specification button. A card may also have an image, monthly-sales text, tags, recommendations, voucher text, and an original struck-through price. Category headings, navigation labels, recommendation banners, duplicate-fold notices, policies, coupons by themselves, reminders, reviews, and promotional prose are not products.
 
-For each visually present product card, preserve top-to-bottom visual order and extract only text belonging to that card:
+For every visually present product card, preserve top-to-bottom order and extract only these fields from that same card:
 
 - `name`: the prominent product title.
-- `monthly_sales`: the complete monthly-sales phrase, normally beginning with “月售”. Keep it as displayed.
-- `price`: the current single selling price when only one price is shown. Normalize visual spacing within a split price label (for example a currency symbol, integer, decimal point, and decimal fraction in adjacent descendants) into one readable string while retaining the currency symbol.
-- `original_price`: the struck-through/list price when a card visibly presents both an old and a discounted price. Do not infer it from promotions elsewhere.
-- `discount_price`: the emphasized current discounted price when both old and discounted prices are visibly present.
+- `current_price`: the currently payable displayed price. Keep the currency symbol and decimal as shown. Retain an immediately attached starting-price suffix such as “起”, but omit separate offer labels such as “神券价”.
+- `original_price`: the struck-through/list price when shown alongside a discounted current price; otherwise an empty string.
+- `monthly_sales`: the complete visible monthly-sales phrase beginning with “月售”, such as “月售100+”.
 
-When there is no discount pair, put the displayed selling price in `price` and leave `original_price` and `discount_price` empty. When a field is not visible or absent, use the schema’s empty string. If a card is clipped by a viewport edge, include only fields actually visible for that card; never recover hidden fields from unrelated text or another card.
+Use an empty string for an absent or unreadable field. Include a viewport-edge card only when its complete product name is readable; never recover clipped fields from another state, another card, or unrelated text.
 
 ## Geometry and ambiguity rules
 
-Use the alias container’s repeated direct child regions and their descendants to keep fields scoped to the correct product. Product cards occupy the product column and are stacked vertically; the left-side category labels are navigation anchors and must never become names. Ignore text above the first genuine product card when it is a category heading or image promotion. Exclude checkout-bar totals, delivery fees, minimum-order values, merchant-level monthly sales, ratings, and tab counts.
+Scope all fields to one product card. Product cards stack vertically in the product column; category labels in the left rail are never products. A category title may appear between groups but lacks its own price/purchase affordance. Ignore merchant-level sales, rating, delivery, checkout totals, fees, minimum-order amounts, crossed-out savings in unrelated banners, and promotional rankings.
 
-A leaf price may be exposed with spaces between numeric fragments; aggregate those fragments only inside its own product card. Do not combine separate prices from adjacent cards. Visibility is determined by the card/field bounds intersecting the current viewport and by readable visual evidence, not merely by presence somewhere in the accessibility tree.
+Prices can be split into visual text fragments; combine only adjacent currency and numeric fragments within the same card into one readable value. A gray struck-through price is `original_price`, while the emphasized red price is `current_price`. Determine inclusion and completeness from the screenshot’s readable viewport, not bounds alone.
 
 ## When to rewrite this guide
 
-Rewrite only if the page family changes structurally—for example, the purchasable products are no longer represented as repeated cards under the warm reminder, or a new layout requires a different semantic anchor. Do not rewrite it for different merchants, product names, categories, prices, scroll positions, or node IDs.
+Rewrite only when this page family’s structure or requested schema changes—for example, products cease to be repeated menu cards or a materially new layout needs another semantic anchor. Do not rewrite it for different merchants, products, categories, prices, scroll positions, node IDs, or coordinates.

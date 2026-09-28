@@ -110,6 +110,7 @@ def build_agent(
     collection_persistence = CollectionPersistenceMiddleware(
         mechanism=mechanism,
         training_registry=collector_manager.training_registry,
+        event_hub=event_hub,
     )
     probe_control = ProbeControlMiddleware(
         mechanism=mechanism,
@@ -218,6 +219,7 @@ RUNTIME_MANAGED_TOOL_NAMES = {
     "query_task_doc",
     "prepare_collector",
     "is_done",
+    "update_page_notes",
     "authorize_probe_completion",
 }
 

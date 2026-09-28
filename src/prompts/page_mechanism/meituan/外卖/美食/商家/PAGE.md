@@ -44,11 +44,17 @@ The collector saves this profile from the initial top-of-page evidence. It is no
   "items": [
     {
       "name": "",
-      "price": "",
+      "current_price": "",
       "original_price": "",
-      "discount_price": "",
       "monthly_sales": ""
     }
   ]
 }
 ```
+
+<!-- collection-contract:begin -->
+## Collection Requirements
+```json
+{"primary_key": ["name"], "required_fields": ["name", "current_price"]}
+```
+<!-- collection-contract:end -->

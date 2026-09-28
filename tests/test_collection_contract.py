@@ -1,0 +1,81 @@
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from src.collection_contract import CollectionContract, is_empty
+from src.page_mechanism import PageMechanism
+from src.tools.content_provider import CollectionWorkbookSink, ContentProvider
+from src.tools.page_notes import create_page_notes_tool
+from src import collection_audit
+
+
+def test_notes_and_contract_have_independent_sections(tmp_path):
+    page = tmp_path / "app"
+    page.mkdir()
+    (page / "PAGE.md").write_text("# Original\nSchema stays here")
+    (page / "task.md").write_text("Unchanged task")
+    mechanism = PageMechanism(tmp_path)
+    contract = CollectionContract.from_dict({"primary_key": ["name", "size"], "required_fields": ["price"]})
+    mechanism.save_collection_contract("app", contract)
+    tool = create_page_notes_tool(mechanism)
+    tool.func("Use screenshots for ambiguous controls", SimpleNamespace(state={"page_context_path": "app"}))
+    assert mechanism.collection_contract("app") == contract
+    assert "Schema stays here" in (page / "PAGE.md").read_text()
+    assert (page / "task.md").read_text() == "Unchanged task"
+    with pytest.raises(ValueError):
+        mechanism.update_page_notes("app", "<!-- collection-contract:end -->")
+    with pytest.raises(ValueError):
+        mechanism.update_page_notes("../app", "escape")
+
+
+def test_empty_and_joint_identity():
+    assert all(is_empty(v) for v in [None, " ", [], {}])
+    assert not is_empty(0) and not is_empty(False)
+    contract = CollectionContract.from_dict({"primary_key": ["name", "size"], "required_fields": ["price"]})
+    assert contract.key({"name": "cup", "size": "S"}) != contract.key({"name": "cup", "size": "L"})
+    assert contract.missing({"name": "cup", "size": "S", "price": 0}) == []
+
+
+def test_primary_keys_survive_reload_and_save_failure(tmp_path, monkeypatch):
+    import src.tools.content_provider as module
+    contract = CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["price"]})
+    provider = ContentProvider(tmp_path)
+    sink = CollectionWorkbookSink(provider)
+    def persist(sink, price):
+        return sink.persist_run_result(run_result={"ok": True, "result": {
+            "merchant": {"name": "shop"}, "items": [{"name": "cup", "price": price}]}},
+            append_items=True, contract=contract)
+    with monkeypatch.context() as patch:
+        patch.setattr(module, "_save_workbook", lambda *a: (_ for _ in ()).throw(OSError("disk")))
+        with pytest.raises(OSError):
+            persist(sink, 10)
+    assert persist(sink, 10)["appended_items"] == 1
+    assert persist(CollectionWorkbookSink(provider, reset=False), 20)["appended_items"] == 0
+
+
+def test_audit_sampling_is_offline_and_fail_open(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(collection_audit, "capture_png", lambda hub: calls.append(1) or b"png")
+    args = (object(), tmp_path, "app/merchant", "visit", {"snapshot_id": "one"},
+            {"ok": False}, {}, None, {"tool": "swipe_up"}, "version")
+    monkeypatch.setattr(collection_audit.random, "random", lambda: .9)
+    collection_audit.sample_collection(*args)
+    assert not calls
+    monkeypatch.setattr(collection_audit.random, "random", lambda: .01)
+    collection_audit.sample_collection(*args)
+    files = list(tmp_path.rglob("record.json"))
+    assert len(files) == 1
+    assert json.loads(files[0].read_text())["snapshot"]["snapshot_id"] == "one"
+    monkeypatch.setattr(collection_audit, "capture_png", lambda hub: (_ for _ in ()).throw(OSError("offline")))
+    collection_audit.sample_collection(*args)
+    assert len(list(tmp_path.rglob("record.json"))) == 1
+
+
+def test_screenshot_tool_delivers_image_not_path(monkeypatch):
+    from src.tools import screenshot
+    hub = SimpleNamespace(screenshot=lambda: "/device/image.png")
+    monkeypatch.setattr(screenshot, "capture_png", lambda _: b"png")
+    from src.tools.event_hub import _resolve_operation
+    result = _resolve_operation("screenshot", hub)()
+    assert result[0]["image_url"]["url"].startswith("data:image/png;base64,")

@@ -69,7 +69,17 @@ conductor 与 collector 均暴露 `Reco/model_interface.py:TOOLS` 的七个原�
 `page_view`、`page_catalog`、`page_read`、`page_node`、`update_aaid`、`select_aaid`、`update_ratio`。
 不再暴露 `uiautomate` 或 `collector_uiautomate`。
 无 key 且 offset 为 0 的 `page_view` 刷新设备快照；子区域读取、分页和别名操作使用同一快照。
-成功设备动作自动刷新树并返回根视图。应用启动时清空旧树和别名。
+成功设备动作通过 Reco.sync 刷新树并返回 `page_change_hint`，最多包含三个互不为祖先的区域入口，
+每个入口仅有 `id` 和 Reco 原有 `update_ratio`；无变化时 `regions=[]`，不发送节点内容和删除明细。
+Reco 在既有比较过程中保留只读统计：自身是否变化、子树变化数量、比较规模和父子关系。
+自身稳定节点分隔变化连通部分；新增/替换子树视为整体，删除归属仍存在的父区域。
+桥接层的 `page_change_hint.py` 不重新比较 XML，允许提升到稳定祖先以合并碎片。
+按 `变化节点数 / sqrt(比较节点数)` 自底向上比较选取当前区域与组合子区域，最多选择三个入口；
+同分优先覆盖更多变化，再优先更深区域，最后按树顺序。比较规模包含删除，替换取旧、新规模较大值。
+展示更新率仍使用 Reco 原有算法，不以叶子 100% 更新率排序。
+提示只用于搜索优先级，不承担完整变化枚举、操作效果判定或采集完成判断。
+入口不足时可查询根视图，定位仍不明确可截图；可靠性检查和采集始终读取完整内部快照。
+首次建树返回根视图；显式 page_view/page_node 查询仍可读取完整上下文。应用启动时清空旧树和别名。
 树属于共享设备实例；页面任务路径、访问 ID 和完成状态仍属于各 thread 的 graph state。
 
 LangChain 工具使用 `response_format="content_and_artifact"`：
@@ -84,6 +94,7 @@ LangChain 工具使用 `response_format="content_and_artifact"`：
   首次脚本输出在基准保存前隐藏；不存在独立 coder，也不向 agent 暴露历史 XML。
 
 所有页面工具的集合固定。覆盖层完全由 LLM 根据视图或截图判断；middleware 不检测、记录或提示覆盖层状态。未训练页面允许查询和截图；LLM 声明 purpose=dismiss_overlay 的同页点击可用于关闭覆盖层，其余操作仍受训练门禁约束。
+conductor 的 update_page_notes 仅原子更新当前 PAGE.md Operation Observations 分区，不修改 schema、契约或 task.md；manual digest 更新后重新注入。
 区域读取类结果参与当前页面最近三组短期工具调用的压缩，别名赋值记录保留。
 
 因此，注册顺序不仅表示模块清单，也决定状态能否在正确阶段被观察和提交。
@@ -697,6 +708,11 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 - 仅在 merchant page、当前访问已训练且 profile 有效时落盘；
 - `tap_in_page` 与 `page_view` 只允许初始化/提取，不追加商品；其他 Reco 查询不触发采集；
 - swipe 使用 workbook 全量去重后的 `appended_items` 更新最新新增量、连续空滑次数和访问摘要；
+- PAGE.md Collection Requirements 定义联合主键与非空字段；collector 多状态验证后复用已有规则，仅缺失或明确反例时保存，相同内容不写盘。训练记录绑定契约指纹，契约变化要求重新训练。
+- 非空检查由通用契约执行，完整条目进入 sink；主键查重在 workbook 锁内基于已保存行进行，同商家跨访问去重，失败写入不占键。不完整条目允许以后补采。
+- 不完整批次通过独立 SystemMessage 提示沿原方向短滑，保留原 ToolMessage；有效条目仍落盘，但连续空滑计数清零。重复且完整的批次可以计入零新增。
+- 最近滑动方向保存在 thread 的 collection_last_swipe，页面访问切换时清空；读取页面发现不完整行时可沿用该方向，没有历史方向则要求先确认遍历方向。
+- 每次商品滑动以 5% 概率在当前串行执行链内通过共享截图服务归档原始结果、准入摘要、完整快照、PNG、契约和脚本版本到 workspace/collection_audits。只供离线查验，异常仅记日志。
 - 连续三次有效采集 swipe 新增为零后，`is_done` 才返回 `done=true`；
 - LLM 声明的 dismiss_overlay 点击不触发采集；不依据页面几何判断是否采集。落盘跳过不覆盖进度，执行或落盘失败清除连续空滑及完成证据。
 
@@ -707,7 +723,7 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 
 **输出**
 
-- 原始工具结果，不添加 collection/persistence 内容；仅显式调用 `is_done` 时返回采集完成判断；
+- 原始工具结果，不添加 collection/persistence 内容；不完整条目可产生独立补滑建议，显式调用 `is_done` 时返回采集完成判断；
 - 可选 `Command`，更新 `collection_initialized`、`collection_latest_new_count`、`collection_consecutive_empty_swipes`、`merchant_collection_done` 和 `collection_visit_summaries`。
 
 ### 11. ProbeControlMiddleware: page transition
@@ -816,14 +832,18 @@ collector 的页面能力、视觉 baseline、脚本增量修改、指南和还�
   这是接口隔离，不是任意 Python 代码的安全沙箱。
 - capture_validation_case 仅注册和冻结标记后的完整视图；screenshot 提供视觉证据，
   save_baseline 校验并持久化视觉基准，不执行脚本或评分。保存后即可返回实时视图继续随机采样。
-  sniff_run 是唯一测试入口，只对已准备的当前及历史用例执行脚本，不采样、不操作设备；
+  sniff_run 是唯一测试入口，只对本次探测运行、同一 canonical path 下已准备的当前及历史用例执行脚本，不采样、不操作设备；
   未完成视觉基准的用例必须先准备完毕。首次全量通过时无需读取或修改代码。
   评分输出分为 cases、ground_truths、run_results、eval_grades。JSON 比较由确定性工具完成。
-- 至少两个不同当前状态（包含随机滑动状态）及同路径全部历史通过后才允许还原。
+- 至少两个不同当前状态（包含随机滑动状态）及本次运行同路径全部历史通过后才允许还原。
   指南变化使旧标记版本失效，需要逐个载入历史重新标记；视觉基准不可修改。
   脚本变化使所有旧评分失效，必须重新全量运行。
 - `CollectorHistory` 在基准保存时保留全部视觉用例，包括脚本尚未通过的用例，原子写入
-  workspace/collector_history/<canonical_path>/<page_visit_id>/<case_id>/record.json。
+  workspace/collector_history/runs/<probe_run_id>/<canonical_path>/<page_visit_id>/<case_id>/record.json。
+  `initial_probe_state` 在新探测任务启动时生成 probe_run_id，作为带 reducer 的 graph state 随 checkpoint 保存。
+  后续 invoke、网络重连、续跑及页面访问切换不重置该 ID；新的探测任务即使复用 thread 也生成新 ID。
+  prepare_collector 从隐藏 ToolRuntime.state 取得该 ID，缺失时拒绝执行，不猜测运行范围。
+  用例加载仅扫描指定运行和页面的目录；不同运行及旧格式归档保留在磁盘，但不参与 sniff_run、契约验证或训练验收。
   记录保存内部源快照、别名路径、PNG data URL、视觉基准、schema 和指南。
   兼容读取旧的 visit/record.json；同一 case ID 优先采用新位置的记录。
   旧的无截图 XML 基准不会自动升级。

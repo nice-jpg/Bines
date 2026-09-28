@@ -93,9 +93,14 @@ class CollectorReadinessMiddleware(AgentMiddleware):
         path = str(state.get(PAGE_CONTEXT_PATH) or "")
         visit_id = str(state.get(PAGE_VISIT_ID) or "")
         policy = self.mechanism.page_policy(path)
+        record = self.training_registry.record_for(visit_id)
+        stale = False
+        if record and record.contract_fingerprint:
+            contract = self.mechanism.collection_contract(path)
+            stale = contract is None or contract.fingerprint != record.contract_fingerprint
         return bool(
             policy.requires_collector
-            and (not visit_id or not self.training_registry.is_trained(visit_id, path))
+            and (stale or not visit_id or not self.training_registry.is_trained(visit_id, path))
         )
 
 

@@ -80,45 +80,45 @@ TOOL_SPECS = (
     ),
     ToolSpec(
         "tap",
-        "Tap (x, y). Provide x/y coordinates. Returns the current abstract page view.",
+        "Tap (x, y). Provide x/y coordinates. Returns page_change_hint search entrances; query their IDs for content (root view on first capture).",
         "tap",
         True,
     ),
     ToolSpec(
         "swipe_up",
-        "swipe up from (x, y) for a short distance, screen will roll up. Use this tool to load more data below. Provide x/y coordinates. Returns current abstract page view.",
+        "Swipe up a short distance from (x, y) to load data below. Returns page_change_hint search entrances; query their IDs for content (root view on first capture).",
         "swipe_up",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_up_long",
-        "Swipe up from (x, y) for a long distance. Use this tool to traverse a large collection region efficiently. Provide x/y coordinates. Returns current abstract page view.",
+        "Swipe up a long distance from (x, y) to traverse a large collection region. Returns page_change_hint search entrances; query their IDs for content (root view on first capture).",
         "swipe_up_long",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_to_random",
-        "Swipe from (x, y) to a recorded random page state. This operation is reserved for collector training. Provide x/y coordinates. Returns current abstract page view.",
+        "Swipe from (x, y) to a recorded random page state for collector training. Returns page_change_hint search entrances; query their IDs for content (root view on first capture).",
         "swipe_to_random",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_down",
-        "swipe down from (x, y) for a short distance, screen will go down Use this tool to load more data from above, or to refresh current page. Provide x/y coordinates. Returns current abstract page view.",
+        "Swipe down a short distance from (x, y) to load data above or refresh. Returns page_change_hint search entrances; query their IDs for content (root view on first capture).",
         "swipe_down",
         True,
         effect_policy=SCROLL_PAGE_CHANGE_POLICY,
     ),
     ToolSpec(
         "swipe_back",
-        "return to the last page. Returns current abstract page view.",
+        "Return to the last page. Returns page_change_hint search entrances; query their IDs for content (root view on first capture).",
         "swipe_back",
         True,
     ),
-    ToolSpec("screenshot", "Capture the current screen and return the remote image path.", "screenshot"),
+    ToolSpec("screenshot", "Capture the current screen and return a real image for visual target confirmation.", "screenshot"),
 )
 
 COLLECTOR_ONLY_EVENT_HUB_TOOL_NAMES = frozenset({"swipe_to_random"})
@@ -342,5 +342,8 @@ def _resolve_operation(operation_name: str, hub: EventHub) -> Callable[..., obje
     if operation_name == "swipe_back":
         return hub.swipe_back
     if operation_name == "screenshot":
-        return hub.screenshot
+        from src.tools.screenshot import screenshot_content
+        def screenshot() -> list:
+            return screenshot_content(hub)
+        return screenshot
     raise ValueError(f"Unsupported EventHub operation: {operation_name}")

@@ -22,6 +22,7 @@ from middleware.probe_state import (
 from page_mechanism import CollectorTrainingRegistry, PageMechanism
 from tools.content_provider import CollectionWorkbookSink, ContentProvider, _read_xlsx
 from src.tools.page_bridge import PageBridge
+from src.collection_contract import CollectionContract
 
 
 def _request(
@@ -70,6 +71,8 @@ def _payload(result: ToolMessage | Command) -> dict:
 def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, CollectorTrainingRegistry, Path]:
     page_dir = tmp_path / "pages" / "meituan" / "美食" / "商家"
     page_dir.mkdir(parents=True)
+    (page_dir / "PAGE.md").write_text("Merchant")
+    (page_dir / "task.md").write_text("Scroll")
     (page_dir / "run.agent.py").write_text(
         "def run(view):\n"
         "    return {\n"
@@ -79,6 +82,7 @@ def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, Collec
     )
     (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
     mechanism = PageMechanism(tmp_path / "pages")
+    mechanism.save_collection_contract("meituan/美食/商家", CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["name", "price"]}))
     registry = CollectorTrainingRegistry()
     sink = CollectionWorkbookSink(ContentProvider(tmp_path / "workspace"))
     middleware = CollectionPersistenceMiddleware(
@@ -151,6 +155,18 @@ def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) ->
     assert first.update[COLLECTION_LATEST_NEW_COUNT] == 1
     assert second.update[COLLECTION_LATEST_NEW_COUNT] == 0
     assert _read_xlsx(workbook_path) == [["name", "distance"], ["商家A", "1km"]]
+    assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
+
+
+def test_change_hint_stays_opaque_while_full_snapshot_is_collected(tmp_path):
+    middleware, registry, workbook_path = _middleware(tmp_path)
+    _mark_trained(registry)
+    message = _tool_message("swipe_up", "cup")
+    message.content = json.dumps({"kind": "page_change_hint", "regions": []})
+    result = middleware.wrap_tool_call(_request("swipe_up"), lambda _: message)
+    assert _message(result) is message
+    assert json.loads(message.content) == {"kind": "page_change_hint", "regions": []}
+    assert result.update[COLLECTION_LATEST_NEW_COUNT] == 1
     assert _read_xlsx(workbook_path, "商家A") == [["name", "price"], ["cup", "10"]]
 
 
@@ -424,9 +440,12 @@ def test_wrap_tool_call_uses_tool_call_name_not_result_content_to_trigger(tmp_pa
 def test_script_error_is_silent_without_persisting(tmp_path: Path, caplog) -> None:
     page_dir = tmp_path / "pages" / "meituan" / "美食" / "商家"
     page_dir.mkdir(parents=True)
+    (page_dir / "PAGE.md").write_text("Merchant")
+    (page_dir / "task.md").write_text("Scroll")
     (page_dir / "run.agent.py").write_text("def run(view):\n    raise ValueError('bad parse')\n", encoding="utf-8")
     (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
     mechanism = PageMechanism(tmp_path / "pages")
+    mechanism.save_collection_contract("meituan/美食/商家", CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["name"]}))
     registry = CollectorTrainingRegistry()
     _mark_trained(registry)
     middleware = CollectionPersistenceMiddleware(
@@ -475,3 +494,23 @@ def test_persistence_failure_is_silent_and_cannot_confirm_completion(tmp_path, m
     _apply_state(request.state, result)
     done = middleware.is_done(SimpleNamespace(state=request.state, tool_call_id="done"))
     assert _payload(done)["done"] is False
+
+
+def test_incomplete_rows_add_separate_hint_and_can_be_collected_later(tmp_path, monkeypatch):
+    middleware, registry, workbook = _middleware(tmp_path)
+    _mark_trained(registry)
+    request = _request("swipe_up_long")
+    request.state[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] = 2
+    message = _tool_message("swipe_up_long")
+    monkeypatch.setattr(middleware.mechanism, "run_page_script", lambda *args: {
+        "ok": True, "result": {"items": [{"name": "cup", "price": ""}, {"name": "bowl", "price": 0}]}})
+    result = middleware.wrap_tool_call(request, lambda _: message)
+    assert result.update["messages"][0] is message
+    assert "short swipe_up" in result.update["messages"][1].content
+    assert result.update[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 0
+    assert result.update[COLLECTION_LATEST_NEW_COUNT] == 1
+    monkeypatch.setattr(middleware.mechanism, "run_page_script", lambda *args: {
+        "ok": True, "result": {"items": [{"name": "cup", "price": 10}, {"name": "bowl", "price": 20}]}})
+    later = middleware.wrap_tool_call(request, lambda _: message)
+    assert later.update[COLLECTION_LATEST_NEW_COUNT] == 1
+    assert _read_xlsx(workbook, "商家A") == [["name", "price"], ["bowl", "0"], ["cup", "10"]]

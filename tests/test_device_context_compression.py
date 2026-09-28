@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, replace
 import sys
 from pathlib import Path
@@ -96,6 +97,22 @@ def test_keeps_only_three_latest_short_lived_tool_pairs_in_active_manual() -> No
     assert tool_call_ids(compacted) == ["call-2", "call-3", "call-4"]
     result_ids = [message.get("tool_call_id") for message in compacted if isinstance(message, dict) and message.get("role") == "tool"]
     assert result_ids == ["call-2", "call-3", "call-4"]
+
+
+def test_change_hints_remain_paired_and_allow_explicit_context_recovery() -> None:
+    messages = [user("probe"), manual("meituan", "home")]
+    for index in range(5):
+        hint = json.dumps({"kind": "page_change_hint", "regions": [{"id": index, "update_ratio": 0.8}]})
+        messages.extend(call_pair(f"swipe-{index}", "swipe_up", hint))
+    full_view = json.dumps({"id": 4, "summary": "explicitly requested context", "regions": []})
+    messages.extend(call_pair("query", "page_view", full_view, key=4))
+
+    compacted = compact_device_messages(messages)
+
+    assert tool_call_ids(compacted) == ["swipe-3", "swipe-4", "query"]
+    results = [message for message in compacted if isinstance(message, dict) and message.get("role") == "tool"]
+    assert results == [messages[-5], messages[-3], messages[-1]]
+    assert json.loads(results[-1]["content"])["summary"] == "explicitly requested context"
 
 
 def test_preserves_package_captcha_think_collector_and_unknown_tools() -> None:

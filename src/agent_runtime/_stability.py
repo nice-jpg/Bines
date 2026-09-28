@@ -1,7 +1,7 @@
 """Private ownership of tracing, retry policy and framework construction."""
 
 from langgraph.checkpoint.memory import InMemorySaver
-from nTrace import NTrace, createNTraceStartMiddleware, createNTraceEndMiddleware
+from nTrace import NTrace, createNTraceHostMiddleware, createNTraceLLMMiddleware, createNTraceToolMiddleware
 from ._model_retry import create_model_retry_middleware
 from ._tool_error import ToolErrorMiddleware
 
@@ -12,11 +12,12 @@ def build_graph(name, model, tools, system_prompt, middleware):
     trace = NTrace(agent_name=name, system_prompt=system_prompt)
     # NTrace reads NTRACE_ENABLED and NTRACE_SERVER_URL itself; delivery is fail-open.
     layers = [
-        createNTraceStartMiddleware(trace),
+        createNTraceHostMiddleware(trace),
         create_model_retry_middleware(),
         *middleware,
         ToolErrorMiddleware(),
-        createNTraceEndMiddleware(trace),
+        createNTraceToolMiddleware(trace),
+        createNTraceLLMMiddleware(trace),
     ]
     graph = create_agent(name=name, model=model, tools=list(tools), system_prompt=system_prompt,
                          middleware=layers, checkpointer=InMemorySaver())

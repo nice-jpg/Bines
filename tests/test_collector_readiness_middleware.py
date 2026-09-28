@@ -98,3 +98,18 @@ def test_training_is_scoped_to_visit_id_even_when_page_path_matches(tmp_path: Pa
 
     assert first.content == "first"
     assert json.loads(second.content)["error_type"] == "collector_training_required"
+
+
+def test_overlay_screenshot_allowed_and_changed_contract_requires_training(tmp_path):
+    from src.collection_contract import CollectionContract
+    middleware, registry = _middleware(tmp_path)
+    assert middleware._rejection(_tool_request("screenshot", _state(overlay=True))) is None
+    assert middleware._rejection(_tool_request("screenshot", _state())) is not None
+    path = _state()[PAGE_CONTEXT_PATH]
+    contract = CollectionContract.from_dict({"primary_key": ["name"], "required_fields": []})
+    middleware.mechanism.save_collection_contract(path, contract)
+    registry.mark_trained("visit-a", path, contract_fingerprint=contract.fingerprint)
+    assert middleware._rejection(_tool_request("swipe_up", _state())) is None
+    changed = CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["price"]})
+    middleware.mechanism.save_collection_contract(path, changed)
+    assert middleware._rejection(_tool_request("swipe_up", _state())) is not None

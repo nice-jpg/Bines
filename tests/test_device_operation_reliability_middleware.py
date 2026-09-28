@@ -79,6 +79,27 @@ def test_tool_without_policy_is_unchanged_and_does_not_capture_page() -> None:
     assert hub.calls == 0
 
 
+def test_reliability_uses_full_xml_not_search_hint_presence():
+    for score, expected_status in ((0.4, "success"), (1.0, "error")):
+        middleware, _ = _middleware(score)
+        compared = []
+
+        def compare(before, after):
+            compared.append((before, after))
+            return PageSimilarityResult(score, score, score)
+
+        middleware.evaluator.compare = compare
+        message = _message("swipe_up")
+        message.content = json.dumps({"kind": "page_change_hint", "regions": []})
+        result = middleware.wrap_tool_call(
+            _request(_tool("swipe_up", SCROLL_PAGE_CHANGE_POLICY)), lambda _: message,
+        )
+        assert result.status == expected_status
+        assert compared == [(XML, XML)]
+        if expected_status == "success":
+            assert result is message
+
+
 def test_navigation_accepts_only_similarity_below_half() -> None:
     accepted, _ = _middleware(0.499)
     expected = _message("navigate_to")

@@ -85,6 +85,12 @@ def _message(name: str, content: str = FULL_XML) -> ToolMessage:
     return ToolMessage(content='{"summary": "page"}', artifact={"page_xml": content}, tool_call_id=f"{name}-1", name=name)
 
 
+def test_overlay_allows_screenshot_for_target_confirmation(tmp_path):
+    middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
+    request = _request("screenshot", _state(**{PAGE_CONTEXT_OVERLAY: True}))
+    assert middleware._validate_tool_call(request) is None
+
+
 def test_initial_state_activates_context_without_manual_phase() -> None:
     assert initial_page_context_state() == {
         PAGE_CONTEXT_ACTIVE: True,

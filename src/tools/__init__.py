@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from .common import create_common_tools
 from .event_hub import EventHub, create_conductor_event_hub_tools, create_event_hub_tools
 from .navigation import create_navigation_tools
+from .page_notes import create_page_notes_tool
 try:
     from src.page_mechanism import PageMechanism
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
@@ -51,6 +52,7 @@ def collect_conductor_tools(
         )
     return [
         *create_common_tools(),
+        create_page_notes_tool(mechanism),
         *create_conductor_event_hub_tools(event_hub),
         *event_hub.page_bridge.create_tools(),
         *create_navigation_tools(event_hub=event_hub),

@@ -13,6 +13,18 @@ from src.tools.event_hub import EventHub, create_conductor_event_hub_tools
 XML = '<hierarchy><node class="android.widget.Button" text="商品" clickable="true" bounds="[0,0][100,80]" resource-id="private-id"/></hierarchy>'
 
 
+def test_action_hint_keeps_complete_internal_snapshot():
+    bridge = PageBridge(lambda: XML)
+    bridge.refresh()
+    unchanged, artifact = bridge.observe(XML)
+    assert unchanged == {"kind": "page_change_hint", "regions": []}
+    changed, artifact = bridge.observe(XML.replace("商品", "点菜"))
+    assert changed == {"kind": "page_change_hint", "regions": [{"id": 1, "update_ratio": 1.0}]}
+    assert "点菜" in artifact["page_xml"]
+    assert bridge.query("page_view", {})[0]["summary"] == "点菜"
+    assert "private-id" not in json.dumps(changed)
+
+
 def test_bridge_tools_match_reco_schema_and_do_not_leak_xml():
     bridge = PageBridge(lambda: XML)
     tools = {tool.name: tool for tool in bridge.create_tools()}

@@ -62,7 +62,8 @@ def create_navigation_tools(
                 "Tap a visible control that stays on the current business page, such as a filter, "
                 "sort option, tab, expand control, or popup close button. Never use it to enter or "
                 "leave a business page. Set purpose=dismiss_overlay only when you judge this tap dismisses "
-                "an overlay; otherwise use page_interaction. Returns current abstract page view."
+                "an overlay; otherwise use page_interaction. Returns page_change_hint search entrances "
+                "to query by ID, not page content (root view on first capture)."
             ),
         ),
         StructuredTool.from_function(
@@ -72,7 +73,8 @@ def create_navigation_tools(
             description=(
                 "Tap a visible target that enters another business page. Provide x, y, and next_path. "
                 "next_path must be the complete canonical path from the app home, for example "
-                "meituan/外卖/美食/商家. The target manual is validated before the device is touched."
+                "meituan/外卖/美食/商家. The target manual is validated before the device is touched. "
+                "Returns page_change_hint search entrances to query by ID, not page content (root view on first capture)."
             ),
             metadata={
                 OPERATION_EFFECT_POLICY_METADATA_KEY: NAVIGATION_PAGE_CHANGE_POLICY,
@@ -84,7 +86,8 @@ def create_navigation_tools(
             name="navigate_back",
             description=(
                 "Return to a declared prior business page. Provide its complete canonical next_path, "
-                "for example meituan/外卖/美食. The target manual is validated before the device is touched."
+                "for example meituan/外卖/美食. The target manual is validated before the device is touched. "
+                "Returns page_change_hint search entrances to query by ID, not page content (root view on first capture)."
             ),
         ),
     ]

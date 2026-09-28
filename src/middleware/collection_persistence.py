@@ -9,10 +9,12 @@ from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from src.page_view import ReadOnlyPageView
+from src.collection_audit import sample_collection
+from pathlib import Path
 
 
 _DEFAULT_WORKBOOK_SINK = object()
@@ -25,6 +27,7 @@ try:
     )
     from src.middleware.probe_state import (
         COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
+        COLLECTION_LAST_SWIPE,
         COLLECTION_INITIALIZED,
         COLLECTION_LATEST_NEW_COUNT,
         COLLECTION_PAGE_VISIT_ID,
@@ -41,6 +44,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     )
     from middleware.probe_state import (
         COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
+        COLLECTION_LAST_SWIPE,
         COLLECTION_INITIALIZED,
         COLLECTION_LATEST_NEW_COUNT,
         COLLECTION_PAGE_VISIT_ID,
@@ -67,9 +71,11 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         mechanism: PageMechanism,
         training_registry: CollectorTrainingRegistry,
         workbook_sink: Any = _DEFAULT_WORKBOOK_SINK,
+        event_hub=None,
     ) -> None:
         self.mechanism = mechanism
         self.training_registry = training_registry
+        self.event_hub = event_hub
         if workbook_sink is _DEFAULT_WORKBOOK_SINK:
             try:
                 from src.tools.content_provider import CollectionWorkbookSink
@@ -121,6 +127,14 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             error_type = "is_done_not_available"
         elif not self.training_registry.is_trained(visit_id, current_path):
             error_type = "collector_not_trained"
+        else:
+            try:
+                contract = self.mechanism.collection_contract(current_path)
+                record = self.training_registry.record_for(visit_id)
+                if contract is None or (record.contract_fingerprint and record.contract_fingerprint != contract.fingerprint):
+                    error_type = "collection_contract_requires_training"
+            except (ValueError, FileNotFoundError):
+                error_type = "collection_contract_requires_training"
 
         initialized = (
             state.get(COLLECTION_INITIALIZED) is True
@@ -197,13 +211,36 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         snapshot = result.artifact.get("page_snapshot") if isinstance(result.artifact, Mapping) else None
         if not snapshot:
             return result
+        contract = None
         try:
+            contract = self.mechanism.collection_contract(current_path)
+            if contract is None:
+                raise ValueError("Missing collection contract")
+            record = self.training_registry.record_for(visit_id)
+            if record.contract_fingerprint and record.contract_fingerprint != contract.fingerprint:
+                raise ValueError("Collection contract changed; training is stale")
             collection = self.mechanism.run_page_script(current_path, ReadOnlyPageView(snapshot))
         except Exception as exc:
             collection = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
+        incomplete = []
+        admitted = collection
+        if collection.get("ok") is True:
+            items = collection["result"].get("items", [])
+            if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+                collection = {"ok": False, "error_type": "InvalidItems"}
+            else:
+                incomplete = [{"index": index, "missing": contract.missing(item)} for index, item in enumerate(items) if contract.missing(item)]
+                admitted = {**collection, "result": {**collection["result"], "items": [item for item in items if not contract.missing(item)]}}
+        persistence = (self._persist(tool_name, current_path, visit_id, admitted)
+                       if collection.get("ok") is True else {"ok": False, "skipped": True})
+        if tool_name in ITEM_APPEND_TOOLS:
+            record = self.training_registry.record_for(visit_id)
+            sample_collection(self.event_hub, Path(__file__).resolve().parents[2] / "workspace/collection_audits",
+                current_path, visit_id, snapshot, collection,
+                {"incomplete": incomplete, "persistence": persistence}, contract, {**invocation.args, "tool": tool_name},
+                record.script_fingerprint if record else "")
         if collection.get("ok") is not True:
             return self._collection_failed(result, current_path, visit_id, collection)
-        persistence = self._persist(tool_name, current_path, visit_id, collection)
         if persistence.get("ok") is not True:
             return self._collection_failed(result, current_path, visit_id, persistence)
         progress_update = self._progress_update(
@@ -213,7 +250,21 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             persistence,
             state,
         )
-        return Command(update={"messages": [result], **progress_update}) if progress_update else result
+        messages = [result]
+        direction = state.get(COLLECTION_LAST_SWIPE, "")
+        if tool_name in ITEM_APPEND_TOOLS:
+            direction = "swipe_down" if tool_name == "swipe_down" else "swipe_up"
+            progress_update[COLLECTION_LAST_SWIPE] = direction
+        if incomplete:
+            advice = (f"Continue in the same direction with a short {direction} in the product region"
+                      if direction else "Confirm the intended product traversal direction and make a short swipe")
+            messages.append(SystemMessage(
+                content=f"Some visible rows are incomplete. {advice} before checking completion.",
+                additional_kwargs={"bines_context": {"kind": "collection_admission", "page_visit_id": visit_id,
+                                                     "source_tool_call_id": invocation.call_id}},
+            ))
+            progress_update.update({COLLECTION_CONSECUTIVE_EMPTY_SWIPES: 0, MERCHANT_COLLECTION_DONE: False})
+        return Command(update={"messages": messages, **progress_update}) if progress_update else result
 
     def _collection_failed(
         self,
@@ -298,6 +349,7 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             return self.workbook_sink.persist_run_result(
                 run_result=_merge_merchant_profile(collection, record.merchant_profile),
                 append_items=tool_name in ITEM_APPEND_TOOLS,
+                contract=self.mechanism.collection_contract(current_path),
             )
         except Exception as exc:  # noqa: BLE001 - persistence is best-effort around device tools.
             return {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}

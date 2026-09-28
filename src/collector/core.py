@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from typing import Any, Sequence
+from uuid import uuid4
 
 from src.agent_runtime import create_runtime
 
@@ -65,6 +66,7 @@ class CollectorManager:
         runtime_state = runtime.state
         current_path = str(runtime_state.get("page_context_path") or "")
         visit_id = str(runtime_state.get("page_visit_id") or "")
+        run_id = str(runtime_state.get("probe_run_id") or "")
         canonical_path = self.mechanism.validate_page_manual(page_path)
         if canonical_path != current_path:
             raise ValueError(
@@ -72,6 +74,8 @@ class CollectorManager:
             )
         if not visit_id:
             raise ValueError("prepare_collector requires the current page_visit_id.")
+        if not run_id:
+            raise ValueError("prepare_collector requires the current probe_run_id.")
         self.training_registry.register_visit(visit_id, canonical_path)
         self.training_registry.mark_untrained(visit_id, canonical_path)
 
@@ -85,6 +89,7 @@ class CollectorManager:
             requires_merchant_profile=self.mechanism.page_policy(canonical_path).role == "merchant",
             history=self.history,
             page_visit_id=visit_id,
+            run_id=run_id,
         )
         agent = self._build_agent(toolbox)
         message = "\n".join(
@@ -95,7 +100,7 @@ class CollectorManager:
                 f"<page_description>{_escape_text(page_description)}</page_description>",
                 f"<merchant_schema>{_escape_text(merchant_schema)}</merchant_schema>",
                 f"<collection_schema>{_escape_text(collection_schema)}</collection_schema>",
-                "<workflow>Follow the visual-validation workflow in your system prompt. Read or create COLLECT.md, annotate regions, test run(view), save independent screenshot baselines, and regress every saved case. Restore the live page after all cases pass.</workflow>",
+                "<workflow>Follow the visual-validation workflow in your system prompt. Read or create COLLECT.md, annotate regions, test run(view), save independent screenshot baselines, and regress every saved case for this page in the current probe run only. Restore the live page after all cases pass.</workflow>",
                 "</collector_assignment>",
             ]
         )
@@ -127,7 +132,8 @@ class CollectorManager:
             "restoration": restoration,
         }
         if trained:
-            self.training_registry.mark_trained(visit_id, canonical_path, **registry_args)
+            self.training_registry.mark_trained(visit_id, canonical_path,
+                contract_fingerprint=self.mechanism.collection_contract(canonical_path).fingerprint, **registry_args)
         else:
             self.training_registry.mark_untrained(visit_id, canonical_path, **registry_args)
         result = {
@@ -165,6 +171,7 @@ def create_collector_tools(
         mechanism=mechanism,
         event_hub=event_hub,
         page_path=page_path,
+        run_id=uuid4().hex,
         merchant_schema=merchant_schema,
         collection_schema=collection_schema,
         requires_merchant_profile=requires_merchant_profile,

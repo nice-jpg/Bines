@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any, TypedDict
+from uuid import uuid4
 
 from langchain.agents.middleware.types import AgentState
 from typing_extensions import NotRequired
@@ -15,6 +16,7 @@ def replace_state_value(_current: Any, new: Any) -> Any:
 
 
 PROBE_STATUS = "probe_status"
+PROBE_RUN_ID = "probe_run_id"
 PROBE_PREMATURE_FINAL_COUNT = "probe_premature_final_count"
 PROBE_TARGET_LEAF_PATHS = "probe_target_leaf_paths"
 PROBE_VISITED_LEAF_PATHS = "probe_visited_leaf_paths"
@@ -31,6 +33,7 @@ COLLECTION_CONSECUTIVE_EMPTY_SWIPES = "collection_consecutive_empty_swipes"
 MERCHANT_COLLECTION_DONE = "merchant_collection_done"
 COLLECTION_PAGE_VISIT_ID = "collection_page_visit_id"
 COLLECTION_VISIT_SUMMARIES = "collection_visit_summaries"
+COLLECTION_LAST_SWIPE = "collection_last_swipe"
 
 
 class CollectionVisitSummary(TypedDict):
@@ -46,6 +49,7 @@ class ProbeState(AgentState):
     """Thread-scoped lifecycle state shared by cooperating middleware."""
 
     probe_status: NotRequired[Annotated[str, replace_state_value]]
+    probe_run_id: NotRequired[Annotated[str, replace_state_value]]
     probe_premature_final_count: NotRequired[Annotated[int, replace_state_value]]
     probe_target_leaf_paths: NotRequired[Annotated[tuple[str, ...], replace_state_value]]
     probe_visited_leaf_paths: NotRequired[Annotated[tuple[str, ...], replace_state_value]]
@@ -55,6 +59,7 @@ class ProbeState(AgentState):
     collection_consecutive_empty_swipes: NotRequired[Annotated[int, replace_state_value]]
     merchant_collection_done: NotRequired[Annotated[bool, replace_state_value]]
     collection_page_visit_id: NotRequired[Annotated[str, replace_state_value]]
+    collection_last_swipe: NotRequired[Annotated[str, replace_state_value]]
     collection_visit_summaries: NotRequired[
         Annotated[dict[str, CollectionVisitSummary], replace_state_value]
     ]
@@ -65,6 +70,7 @@ def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> dict[str, Any]:
 
     return {
         PROBE_STATUS: PROBE_RUNNING,
+        PROBE_RUN_ID: uuid4().hex,
         PROBE_PREMATURE_FINAL_COUNT: 0,
         PROBE_TARGET_LEAF_PATHS: tuple(dict.fromkeys(target_leaf_paths)),
         PROBE_VISITED_LEAF_PATHS: (),
@@ -83,10 +89,12 @@ def reset_collection_state() -> dict[str, Any]:
         COLLECTION_CONSECUTIVE_EMPTY_SWIPES: 0,
         MERCHANT_COLLECTION_DONE: False,
         COLLECTION_PAGE_VISIT_ID: "",
+        COLLECTION_LAST_SWIPE: "",
     }
 
 
 __all__ = [
+    "COLLECTION_LAST_SWIPE",
     "COLLECTION_INITIALIZED",
     "COLLECTION_CONSECUTIVE_EMPTY_SWIPES",
     "COLLECTION_LATEST_NEW_COUNT",
@@ -100,6 +108,7 @@ __all__ = [
     "PROBE_INACTIVE",
     "PROBE_PREMATURE_FINAL_COUNT",
     "PROBE_RUNNING",
+    "PROBE_RUN_ID",
     "PROBE_STATUS",
     "PROBE_TARGET_LEAF_PATHS",
     "PROBE_VISITED_LEAF_PATHS",
