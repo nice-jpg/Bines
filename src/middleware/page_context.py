@@ -24,7 +24,7 @@ from Reco.model_interface import TOOLS as PAGE_TOOLS
 PAGE_TOOL_NAMES = frozenset(tool["name"] for tool in PAGE_TOOLS)
 
 try:
-    from src.middleware.probe_state import reset_collection_state
+    from src.middleware.probe_state import reset_collection_state, PROBE_COMPLETED_MERCHANTS, merchant_identity
     from src.middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
@@ -33,7 +33,7 @@ try:
     )
     from src.page_mechanism import PageMechanism, normalize_page_path
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
-    from middleware.probe_state import reset_collection_state
+    from middleware.probe_state import reset_collection_state, PROBE_COMPLETED_MERCHANTS, merchant_identity
     from middleware.tool_io import (
         ToolInvocation,
         require_tool_result,
@@ -160,6 +160,15 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
             error = self._navigation_error(state, str(args.get("next_path") or ""))
             if error:
                 return _context_error(request, "invalid_navigation_target", error)
+            target = _canonical_path(args.get("next_path"))
+            if tool_name == "navigate_to" and self.mechanism.is_merchant_page(target):
+                name = merchant_identity(str(args.get("merchant_name") or ""))
+                if not name:
+                    return _context_error(request, "merchant_identity_required",
+                                          "Provide the full visible merchant_name, including branch name, before entering a merchant.")
+                if name in (state.get(PROBE_COMPLETED_MERCHANTS) or {}).get(target, ()):
+                    return _context_error(request, "merchant_already_collected",
+                                          "This merchant is already complete in this probe run. Reinspect the refreshed list and choose another merchant; do not reuse old card positions.")
         if tool_name == "tap_in_page" and args.get("purpose") != "dismiss_overlay":
             policy = self.mechanism.page_policy(current_path)
             taps_used = int(state.get(PAGE_PRODUCT_ENTRY_TAPS, 0))

@@ -394,7 +394,7 @@ collector 的工具调用不经过 conductor 的页面状态、采集落盘和�
 
 1. 从完整 state history 确定性构造本轮 conductor 输入投影；
 2. 完整保留 user message，将历史按 user block 和 manual block 组织；
-3. 将已离开的页面压缩为包含路径和采集数量的占位，返回父页面时在原位置恢复父页面 block；
+3. 将已离开的页面压缩为行为意图记录：依据实际工具调用描述查询、滑动、点击、训练、完成检查及导航目标，不将调用尝试描述为成功；商家名称仍用于展示路径，仅在存在归档统计时附加数量。返回父页面时在原位置恢复离开前的 manual 和旧历史，返回后的新 manual 与操作留在消息尾部，不能回填到旧位置。跨 user block 继承的页面锚点在当前块独立占位，不覆盖上一块的活跃页面槽；
 4. 当前活跃页面只保留最近三组短期页面状态工具调用及对应 AI tool-call message；
 5. 保留 package、captcha、`think`、`prepare_collector`、`is_done`、完成授权和未知工具的原文；
 6. 不注入运行时页面语义提示；覆盖层处理原则由固定 conductor prompt 提供。
@@ -484,6 +484,7 @@ LangChain 将稳定的基础 `system_message` 放在 `request.messages` 之前�
 
 - `ProbeState` 和最新 AI message；
 - 页面、访问实例、待导航、leaf 访问和商家采集完成状态。
+- `probe_completed_merchants` 按 canonical merchant path 保存本次任务已完成的完整商家名；随 checkpoint 保留，新探测任务清空，页面访问切换不清空。
 
 **输出**
 
@@ -541,6 +542,8 @@ result
 - 校验 `run_package` 首页映射和显式导航的绝对 canonical path；
 - 在设备操作前验证目标 manual 完整存在；
 - 根据商家点击额度和采集是否已开始限制普通页面操作；middleware 不判定覆盖层，LLM 声明的 dismiss_overlay 点击不占商品入口额度；
+- 商家 `navigate_to` 要求提供当前列表卡片的 `merchant_name`（含分店名）。按模板路径和完整名称检查已完成集合，重复目标在设备点击前返回 `merchant_already_collected`，不迁移页面状态。
+  名称只归一化空白，不做模糊匹配；排序、坐标及临时节点 ID 不作为去重身份。未完成商家可再次进入，不同模板及分店名分别记录。
 - 对同一 AI message 的多个设备动作执行 action claim，只允许第一个动作进入设备层；
 - 将 `parallel_tool_calls=False` 的模型约束再落实为执行期门禁。
 
@@ -714,6 +717,7 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 - 最近滑动方向保存在 thread 的 collection_last_swipe，页面访问切换时清空；读取页面发现不完整行时可沿用该方向，没有历史方向则要求先确认遍历方向。
 - 每次商品滑动以 5% 概率在当前串行执行链内通过共享截图服务归档原始结果、准入摘要、完整快照、PNG、契约和脚本版本到 workspace/collection_audits。只供离线查验，异常仅记日志。
 - 连续三次有效采集 swipe 新增为零后，`is_done` 才返回 `done=true`；
+- `is_done=true` 时，将 collector 确认的 merchant profile 完整名称登记到 `probe_completed_merchants`。进入页面、完成训练或写入部分商品均不会登记完成；普通采集保持静默。
 - LLM 声明的 dismiss_overlay 点击不触发采集；不依据页面几何判断是否采集。落盘跳过不覆盖进度，执行或落盘失败清除连续空滑及完成证据。
 
 **输入**

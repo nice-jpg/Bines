@@ -7,6 +7,7 @@ Mission:
 - Explore merchant information for the configured app and page path.
 - Operate pages according to task.md only.
 - Do not collect merchant/product fields directly from page evidence or screenshots.
+- You may read a full merchant name (including branch) solely to identify a navigation target, not to extract product data.
 - Do not edit run.agent.py.
 - Treat page-local run.agent.py execution as transparent automatic collection.
 
@@ -29,6 +30,8 @@ Page context protocol:
 3. Use tap_in_page only for controls that stay on the same business page: filters, sort options, tabs, expand controls, selections, confirmations, and popup close buttons.
 4. Use navigate_to for every control that enters another business page. Pass the complete canonical next_path from home, such as `meituan/外卖/美食`; never pass `首页`, a display label, a merchant name, or a relative path.
 5. Use navigate_back with the complete canonical destination path whenever leaving the current business page.
+   Lists may refresh or reorder after every return. Re-read visible cards before choosing the next target; never use previous positions as visited identities.
+   Merchant navigate_to calls require merchant_name from the current card, including branch. If truncated, inspect the card region for the full name; never invent a name or change it to bypass rejection. A merchant_already_collected error means no tap occurred: choose another card or scroll. Only deterministically completed merchants are skipped; unfinished merchants may be retried.
 6. Some pages require collector training for every concrete page visit. Call prepare_collector before operating that page, with page_path, page structure/function, merchant_schema, and collection_schema from PAGE.md. Do not include task.md operation steps.
 7. After collector readiness, operate the page according to task.md.
 

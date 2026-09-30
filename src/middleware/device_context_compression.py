@@ -236,13 +236,14 @@ def _project_user_block(
             continue
         if transition is not None and transition.name == "navigate_back":
             restored = _pop_page_frame(page_stack, transition.next_path or path)
+            if restored is not None and restored.output_slot is not None:
+                restored.output_slot.messages = [
+                    restored.manual, *_limit_short_lived_tools(restored.body)
+                ]
             active = ManualFrame(
                 path=path,
                 visit_id=visit_id,
                 manual=message,
-                body=list(restored.body) if restored is not None else [],
-                output_slot=restored.output_slot if restored is not None else None,
-                inherited_output_slot=False,
             )
             continue
 
@@ -266,7 +267,7 @@ def _collapse_manual_frame(
     frame: ManualFrame,
     placeholder: SystemMessage,
 ) -> ManualOutputSlot:
-    if frame.output_slot is not None:
+    if frame.output_slot is not None and not frame.inherited_output_slot:
         frame.output_slot.messages = [placeholder]
         return frame.output_slot
     output_slot = ManualOutputSlot(messages=[placeholder])
@@ -330,7 +331,7 @@ def _manual_placeholder(
     display_path = _placeholder_path(frame.path, summary)
     collected_items = _non_negative_int(summary.get("collected_items"))
     return SystemMessage(
-        content=f"worked at {display_path} and collected {collected_items} items.",
+        content=_page_activity_description(frame, display_path, summary),
         id=f"page-manual-placeholder:{block_index}:{placeholder_index}:{frame.visit_id or frame.path}",
         additional_kwargs={
             "bines_context": {
@@ -342,6 +343,41 @@ def _manual_placeholder(
             }
         },
     )
+
+
+def _page_activity_description(
+    frame: ManualFrame, display_path: str, summary: Mapping[str, Any]
+) -> str:
+    """Describe recorded action intents without inventing successful outcomes."""
+    intents: list[str] = []
+    for message in frame.body:
+        for call in _tool_calls(message):
+            if call.name in NAVIGATION_TOOLS:
+                target = str(call.args.get("next_path") or "")
+                intent = f"requested {'return to' if call.name == 'navigate_back' else 'navigation to'} {target}"
+                merchant_name = call.args.get("merchant_name")
+                if merchant_name:
+                    intent += f" for merchant {merchant_name}"
+            elif call.name == "tap_in_page":
+                intent = "attempted overlay dismissal" if call.args.get("purpose") == "dismiss_overlay" else "interacted with page controls"
+            elif call.name.startswith("swipe_"):
+                intent = f"scrolled using {call.name}"
+            elif call.name == "prepare_collector":
+                intent = "requested collection-script validation"
+            elif call.name == "is_done":
+                intent = "checked collection completion"
+            elif call.name == "screenshot":
+                intent = "inspected a screenshot"
+            elif call.name in SHORT_LIVED_PAGE_TOOLS:
+                intent = "queried the page view"
+            else:
+                intent = f"called {call.name}"
+            if intent not in intents:
+                intents.append(intent)
+    activity = "; ".join(intents) if intents else "read the page manual"
+    if "collected_items" in summary:
+        activity += f"; archived {_non_negative_int(summary['collected_items'])} items"
+    return f"At {display_path}: {activity}."
 
 
 def _request_collection_summaries(state: Mapping[str, Any]) -> Mapping[str, Mapping[str, Any]]:
@@ -485,10 +521,6 @@ def _additional_raw_tool_calls(additional_kwargs: Any) -> list[Any]:
         return []
     calls = additional_kwargs.get("tool_calls")
     return list(calls) if isinstance(calls, Sequence) and not isinstance(calls, (str, bytes)) else []
-
-
-def _raw_call_id(call: Any) -> str:
-    return str(call.get("id") or call.get("tool_call_id") or "") if isinstance(call, Mapping) else ""
 
 
 def _tool_message_call_id(message: Any) -> str:

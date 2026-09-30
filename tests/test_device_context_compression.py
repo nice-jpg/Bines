@@ -181,9 +181,30 @@ def test_leaf_placeholder_uses_merchant_name_and_collected_item_total() -> None:
         == MANUAL_PLACEHOLDER_CONTEXT_KIND
     )
 
-    assert placeholder.content == "worked at /meituan/外卖/美食/老王-炒面 and collected 17 items."
+    assert placeholder.content == "At /meituan/外卖/美食/老王-炒面: requested return to meituan/外卖/美食; archived 17 items."
     assert placeholder.additional_kwargs["bines_context"]["canonical_path"] == "meituan/外卖/美食/商家"
     assert placeholder.additional_kwargs["bines_context"]["collected_items"] == 17
+
+
+def test_placeholder_describes_recorded_intents_without_assuming_success() -> None:
+    messages = [
+        user("probe"), manual("app/list", "list"),
+        *call_pair("view", "page_view"),
+        *call_pair("close", "tap_in_page", purpose="dismiss_overlay"),
+        *call_pair("train", "prepare_collector"),
+        *call_pair("done", "is_done", '{"done": false}'),
+        *call_pair("nav", "navigate_to", next_path="app/merchant", merchant_name="Noodle Shop"),
+        manual("app/merchant", "merchant"),
+    ]
+    projected = compact_device_messages(messages)
+    placeholder = next(message for message in projected if isinstance(message, SystemMessage))
+    assert "queried the page view" in placeholder.content
+    assert "attempted overlay dismissal" in placeholder.content
+    assert "requested collection-script validation" in placeholder.content
+    assert "checked collection completion" in placeholder.content
+    assert "requested navigation to app/merchant for merchant Noodle Shop" in placeholder.content
+    assert "archived" not in placeholder.content
+    assert "0 items" not in placeholder.content
 
 
 def test_non_leaf_placeholder_keeps_canonical_path() -> None:
@@ -197,7 +218,7 @@ def test_non_leaf_placeholder_keeps_canonical_path() -> None:
     compacted = compact_device_messages(messages)
     placeholder = next(message for message in compacted if isinstance(message, SystemMessage))
 
-    assert placeholder.content == "worked at /meituan and collected 0 items."
+    assert placeholder.content == "At /meituan: requested navigation to meituan/外卖."
 
 
 def test_navigate_back_discards_child_and_restores_parent_frame() -> None:
@@ -235,7 +256,15 @@ def test_navigate_back_discards_child_and_restores_parent_frame() -> None:
         and message.additional_kwargs.get("bines_context", {}).get("canonical_path")
         == "meituan/外卖"
     )
-    assert parent_manual_index < child_placeholder_index
+    old_parent_index = next(
+        index for index, message in enumerate(compacted)
+        if isinstance(message, dict) and message.get("content") == "HOME MANUAL OLD"
+    )
+    current_action_index = next(
+        index for index, message in enumerate(compacted)
+        if isinstance(message, dict) and any(call.get("id") == "home-current" for call in message.get("tool_calls", []))
+    )
+    assert old_parent_index < child_placeholder_index < parent_manual_index < current_action_index
 
 
 def test_multilevel_page_stack_restores_declared_parent() -> None:
@@ -272,7 +301,7 @@ def test_multilevel_page_stack_restores_declared_parent() -> None:
         and message.additional_kwargs.get("bines_context", {}).get("canonical_path")
         == "app/b/c"
     )
-    assert b_manual_index < c_placeholder_index
+    assert c_placeholder_index < b_manual_index
 
 
 def test_page_stack_survives_user_block_boundary() -> None:
@@ -312,7 +341,7 @@ def test_page_stack_survives_user_block_boundary() -> None:
         for index, message in enumerate(compacted)
         if isinstance(message, dict) and message.get("content") == "second"
     )
-    assert parent_index < child_index < second_user_index
+    assert second_user_index < child_index < parent_index
 
 
 def test_new_user_block_reanchors_manual_without_changing_prior_block() -> None:
@@ -508,7 +537,8 @@ def test_middleware_reads_collection_summaries_from_graph_state() -> None:
         lambda prepared: prepared,
     )
 
-    assert "worked at /meituan/美食/炒面 and collected 9 items." in str(projected.messages)
+    assert "At /meituan/美食/炒面:" in str(projected.messages)
+    assert "archived 9 items" in str(projected.messages)
 
 
 def test_async_middleware_matches_sync_projection() -> None:

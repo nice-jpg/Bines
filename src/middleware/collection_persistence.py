@@ -33,6 +33,8 @@ try:
         COLLECTION_PAGE_VISIT_ID,
         COLLECTION_VISIT_SUMMARIES,
         MERCHANT_COLLECTION_DONE,
+        PROBE_COMPLETED_MERCHANTS,
+        merchant_identity,
         ProbeState,
     )
     from src.middleware.tool_io import ToolInvocation
@@ -50,6 +52,8 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         COLLECTION_PAGE_VISIT_ID,
         COLLECTION_VISIT_SUMMARIES,
         MERCHANT_COLLECTION_DONE,
+        PROBE_COMPLETED_MERCHANTS,
+        merchant_identity,
         ProbeState,
     )
     from middleware.tool_io import ToolInvocation
@@ -169,6 +173,13 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
             additional_kwargs={} if not error_type else {"error_type": error_type},
         )
         update = {MERCHANT_COLLECTION_DONE: done} if not error_type else {}
+        if done:
+            record = self.training_registry.record_for(visit_id)
+            name = merchant_identity(str((record.merchant_profile or {}).get("name") or ""))
+            if name:
+                completed = dict(state.get(PROBE_COMPLETED_MERCHANTS) or {})
+                completed[current_path] = tuple(dict.fromkeys((*completed.get(current_path, ()), name)))
+                update[PROBE_COMPLETED_MERCHANTS] = completed
         return Command(update={"messages": [message], **update})
 
     def wrap_tool_call(

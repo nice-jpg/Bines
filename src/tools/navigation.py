@@ -34,11 +34,11 @@ class NavigationTools:
 
         return self.event_hub.tap(x, y)
 
-    def navigate_to(self, x: int, y: int, next_path: str) -> Any:
+    def navigate_to(self, x: int, y: int, next_path: str, merchant_name: str = "") -> Any:
         """Tap a control that enters the declared absolute canonical child page."""
 
         # ProbeControlMiddleware owns canonical-path validation.
-        del next_path
+        del next_path, merchant_name
         return self.event_hub.tap(x, y)
 
     def navigate_back(self, next_path: str) -> Any:
@@ -74,6 +74,8 @@ def create_navigation_tools(
                 "Tap a visible target that enters another business page. Provide x, y, and next_path. "
                 "next_path must be the complete canonical path from the app home, for example "
                 "meituan/外卖/美食/商家. The target manual is validated before the device is touched. "
+                "For merchant destinations, merchant_name is required: copy the full currently visible name including branch. "
+                "Previously completed merchants are rejected before tapping, regardless of list order or coordinates. "
                 "Returns page_change_hint search entrances to query by ID, not page content (root view on first capture)."
             ),
             metadata={

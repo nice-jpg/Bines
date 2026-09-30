@@ -17,6 +17,7 @@ def replace_state_value(_current: Any, new: Any) -> Any:
 
 PROBE_STATUS = "probe_status"
 PROBE_RUN_ID = "probe_run_id"
+PROBE_COMPLETED_MERCHANTS = "probe_completed_merchants"
 PROBE_PREMATURE_FINAL_COUNT = "probe_premature_final_count"
 PROBE_TARGET_LEAF_PATHS = "probe_target_leaf_paths"
 PROBE_VISITED_LEAF_PATHS = "probe_visited_leaf_paths"
@@ -50,6 +51,7 @@ class ProbeState(AgentState):
 
     probe_status: NotRequired[Annotated[str, replace_state_value]]
     probe_run_id: NotRequired[Annotated[str, replace_state_value]]
+    probe_completed_merchants: NotRequired[Annotated[dict[str, tuple[str, ...]], replace_state_value]]
     probe_premature_final_count: NotRequired[Annotated[int, replace_state_value]]
     probe_target_leaf_paths: NotRequired[Annotated[tuple[str, ...], replace_state_value]]
     probe_visited_leaf_paths: NotRequired[Annotated[tuple[str, ...], replace_state_value]]
@@ -71,6 +73,7 @@ def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> dict[str, Any]:
     return {
         PROBE_STATUS: PROBE_RUNNING,
         PROBE_RUN_ID: uuid4().hex,
+        PROBE_COMPLETED_MERCHANTS: {},
         PROBE_PREMATURE_FINAL_COUNT: 0,
         PROBE_TARGET_LEAF_PATHS: tuple(dict.fromkeys(target_leaf_paths)),
         PROBE_VISITED_LEAF_PATHS: (),
@@ -93,6 +96,11 @@ def reset_collection_state() -> dict[str, Any]:
     }
 
 
+def merchant_identity(name: str) -> str:
+    """Normalize layout whitespace, retaining the complete branch-specific name."""
+    return " ".join(name.split())
+
+
 __all__ = [
     "COLLECTION_LAST_SWIPE",
     "COLLECTION_INITIALIZED",
@@ -109,6 +117,8 @@ __all__ = [
     "PROBE_PREMATURE_FINAL_COUNT",
     "PROBE_RUNNING",
     "PROBE_RUN_ID",
+    "PROBE_COMPLETED_MERCHANTS",
+    "merchant_identity",
     "PROBE_STATUS",
     "PROBE_TARGET_LEAF_PATHS",
     "PROBE_VISITED_LEAF_PATHS",
