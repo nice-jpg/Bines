@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import uuid7
 
 import websockets
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
@@ -83,7 +83,7 @@ class OpenAICodexModel(BaseChatModel):
     instructions: str = "You are a helpful assistant."
     reasoning_effort: str | None = "medium"
     store_responses: bool = False
-    prompt_cache_key: str = Field(default_factory=lambda: str(uuid4()))
+    prompt_cache_key: str = Field(default_factory=lambda: str(uuid7()))
     token_provider: CodexOAuthTokenProvider = Field(default_factory=CodexOAuthTokenProvider)
     _usage_records: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     _usage_totals: dict[str, int] = PrivateAttr(default_factory=dict)
@@ -198,7 +198,7 @@ class OpenAICodexModel(BaseChatModel):
     async def _request(self, messages: list[BaseMessage], **kwargs: Any) -> AIMessage:
         if self._request_lock is None:
             raise RuntimeError("Codex WebSocket transport is not initialized.")
-        request_id = str(uuid4())
+        request_id = str(uuid7())
 
         async with self._request_lock:
             # Retry a failed send once. Rebuild after reconnecting because an
@@ -274,7 +274,7 @@ class OpenAICodexModel(BaseChatModel):
 
         await self._invalidate_connection()
         token, account_id = self.token_provider.get_credentials()
-        sid = str(uuid4())
+        sid = str(uuid7())
         headers = {
             "Authorization": f"Bearer {token}",
             "OpenAI-Beta": "responses_websockets=2026-02-06",
@@ -547,6 +547,10 @@ class OpenAICodexModel(BaseChatModel):
         }
         if previous_response_id is not None:
             request["previous_response_id"] = previous_response_id
+            request["prompt_cache_options"] = {
+                "comparison_response_id": previous_response_id,
+                "ttl": "30m"
+            }
         return request
 
     def _message_text(self, message: BaseMessage) -> str:
@@ -953,7 +957,7 @@ def _to_responses_function_call(tool_call: Mapping[str, Any]) -> dict[str, Any]:
     args = tool_call.get("args") or tool_call.get("arguments") or {}
     return {
         "type": "function_call",
-        "call_id": str(call_id or uuid4()),
+        "call_id": str(call_id or uuid7()),
         "name": str(name or ""),
         "arguments": args if isinstance(args, str) else json.dumps(args, ensure_ascii=False),
     }
@@ -966,7 +970,7 @@ def _to_responses_custom_tool_call(tool_call: Mapping[str, Any]) -> dict[str, An
     tool_input = args.get("__arg1", "") if isinstance(args, Mapping) else args
     return {
         "type": "custom_tool_call",
-        "call_id": str(call_id or uuid4()),
+        "call_id": str(call_id or uuid7()),
         "name": str(name or ""),
         "input": str(tool_input),
     }
@@ -984,7 +988,7 @@ def _parse_responses_function_call(item: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "name": str(item.get("name", "")),
         "args": arguments,
-        "id": str(item.get("call_id") or item.get("id") or uuid4()),
+        "id": str(item.get("call_id") or item.get("id") or uuid7()),
     }
 
 
@@ -992,7 +996,7 @@ def _parse_responses_custom_tool_call(item: Mapping[str, Any]) -> dict[str, Any]
     return {
         "name": str(item.get("name", "")),
         "args": {"__arg1": str(item.get("input", ""))},
-        "id": str(item.get("call_id") or item.get("id") or uuid4()),
+        "id": str(item.get("call_id") or item.get("id") or uuid7()),
     }
 
 
