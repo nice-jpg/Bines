@@ -83,7 +83,7 @@ class OpenAICodexModel(BaseChatModel):
     instructions: str = "You are a helpful assistant."
     reasoning_effort: str | None = "medium"
     store_responses: bool = False
-    prompt_cache_key: str = Field(default_factory=lambda: str(uuid7()))
+    session_id: str = Field(default_factory=lambda: str(uuid7()))
     token_provider: CodexOAuthTokenProvider = Field(default_factory=CodexOAuthTokenProvider)
     _usage_records: list[dict[str, Any]] = PrivateAttr(default_factory=list)
     _usage_totals: dict[str, int] = PrivateAttr(default_factory=dict)
@@ -274,7 +274,7 @@ class OpenAICodexModel(BaseChatModel):
 
         await self._invalidate_connection()
         token, account_id = self.token_provider.get_credentials()
-        sid = str(uuid7())
+        sid = self.session_id
         headers = {
             "Authorization": f"Bearer {token}",
             "OpenAI-Beta": "responses_websockets=2026-02-06",
@@ -543,13 +543,13 @@ class OpenAICodexModel(BaseChatModel):
             "reasoning": reasoning,
             "store": should_store,
             "include": ["reasoning.encrypted_content"] if reasoning else [],
-            "prompt_cache_key": self.prompt_cache_key,
+            "prompt_cache_key": self.session_id,
         }
         if previous_response_id is not None:
             request["previous_response_id"] = previous_response_id
             request["prompt_cache_options"] = {
                 "comparison_response_id": previous_response_id,
-                "ttl": "30m"
+                "ttl": "30ms"
             }
         return request
 
