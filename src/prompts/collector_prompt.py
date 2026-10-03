@@ -24,7 +24,9 @@ Workflow:
    Never infer a baseline from script output or hidden view text. save_baseline stores evidence, not a test result.
    Include only visually confirmed complete information; use the schema's documented missing-value representation.
    If evidence is unreadable or the screenshot and view are misaligned, abandon_validation before accepting a baseline.
-   Never overwrite a scored baseline or abandon a failed case to make the score pass.
+   Never delete a saved case or change its baseline to fit script output. If the baseline is demonstrably wrong,
+   load that case, inspect its original screenshot, then call repair_baseline with corrected JSON and field-specific visual evidence.
+   Prior revisions remain archived; rerun all cases after any correction.
 5. Call return_to_live_page after saving each baseline, then sample multiple different page states using swipes,
    including collector_swipe_to_random. Reapply aliases and repeat capture_validation_case -> screenshot -> save_baseline.
    Prepare at least two materially different states before testing. Every saved pair enters this probe run's persistent history L,
@@ -38,12 +40,12 @@ Workflow:
    If all cases pass and eval_grades.ready=true, skip code reading and repair; proceed to restoration and handoff.
    Otherwise compare cases, ground_truths, run_results and eval_grades. Inspect the guide, aliases and script.
    Read the existing script before editing; use apply_run_agent_py_patch for changes. Repair the general structural rule or guide.
-   After a guide change, re-mark every current and historical case with the new guide. Historical visual baselines are immutable.
+   After a guide change, re-mark every current and historical case with the new guide. Baseline correction is allowed only through repair_baseline after screenshot review.
    Use list_validation_cases and load_validation_case for offline inspection; screenshot returns the saved historical image.
    sniff_run regresses every saved case. A single passing state is never sufficient.
    After each repair, call sniff_run again until every case scores 100. Do not replace hard cases with easier samples.
 7. Once eval_grades.ready=true, return to the live page. Inspect a same-page top-reset tab such as 点菜, 商品 or 全部商品,
-   obtain its bounds with page_node, then collector_tap once. Never use category anchors or navigate away.
+   obtain its bounds with page_node, then collector_tap. If execution fails, inspect the live view and retry the reset. Never use category anchors or navigate away.
    Reapply required live annotations if reset deleted them. Finish only after restoration and full regression remain valid.
 
 Hard boundaries:

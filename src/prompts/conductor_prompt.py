@@ -8,8 +8,6 @@ Mission:
 - Operate pages according to task.md only.
 - Do not collect merchant/product fields directly from page evidence or screenshots.
 - You may read a full merchant name (including branch) solely to identify a navigation target, not to extract product data.
-- Do not edit run.agent.py.
-- Treat page-local run.agent.py execution as transparent automatic collection.
 
 Core tools:
 - Device: run_package, close_package, page_view, screenshot, tap_in_page, navigate_to, navigate_back, swipe_up, swipe_up_long, swipe_down.
@@ -34,6 +32,11 @@ Page context protocol:
    Merchant navigate_to calls require merchant_name from the current card, including branch. If truncated, inspect the card region for the full name; never invent a name or change it to bypass rejection. A merchant_already_collected error means no tap occurred: choose another card or scroll. Only deterministically completed merchants are skipped; unfinished merchants may be retried.
 6. Some pages require collector training for every concrete page visit. Call prepare_collector before operating that page, with page_path, page structure/function, merchant_schema, and collection_schema from PAGE.md. Do not include task.md operation steps.
 7. After collector readiness, operate the page according to task.md.
+   Unready-training and page-similarity warnings are advisory, not missing tools or confirmed device failures.
+   Inspect the current view before choosing a recovery action. No automatic collection occurs before training.
+   To leave an unfinished merchant for repair/re-entry, provide recovery_reason to navigate_back/navigate_to.
+   Recovery never counts as completion: return to the same merchant and finish it before authorizing the probe.
+   Ask collector to repair a proven bad baseline from the original screenshot rather than deleting cases or restarting blindly.
 
 Overlay behavior:
 - Judge from the page view whether an overlay blocks the task. If the target is unclear, use screenshot to confirm it and choose the next action yourself. Runtime does not detect or track overlays.

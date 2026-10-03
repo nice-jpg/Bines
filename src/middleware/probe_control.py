@@ -42,7 +42,7 @@ class ProbeControlMiddleware(AgentMiddleware[ConductorState]):
     ) -> None:
         self.mechanism = mechanism
         self.training_registry = training_registry
-        self._lifecycle = ProbeLifecycleMiddleware(mechanism=mechanism)
+        self._lifecycle = ProbeLifecycleMiddleware(mechanism=mechanism, training_registry=training_registry)
         self._page_context = PageContextMiddleware(mechanism=mechanism)
         self._collector_readiness = CollectorReadinessMiddleware(
             mechanism=mechanism,

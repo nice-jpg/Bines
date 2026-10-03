@@ -199,6 +199,17 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ProbeState]):
         return self._process_tool_result(request, result)
 
     def _process_tool_result(self, request: ToolCallRequest, result: ToolMessage | Any) -> ToolMessage | Any:
+        if isinstance(result, Command) and isinstance(result.update, Mapping):
+            messages = list(result.update.get("messages") or [])
+            for index, message in enumerate(messages):
+                if isinstance(message, ToolMessage) and message.tool_call_id == request.tool_call["id"]:
+                    processed = self._process_tool_result(request, message)
+                    if isinstance(processed, Command):
+                        update = {**result.update, **processed.update}
+                        update["messages"] = messages[:index] + list(processed.update.get("messages") or []) + messages[index + 1:]
+                        return Command(graph=result.graph, update=update, resume=result.resume, goto=result.goto)
+                    break
+            return result
         invocation = ToolInvocation.from_request(request)
         tool_name = invocation.name
         if tool_name == "prepare_collector":

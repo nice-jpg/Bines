@@ -78,10 +78,10 @@ class ToolsRegistryTests(unittest.TestCase):
                 {"reason", "evidence", "expected_outcome", "risk_acknowledged"},
             )
             self.assertTrue(justification["properties"]["risk_acknowledged"]["const"])
-        self.assertEqual(set(schemas["navigate_to"]["properties"]), {"x", "y", "next_path", "merchant_name"})
+        self.assertEqual(set(schemas["navigate_to"]["properties"]), {"x", "y", "next_path", "merchant_name", "recovery_reason"})
         self.assertEqual(schemas["navigate_to"]["properties"]["merchant_name"]["type"], "string")
         self.assertNotIn("merchant_name", schemas["navigate_to"]["required"])
-        self.assertEqual(set(schemas["navigate_back"]["properties"]), {"next_path"})
+        self.assertEqual(set(schemas["navigate_back"]["properties"]), {"next_path", "recovery_reason"})
         self.assertNotIn("runtime", schemas["navigate_to"]["properties"])
         self.assertEqual(
             set(schemas["prepare_collector"]["properties"]),

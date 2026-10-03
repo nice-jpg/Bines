@@ -78,6 +78,7 @@ class CollectorToolbox:
         self._marked = set()
         self._guide_version = ""
         self._profile = {}
+        self._reviewed_images = set()
         self._revision = 0
         self._random = False
         self._saw_screenshot = False
@@ -274,6 +275,8 @@ class CollectorToolbox:
                 case["image"] = image
                 case["screenshot_at"] = datetime.now(timezone.utc).isoformat()
         self._saw_screenshot = True
+        if case:
+            self._reviewed_images.add(self.active_id)
         return [{"type": "text", "text": encoded({"case_id": self.active_id, "schema": self.collection_schema,
                  "instruction": "Extract only visually confirmed information; do not infer from script output."})},
                 {"type": "image_url", "image_url": {"url": image}}]
@@ -294,6 +297,35 @@ class CollectorToolbox:
         self._grades.clear()
         self._save_cases()
         return encoded({"ok": True, "case_id": self.active_id, "saved": True})
+
+    def repair_baseline(self, r1: str, evidence: str) -> str:
+        """Correct a saved baseline from its original screenshot, retaining every prior revision."""
+        case = self.cases.get(self.active_id)
+        if not case or case["baseline"] is None or self.active_id not in self._reviewed_images:
+            raise ValueError("Load the saved case and inspect its original screenshot before repair")
+        if not evidence.strip():
+            raise ValueError("Describe the erroneous fields and what the original screenshot shows")
+        baseline = object_value(r1)
+        errors = shape_errors(case["schema"], baseline)
+        if errors:
+            raise ValueError(f"Baseline does not match the saved schema: {errors}")
+        if baseline == case["baseline"]:
+            return encoded({"ok": True, "changed": False})
+        previous = dict(case)
+        case["baseline_revisions"] = [*case.get("baseline_revisions", []), {
+            "baseline": case["baseline"], "evidence": evidence.strip(),
+            "revised_at": datetime.now(timezone.utc).isoformat(),
+        }]
+        case["baseline"] = baseline
+        self._tested_stamp = None
+        self._grades.clear()
+        try:
+            self._save_cases()
+        except Exception:
+            self.cases[self.active_id] = previous
+            raise
+        self._reviewed_images.discard(self.active_id)
+        return encoded({"ok": True, "changed": True, "regression_required": True})
 
     def _evaluate(self):
         guide = self._guide()
@@ -401,7 +433,7 @@ class CollectorToolbox:
 
     def collector_tap(self, x: int, y: int) -> str:
         """After all cases pass, tap a same-page top-reset control; returns page_change_hint IDs."""
-        if self.active_id is not None or not self.requires_merchant_profile or self._tap_attempted or not self.training_result()["ready"]:
+        if self.active_id is not None or not self.requires_merchant_profile or self._restored or not self.training_result()["ready"]:
             raise ValueError("Reset tap is locked until full visual regression passes")
         self._tap_attempted = True
         page, artifact = self.event_hub.tap(x, y)
@@ -455,7 +487,7 @@ class CollectorToolbox:
                          self.read_run_agent_py, self.apply_run_agent_py_patch,
                          self.collector_swipe_up, self.collector_swipe_up_long,
                          self.collector_swipe_down, self.collector_swipe_to_random,
-                         self.collector_tap, self.capture_validation_case, self.sniff_run, self.screenshot, self.save_baseline,
+                         self.collector_tap, self.capture_validation_case, self.sniff_run, self.screenshot, self.save_baseline, self.repair_baseline,
                          self.save_merchant_profile, self.list_validation_cases,
                          self.load_validation_case, self.return_to_live_page, self.abandon_validation):
             tools.append(StructuredTool.from_function(self._safe(function)))

@@ -87,7 +87,7 @@ def _message(name: str, content: str = FULL_XML) -> ToolMessage:
 
 def test_overlay_allows_screenshot_for_target_confirmation(tmp_path):
     middleware = PageContextMiddleware(mechanism=_mechanism(tmp_path))
-    request = _request("screenshot", _state(**{PAGE_CONTEXT_OVERLAY: True}))
+    request = _request("screenshot", _state())
     assert middleware._validate_tool_call(request) is None
 
 

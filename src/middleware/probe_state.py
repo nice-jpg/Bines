@@ -50,6 +50,9 @@ class ProbeState(AgentState):
     """Thread-scoped lifecycle state shared by cooperating middleware."""
 
     probe_status: NotRequired[Annotated[str, replace_state_value]]
+    probe_current_merchant: NotRequired[Annotated[str, replace_state_value]]
+    probe_unfinished_merchants: NotRequired[Annotated[dict[str, dict[str, str]], replace_state_value]]
+    probe_failed_tool_count: NotRequired[Annotated[int, replace_state_value]]
     probe_run_id: NotRequired[Annotated[str, replace_state_value]]
     probe_completed_merchants: NotRequired[Annotated[dict[str, tuple[str, ...]], replace_state_value]]
     probe_premature_final_count: NotRequired[Annotated[int, replace_state_value]]
@@ -72,6 +75,9 @@ def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> dict[str, Any]:
 
     return {
         PROBE_STATUS: PROBE_RUNNING,
+        "probe_current_merchant": "",
+        "probe_unfinished_merchants": {},
+        "probe_failed_tool_count": 0,
         PROBE_RUN_ID: uuid4().hex,
         PROBE_COMPLETED_MERCHANTS: {},
         PROBE_PREMATURE_FINAL_COUNT: 0,

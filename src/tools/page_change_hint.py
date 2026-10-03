@@ -21,7 +21,7 @@ class _Selection:
 
 
 def change_hint(session: PageSession) -> dict:
-    """Return at most three disjoint region entrances, without page content."""
+    """Return whole-page change ratio and at most three disjoint region entrances."""
     stats = session.last_sync_stats
     order = {}
 
@@ -63,12 +63,14 @@ def change_hint(session: PageSession) -> dict:
         return choices, candidate
 
     selected = _Selection()
+    page_update_ratio = 0.0
     if stats:
         root = next(key for key, node in stats.items() if node.parent_id is None)
+        page_update_ratio = session.update_ratio(root)
         choices, _ = visit(root)
         for choice in choices.values():
             if better(choice, selected):
                 selected = choice
-    return {"kind": "page_change_hint", "regions": [
+    return {"kind": "page_change_hint", "update_ratio": page_update_ratio, "regions": [
         {"id": key, "update_ratio": session.update_ratio(key)} for key in selected.ids
     ]}

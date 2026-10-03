@@ -59,7 +59,7 @@ class SystemPromptTests(unittest.TestCase):
         for instruction in (
             "run(view)", "save_baseline", "screenshot", "read_collection_guide",
             "apply_run_agent_py_patch", "collector_swipe_to_random",
-            "Historical visual baselines are immutable", "capture_validation_case",
+            "Baseline correction is allowed only through repair_baseline", "capture_validation_case",
             "save_baseline stores evidence, not a test result",
             "English docstrings", "stagnation_review_required=true",
         ):

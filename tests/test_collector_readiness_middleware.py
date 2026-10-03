@@ -58,7 +58,7 @@ def test_untrained_merchant_visit_keeps_model_tool_contract_stable(tmp_path: Pat
     assert request.tools is tools
 
 
-def test_untrained_visit_rejects_page_operation_but_overlay_close_is_allowed(tmp_path: Path) -> None:
+def test_untrained_visit_warns_without_blocking_operations(tmp_path: Path) -> None:
     middleware, _registry = _middleware(tmp_path)
     called = []
 
@@ -73,8 +73,8 @@ def test_untrained_visit_rejects_page_operation_but_overlay_close_is_allowed(tmp
         lambda _: called.append("close") or ToolMessage(content="xml", tool_call_id="tap_in_page-1"),
     )
 
-    assert json.loads(rejected.content)["error_type"] == "collector_training_required"
-    assert called == ["close"]
+    assert rejected.update["messages"][-1].additional_kwargs["bines_context"]["code"] == "collector_training_required"
+    assert called == ["swipe", "close"]
     assert allowed.content == "xml"
 
 
@@ -97,19 +97,19 @@ def test_training_is_scoped_to_visit_id_even_when_page_path_matches(tmp_path: Pa
     )
 
     assert first.content == "first"
-    assert json.loads(second.content)["error_type"] == "collector_training_required"
+    assert second.update["messages"][-1].additional_kwargs["bines_context"]["code"] == "collector_training_required"
 
 
 def test_overlay_screenshot_allowed_and_changed_contract_requires_training(tmp_path):
     from src.collection_contract import CollectionContract
     middleware, registry = _middleware(tmp_path)
-    assert middleware._rejection(_tool_request("screenshot", _state(overlay=True))) is None
-    assert middleware._rejection(_tool_request("screenshot", _state())) is not None
+    assert middleware._warning_required(_tool_request("screenshot", _state(overlay=True))) is False
+    assert middleware._warning_required(_tool_request("screenshot", _state())) is False
     path = _state()[PAGE_CONTEXT_PATH]
     contract = CollectionContract.from_dict({"primary_key": ["name"], "required_fields": []})
     middleware.mechanism.save_collection_contract(path, contract)
     registry.mark_trained("visit-a", path, contract_fingerprint=contract.fingerprint)
-    assert middleware._rejection(_tool_request("swipe_up", _state())) is None
+    assert middleware._warning_required(_tool_request("swipe_up", _state())) is False
     changed = CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["price"]})
     middleware.mechanism.save_collection_contract(path, changed)
-    assert middleware._rejection(_tool_request("swipe_up", _state())) is not None
+    assert middleware._warning_required(_tool_request("swipe_up", _state())) is True

@@ -141,6 +141,20 @@ def test_wrap_tool_call_does_not_collect_before_training(tmp_path: Path, monkeyp
     assert _read_xlsx(workbook_path) == []
 
 
+def test_advisory_scroll_results_still_accumulate_completion_evidence(tmp_path):
+    from middleware.tool_io import ToolInvocation, with_warning
+    middleware, registry, _ = _middleware(tmp_path)
+    _mark_trained(registry)
+    request = _request("swipe_up")
+    for _ in range(4):
+        message = _tool_message("swipe_up", "cup")
+        result = middleware.wrap_tool_call(request, lambda _: with_warning(
+            message, ToolInvocation.from_request(request), "similarity", "操作后页面相似度较高(100.0%)"))
+        _apply_state(request.state, result)
+        assert result.update["messages"][-1].content.endswith("(100.0%)")
+    assert request.state[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 3
+
+
 def test_wrap_tool_call_persists_swipe_items_and_deduplicates(tmp_path: Path) -> None:
     middleware, registry, workbook_path = _middleware(tmp_path)
     _mark_trained(registry)

@@ -8,7 +8,7 @@ import json
 from typing import Any, cast
 
 from langchain.agents.middleware.types import ToolCallRequest
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.types import Command
 
@@ -115,6 +115,18 @@ def with_state_update(result: ToolResult, state_update: Mapping[str, Any]) -> Co
     update = dict(result.update) if isinstance(result.update, Mapping) else {}
     update.update(state_update)
     return Command(graph=result.graph, update=update, resume=result.resume, goto=result.goto)
+
+
+def with_warning(result: ToolResult, invocation: ToolInvocation, code: str, text: str) -> Command:
+    """Append advisory context without replacing device evidence or tool status."""
+    command = with_state_update(result, {})
+    messages = list(command.update.get("messages") or [])
+    messages.append(SystemMessage(
+        content=f"Warning: {text}",
+        additional_kwargs={"bines_context": {"kind": "operation_warning", "code": code,
+                                             "source_tool_call_id": invocation.call_id}},
+    ))
+    return with_state_update(command, {"messages": messages})
 
 
 def command_state_value(result: ToolResult, key: str) -> Any | None:

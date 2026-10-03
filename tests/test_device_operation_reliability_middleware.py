@@ -94,7 +94,7 @@ def test_reliability_uses_full_xml_not_search_hint_presence():
         result = middleware.wrap_tool_call(
             _request(_tool("swipe_up", SCROLL_PAGE_CHANGE_POLICY)), lambda _: message,
         )
-        assert result.status == expected_status
+        assert (result.status if isinstance(result, ToolMessage) else result.update["messages"][0].status) == "success"
         assert compared == [(XML, XML)]
         if expected_status == "success":
             assert result is message
@@ -111,15 +111,8 @@ def test_navigation_accepts_only_similarity_below_half() -> None:
     result = rejected.wrap_tool_call(
         _request(_tool("navigate_to", NAVIGATION_PAGE_CHANGE_POLICY)), lambda _: expected
     )
-    payload = json.loads(result.content)
-    assert result.status == "error"
-    assert payload == {
-        "effective": False,
-        "error_type": "device_operation_no_effect",
-        "message": "操作未产生预期的页面变化",
-        "ok": False,
-        "similarity": 0.5,
-    }
+    assert result.update["messages"][0] is expected
+    assert "50.0%" in result.update["messages"][-1].content
 
 
 def test_scroll_boundaries_are_inclusive() -> None:
@@ -136,18 +129,18 @@ def test_scroll_boundaries_are_inclusive() -> None:
         result = middleware.wrap_tool_call(
             _request(_tool("swipe_down", SCROLL_PAGE_CHANGE_POLICY)), lambda _: _message("swipe_down")
         )
-        assert result.status == "error"
+        assert result.update["messages"][0].status == "success"
 
 
-def test_precheck_failure_prevents_device_operation() -> None:
+def test_precheck_failure_warns_after_device_operation() -> None:
     middleware, _ = _middleware(0.5, event_result=make_error_result("capture_failed", "failed"))
     handler_calls = []
     result = middleware.wrap_tool_call(
         _request(_tool("swipe_up", SCROLL_PAGE_CHANGE_POLICY)),
         lambda _: handler_calls.append(True) or _message("swipe_up"),
     )
-    assert handler_calls == []
-    assert json.loads(result.content)["similarity"] is None
+    assert handler_calls == [True]
+    assert "无法比较" in result.update["messages"][-1].content
 
 
 def test_unverifiable_post_result_exposes_no_page_details() -> None:
@@ -159,9 +152,8 @@ def test_unverifiable_post_result_exposes_no_page_details() -> None:
         _request(_tool("swipe_up", SCROLL_PAGE_CHANGE_POLICY)),
         lambda _: ToolMessage(content="not xml", name="swipe_up", tool_call_id="call-1"),
     )
-    payload = json.loads(result.content)
-    assert set(payload) == {"ok", "effective", "error_type", "message", "similarity"}
-    assert payload["similarity"] is None
+    assert result.update["messages"][0].content == "not xml"
+    assert "无法比较" in result.update["messages"][-1].content
 
 
 def test_async_path_uses_the_same_policy() -> None:
@@ -173,11 +165,11 @@ def test_async_path_uses_the_same_policy() -> None:
     result = asyncio.run(
         middleware.awrap_tool_call(_request(_tool("swipe_up", SCROLL_PAGE_CHANGE_POLICY)), handler)
     )
-    assert result.status == "error"
+    assert result.update["messages"][0].status == "success"
     assert hub.calls == 1
 
 
-def test_rejected_scroll_does_not_reach_collection_persistence() -> None:
+def test_warning_retains_tool_result_without_snapshot() -> None:
     class FakeMechanism:
         def __init__(self) -> None:
             self.run_calls = 0
@@ -206,5 +198,5 @@ def test_rejected_scroll_does_not_reach_collection_persistence() -> None:
         lambda inner: reliability.wrap_tool_call(inner, lambda _: _message("swipe_up")),
     )
 
-    assert result.status == "error"
+    assert result.update["messages"][0].status == "success"
     assert mechanism.run_calls == 0

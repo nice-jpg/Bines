@@ -17,9 +17,9 @@ def test_action_hint_keeps_complete_internal_snapshot():
     bridge = PageBridge(lambda: XML)
     bridge.refresh()
     unchanged, artifact = bridge.observe(XML)
-    assert unchanged == {"kind": "page_change_hint", "regions": []}
+    assert unchanged == {"kind": "page_change_hint", "update_ratio": 0.0, "regions": []}
     changed, artifact = bridge.observe(XML.replace("商品", "点菜"))
-    assert changed == {"kind": "page_change_hint", "regions": [{"id": 1, "update_ratio": 1.0}]}
+    assert changed == {"kind": "page_change_hint", "update_ratio": 0.5, "regions": [{"id": 1, "update_ratio": 1.0}]}
     assert "点菜" in artifact["page_xml"]
     assert bridge.query("page_view", {})[0]["summary"] == "点菜"
     assert "private-id" not in json.dumps(changed)

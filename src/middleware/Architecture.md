@@ -62,7 +62,7 @@ LangChain 对不同 hook 使用两种顺序：
 `EventHub` 持有 `src/tools/page_bridge.py:PageBridge`。设备 dump 是内部能力，
 原始 Android XML 直接通过 Reco 的公开 `PageSession.build_tree(xml_string)` 构造区域树，
 已有会话通过 `sync()` 更新，保留 Reco 能够匹配的区域 ID 和别名。
-不再创建临时 XML 文件。相似度和弹窗检测仍使用内部 XML；
+不再创建临时 XML 文件。相似度提示使用内部 XML，middleware 不检测弹窗；
 采集脚本只接收从同一快照重建的只读 Reco 视图，不接收 XML。
 
 conductor 与 collector 均暴露 `Reco/model_interface.py:TOOLS` 的七个原始 schema：
@@ -70,7 +70,7 @@ conductor 与 collector 均暴露 `Reco/model_interface.py:TOOLS` 的七个原�
 不再暴露 `uiautomate` 或 `collector_uiautomate`。
 无 key 且 offset 为 0 的 `page_view` 刷新设备快照；子区域读取、分页和别名操作使用同一快照。
 成功设备动作通过 Reco.sync 刷新树并返回 `page_change_hint`，最多包含三个互不为祖先的区域入口，
-每个入口仅有 `id` 和 Reco 原有 `update_ratio`；无变化时 `regions=[]`，不发送节点内容和删除明细。
+顶层 `update_ratio` 表示 Reco 根节点的全页面变化率，每个入口仅有 `id` 和该区域的 Reco `update_ratio`；无变化时顶层变化率为 0、`regions=[]`，不发送节点内容和删除明细。
 Reco 在既有比较过程中保留只读统计：自身是否变化、子树变化数量、比较规模和父子关系。
 自身稳定节点分隔变化连通部分；新增/替换子树视为整体，删除归属仍存在的父区域。
 桥接层的 `page_change_hint.py` 不重新比较 XML，允许提升到稳定祖先以合并碎片。
@@ -523,7 +523,8 @@ result
 **职责**
 
 - 未经 `authorize_probe_completion` 成功授权时拒绝 `close_package`；
-- 商家页 `merchant_collection_done` 不为 `true` 时拒绝 `navigate_back`。
+- 未完成商家的普通 navigate_back、navigate_to 和 run_package 受统一离页校验；训练未就绪时允许导航恢复，已训练时可提供非空 recovery_reason 导航退出。恢复离页追加警告及审计，记录 path + merchant 的未完成义务；重新进入同一商家并 is_done=true 后清除，尚有义务时不能授权完成。
+- 导航和授权后的非完成操作撤销旧完成授权；连续三次工具错误在 after_model 触发可恢复 liveness interrupt，不再把“发出了工具调用”等同于进展。恢复载荷不提供未经统一校验的 permitted_tools 列表。
 
 **输入**
 
@@ -560,8 +561,8 @@ result
 
 **职责**
 
-- 页面策略要求 collector 且当前 `page_visit_id + path` 尚未训练时，拒绝普通页面读取、点击和滑动；
-- 默认仅允许 `prepare_collector`、返回、关闭、思考和 captcha 工具；
+- 页面策略要求 collector 且当前访问未训练或契约失效时，普通操作仍执行，随后追加独立 operation_warning SystemMessage；
+- prepare_collector、返回、关闭、思考和 captcha 不增加 readiness 警告，其他层的安全规则仍适用；
 - 允许视图查询、截图和 purpose=dismiss_overlay 的同页点击。
 
 **输入**
@@ -572,7 +573,7 @@ result
 **输出**
 
 - 允许时继续；
-- 拒绝时返回 `collector_training_required` ToolMessage。
+- 未就绪普通操作返回包含原始 ToolMessage 和 collector_training_required 警告的 Command，不伪造错误或改变设备证据。
 
 ### 4. CollectionPersistenceMiddleware: 外层边界
 
@@ -580,7 +581,7 @@ result
 
 **职责**
 
-- 让原始工具先执行并通过内层可靠性校验；
+- 让原始工具先执行；可靠性层仅提供建议，不阻止采集。支持从带 warning 的 Command 提取对应 ToolMessage，合并进度后保留所有原始消息；
 - 只处理成功的 `prepare_collector` 和带内部页面快照的指定工具结果；
 - 自行构造并持有 `CollectionWorkbookSink`，共享外部 `PageMechanism` 和 `CollectorTrainingRegistry`；
 - 提供与同一采集状态契约绑定的 conductor 工具 `is_done`。
@@ -629,7 +630,7 @@ result
 
 - 仅根据 typed `OperationEffectPolicy` metadata 选择需要验证的设备操作；
 - 操作前通过共享 `EventHub.page_bridge.refresh()` 构造抽象视图并获取内部 XML 快照；
-- precheck 失败时阻止真实设备操作。
+- precheck 失败仍执行工具，返回阶段追加无法比较页面的警告。
 
 **输入**
 
@@ -638,7 +639,7 @@ result
 **输出**
 
 - 无可靠性 policy 时透明传递；
-- 无法获得有效 precheck 时返回不包含页面细节的结构化错误；
+- 无法获得有效 precheck 时继续设备调用，后续提示不可比较；
 - 成功时把操作前 XML 保留到返回阶段进行对比。
 
 ### 7. ToolExecutionPolicyMiddleware: operation notice
@@ -688,9 +689,9 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 
 - 从成功工具结果的 `artifact.page_xml` 读取操作后 XML；
 - 使用内部 `PageSimilarityEvaluator` 对比前后 XML；
-- `navigate_to` 仅在相似度严格小于 `0.50` 时有效；
-- swipe 操作仅在相似度位于闭区间 `[0.05, 0.95]` 时有效；
-- 验证失败时把原成功结果替换为精简错误，使外层状态与落盘 middleware 看不到一次成功操作。
+- navigate_to 相似度达到 0.50 时产生提示；
+- swipe 相似度超出 [0.05, 0.95] 时产生提示；
+- 阈值不满足仅追加包含高低结论及百分比的警告，不覆盖原始工具成功状态、XML 或快照；页面迁移及采集照常处理。真实设备错误保持错误。
 
 **输入**
 
@@ -699,7 +700,7 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 **输出**
 
 - 有效时原样返回工具结果；
-- 无效或不可验证时返回仅含结论、`error_type` 和 similarity 的错误 ToolMessage；
+- 阈值不满足或不可验证时返回包含原工具结果和独立警告的 Command；
 - 副作用是记录不包含 XML 的可靠性审计事件。
 
 ### 10. CollectionPersistenceMiddleware: extraction and persistence
@@ -854,3 +855,10 @@ collector 的页面能力、视觉 baseline、脚本增量修改、指南和还�
 - screenshot 通过 AndroidDevice.pull_file 拉取真实 PNG，作为 ToolMessage 图片块返回。
   Codex 序列化将图片转换为 function_call_output 的 input_image，而非文本化 base64。
   协议依据：[OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)。
+
+
+### Recovery Evidence Boundaries
+
+- collector 的 repair_baseline 只修订已保存用例：须先加载原始截图并提供具体错误证据，校验原 schema；保留全部旧 baseline、修订说明和时间，不能删除历史用例。修订使全部评分失效，必须重新运行全量回归；保存失败回滚内存基准。
+- collector reset tap 执行失败后可重试；成功还原后仍不允许继续滑动。restore_to_top 是还原结果检查，不宣称 finally 自动操作设备。
+- 相似度为 100% 的成功滑动仍运行采集脚本，并按完整条目落盘去重结果累计零新增证据；提示本身不证明已到底。

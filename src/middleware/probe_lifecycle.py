@@ -24,6 +24,7 @@ try:
         require_tool_result,
         tool_succeeded,
         with_state_update,
+        with_warning,
     )
     from src.middleware.probe_state import (
         MERCHANT_COLLECTION_DONE,
@@ -37,7 +38,7 @@ try:
         PROBE_VISITED_LEAF_PATHS,
         ProbeState,
     )
-    from src.page_mechanism import PageMechanism
+    from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
     from src.tools.event_logger import WorkspaceEventLogger
 except ModuleNotFoundError:  # Supports running tests with src on sys.path.
     from middleware.page_context import (
@@ -50,6 +51,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         require_tool_result,
         tool_succeeded,
         with_state_update,
+        with_warning,
     )
     from middleware.probe_state import (
         MERCHANT_COLLECTION_DONE,
@@ -63,7 +65,7 @@ except ModuleNotFoundError:  # Supports running tests with src on sys.path.
         PROBE_VISITED_LEAF_PATHS,
         ProbeState,
     )
-    from page_mechanism import PageMechanism
+    from page_mechanism import CollectorTrainingRegistry, PageMechanism
     from tools.event_logger import WorkspaceEventLogger
 
 
@@ -75,8 +77,10 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
 
     state_schema = ProbeState
 
-    def __init__(self, *, mechanism: PageMechanism | None = None) -> None:
+    def __init__(self, *, mechanism: PageMechanism | None = None,
+                 training_registry: CollectorTrainingRegistry | None = None) -> None:
         self.mechanism = mechanism or PageMechanism()
+        self.training_registry = training_registry
         self._logger = WorkspaceEventLogger()
 
     def create_tools(self) -> list[StructuredTool]:
@@ -128,7 +132,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Any]) -> Any:
         rejection = self._validate_tool_call(request)
         if rejection is not None:
-            return rejection
+            return self._apply_tool_transition(request, rejection)
         return self._apply_tool_transition(request, handler(request))
 
     async def awrap_tool_call(
@@ -138,7 +142,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
     ) -> Any:
         rejection = self._validate_tool_call(request)
         if rejection is not None:
-            return rejection
+            return self._apply_tool_transition(request, rejection)
         return self._apply_tool_transition(request, await handler(request))
 
     def _after_model(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -147,6 +151,11 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         if latest is None:
             return None
         gated_statuses = {PROBE_RUNNING, PROBE_COMPLETION_AUTHORIZED}
+        if status in gated_statuses and int(state.get("probe_failed_tool_count", 0)) >= 3:
+            interrupt({"kind": "liveness", "reason": "repeated_tool_failures",
+                       "message": "连续工具调用失败。请检查诊断后回复继续，或调整恢复方案。",
+                       "page_path": state.get(PAGE_CONTEXT_PATH), "page_visit_id": state.get(PAGE_VISIT_ID)})
+            return {"probe_failed_tool_count": 0}
         if _message_tool_calls(latest):
             update: dict[str, Any] = {}
             continuation_ids = _continuation_message_ids(state.get("messages") or ())
@@ -181,7 +190,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
                 "page_visit_id": details["page_visit_id"],
                 "attempts": count,
                 "reason": reason,
-                "permitted_tools": self._permitted_tools(state),
+                "guidance": "Inspect the latest tool diagnostics; recovery navigation requires recovery_reason.",
             }
             self._logger.log("liveness_interrupted", "Probe liveness interrupt created.", payload)
             interrupt(payload)
@@ -226,13 +235,17 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
                 "probe_completion_not_authorized",
                 "Call authorize_probe_completion successfully before close_package.",
             )
-        if tool_name == "navigate_back":
+        if tool_name in {"navigate_back", "navigate_to", "run_package"}:
             current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
             if self.mechanism.is_merchant_page(current_path) and state.get(MERCHANT_COLLECTION_DONE) is not True:
+                untrained = self.training_registry is not None and not self.training_registry.is_trained(
+                    str(state.get(PAGE_VISIT_ID) or ""), current_path)
+                if tool_name != "run_package" and (untrained or str(invocation.args.get("recovery_reason") or "").strip()):
+                    return None
                 return _lifecycle_error(
                     request,
                     "merchant_collection_incomplete",
-                    "A merchant page can be left only after is_done returns done=true.",
+                    "Finish collection or provide recovery_reason for navigation. Recovery does not mark the merchant complete.",
                 )
         return None
 
@@ -241,9 +254,16 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         state = invocation.state
         typed_result = require_tool_result(result)
         if not tool_succeeded(typed_result):
-            return result
+            return with_state_update(typed_result, {"probe_failed_tool_count": int(state.get("probe_failed_tool_count", 0)) + 1})
         tool_name = invocation.name
-        update: dict[str, Any] = {}
+        update: dict[str, Any] = {"probe_failed_tool_count": 0}
+        unfinished = dict(state.get("probe_unfinished_merchants") or {})
+        current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
+        merchant = str(state.get("probe_current_merchant") or "")
+        if tool_name == "is_done" and command_state_value(typed_result, MERCHANT_COLLECTION_DONE) is True:
+            unfinished = {key: value for key, value in unfinished.items()
+                          if (value["path"], value["merchant"]) != (current_path, merchant)}
+            update["probe_unfinished_merchants"] = unfinished
         transitioned_path = command_state_value(typed_result, PAGE_CONTEXT_PATH)
         if tool_name == "close_package" and state.get(PROBE_STATUS) == PROBE_COMPLETION_AUTHORIZED:
             update.update(
@@ -262,7 +282,15 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
                 },
             )
         elif transitioned_path is not None:
+            if self.mechanism.is_merchant_page(current_path) and state.get(MERCHANT_COLLECTION_DONE) is not True:
+                unfinished[str(state.get(PAGE_VISIT_ID) or "unknown")] = {"path": current_path, "merchant": merchant}
+                update["probe_unfinished_merchants"] = unfinished
+                typed_result = with_warning(typed_result, invocation, "unfinished_merchant_recovery",
+                                            "Leaving an unfinished merchant for recovery. Revisit and complete it before finishing the probe.")
+                self._logger.log("merchant_recovery", "Unfinished merchant navigation", {"path": current_path, "merchant": merchant, "reason": invocation.args.get("recovery_reason", "collector_not_ready")})
             path = str(transitioned_path)
+            update["probe_current_merchant"] = " ".join(str(invocation.args.get("merchant_name") or "").split())
+            update[PROBE_STATUS] = PROBE_RUNNING
             targets = tuple(str(item) for item in state.get(PROBE_TARGET_LEAF_PATHS) or ())
             visited = list(str(item) for item in state.get(PROBE_VISITED_LEAF_PATHS) or ())
             if path in targets and path not in visited:
@@ -271,10 +299,14 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
             update[PROBE_PREMATURE_FINAL_COUNT] = 0
         elif state.get(PROBE_STATUS) == PROBE_RUNNING:
             update[PROBE_PREMATURE_FINAL_COUNT] = 0
+        if state.get(PROBE_STATUS) == PROBE_COMPLETION_AUTHORIZED and tool_name not in {"close_package", "authorize_probe_completion"}:
+            update[PROBE_STATUS] = PROBE_RUNNING
         return with_state_update(typed_result, update) if update else result
 
     def _completion_evaluation(self, state: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
         missing: list[str] = []
+        if state.get("probe_unfinished_merchants"):
+            missing.append("unfinished_merchants_require_recovery")
         if state.get(PROBE_STATUS) != PROBE_RUNNING:
             missing.append("probe_not_running")
         targets = tuple(str(item) for item in state.get(PROBE_TARGET_LEAF_PATHS) or ())
@@ -322,24 +354,6 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         if targets - visited:
             return "configured_leaf_pages_unvisited"
         return "completion_not_authorized"
-
-    def _permitted_tools(self, state: Mapping[str, Any]) -> list[str]:
-        current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
-        if not current_path:
-            return ["run_package"]
-        if self.mechanism.is_merchant_page(current_path):
-            tools = [
-                "prepare_collector",
-                "page_view",
-                "swipe_up",
-                "swipe_up_long",
-                "swipe_down",
-                "is_done",
-            ]
-            if state.get(MERCHANT_COLLECTION_DONE) is True:
-                tools.append("navigate_back")
-            return tools
-        return ["page_view", "tap_in_page", "navigate_to", "navigate_back", "authorize_probe_completion"]
 
 
 def _latest_ai_message(messages: Sequence[Any]) -> AIMessage | None:

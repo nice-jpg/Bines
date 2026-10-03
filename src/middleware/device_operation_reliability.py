@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-import json
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
@@ -12,14 +11,14 @@ from langgraph.types import Command
 
 if __package__ and __package__.startswith("src."):
     from src.middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-    from src.middleware.tool_io import ToolInvocation, require_tool_result, page_xml, tool_succeeded
+    from src.middleware.tool_io import ToolInvocation, require_tool_result, page_xml, tool_succeeded, with_warning
     from src.tools.event_hub import EventHub
     from src.tools.event_logger import WorkspaceEventLogger
     from src.tools.operation_effect import OperationEffectPolicy, operation_effect_policy_from_metadata
     from src.tools.page_similarity import PageSimilarityError, PageSimilarityEvaluator
 else:  # Supports running tests and python src/run_agent.py with src on sys.path.
     from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-    from middleware.tool_io import ToolInvocation, require_tool_result, page_xml, tool_succeeded
+    from middleware.tool_io import ToolInvocation, require_tool_result, page_xml, tool_succeeded, with_warning
     from tools.event_hub import EventHub
     from tools.event_logger import WorkspaceEventLogger
     from tools.operation_effect import OperationEffectPolicy, operation_effect_policy_from_metadata
@@ -27,7 +26,7 @@ else:  # Supports running tests and python src/run_agent.py with src on sys.path
 
 
 class DeviceOperationReliabilityMiddleware(AgentMiddleware):
-    """Reject configured device operations that do not produce the expected change."""
+    """Warn when configured device operations do not produce the expected change."""
 
     def __init__(self, *, event_hub: EventHub) -> None:
         self.event_hub = event_hub
@@ -44,10 +43,7 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         if policy is None:
             return handler(request)
 
-        _, snapshot = self.event_hub.page_bridge.refresh()
-        if snapshot is None:
-            return self._unverifiable(request, "device_operation_precheck_failed")
-        before_xml = snapshot["page_xml"]
+        before_xml = self._before_xml()
         result = handler(request)
         return self._evaluate(request, result, before_xml, policy)
 
@@ -61,10 +57,7 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         if policy is None:
             return await handler(request)
 
-        _, snapshot = self.event_hub.page_bridge.refresh()
-        if snapshot is None:
-            return self._unverifiable(request, "device_operation_precheck_failed")
-        before_xml = snapshot["page_xml"]
+        before_xml = self._before_xml()
         result = await handler(request)
         return self._evaluate(request, result, before_xml, policy)
 
@@ -80,13 +73,15 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         typed_result = require_tool_result(result)
         if not tool_succeeded(typed_result):
             return result
+        if not before_xml:
+            return self._unverifiable(request, result, "device_operation_precheck_failed")
         after_xml = _result_xml(typed_result)
         if not after_xml:
-            return self._unverifiable(request, "device_operation_postcheck_failed")
+            return self._unverifiable(request, result, "device_operation_postcheck_failed")
         try:
             comparison = self.evaluator.compare(before_xml, after_xml)
         except PageSimilarityError:
-            return self._unverifiable(request, "device_operation_effect_unverifiable")
+            return self._unverifiable(request, result, "device_operation_effect_unverifiable")
 
         effective = policy.accepts(comparison.similarity)
         self._log_result(
@@ -97,21 +92,23 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         )
         if effective:
             return result
-        return _effect_error(
-            request,
-            error_type="device_operation_no_effect",
-            message="操作未产生预期的页面变化",
-            similarity=comparison.similarity,
+        return with_warning(
+            typed_result, ToolInvocation.from_request(request), "device_operation_effect_warning",
+            f"操作后页面相似度{'较高' if comparison.similarity > 0.5 else '较低'}"
+            f"({comparison.similarity:.1%})。请根据页面判断操作效果；该提示不代表操作失败。",
         )
 
-    def _unverifiable(self, request: ToolCallRequest, error_type: str) -> ToolMessage:
+    def _before_xml(self) -> str:
+        try:
+            _, snapshot = self.event_hub.page_bridge.refresh()
+            return snapshot["page_xml"] if snapshot else ""
+        except Exception:
+            return ""
+
+    def _unverifiable(self, request, result, error_type):
         self._log_result(request, similarity=None, effective=False, error_type=error_type)
-        return _effect_error(
-            request,
-            error_type=error_type,
-            message="无法确认操作是否生效",
-            similarity=None,
-        )
+        return with_warning(require_tool_result(result), ToolInvocation.from_request(request),
+                            error_type, "无法比较操作前后的页面；请根据当前视图或截图确认操作效果。")
 
     def _log_result(
         self,
@@ -138,30 +135,6 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
 
 def _result_xml(result: ToolMessage | Command) -> str:
     return page_xml(result)
-
-
-def _effect_error(
-    request: ToolCallRequest,
-    *,
-    error_type: str,
-    message: str,
-    similarity: float | None,
-) -> ToolMessage:
-    invocation = ToolInvocation.from_request(request)
-    payload = {
-        "ok": False,
-        "effective": False,
-        "error_type": error_type,
-        "message": message,
-        "similarity": None if similarity is None else round(similarity, 4),
-    }
-    return ToolMessage(
-        content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-        tool_call_id=invocation.call_id,
-        name=invocation.name or "unknown_tool",
-        status="error",
-        additional_kwargs={"error_type": error_type},
-    )
 
 
 __all__ = ["DeviceOperationReliabilityMiddleware"]

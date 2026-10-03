@@ -34,14 +34,14 @@ class NavigationTools:
 
         return self.event_hub.tap(x, y)
 
-    def navigate_to(self, x: int, y: int, next_path: str, merchant_name: str = "") -> Any:
+    def navigate_to(self, x: int, y: int, next_path: str, merchant_name: str = "", recovery_reason: str = "") -> Any:
         """Tap a control that enters the declared absolute canonical child page."""
 
         # ProbeControlMiddleware owns canonical-path validation.
         del next_path, merchant_name
         return self.event_hub.tap(x, y)
 
-    def navigate_back(self, next_path: str) -> Any:
+    def navigate_back(self, next_path: str, recovery_reason: str = "") -> Any:
         """Return to the declared absolute canonical parent or prior page."""
 
         del next_path
@@ -76,6 +76,7 @@ def create_navigation_tools(
                 "meituan/外卖/美食/商家. The target manual is validated before the device is touched. "
                 "For merchant destinations, merchant_name is required: copy the full currently visible name including branch. "
                 "Previously completed merchants are rejected before tapping, regardless of list order or coordinates. "
+                "If leaving an unfinished merchant for recovery, provide a concrete recovery_reason; this does not mark it complete. "
                 "Returns page_change_hint search entrances to query by ID, not page content (root view on first capture)."
             ),
             metadata={
@@ -89,6 +90,7 @@ def create_navigation_tools(
             description=(
                 "Return to a declared prior business page. Provide its complete canonical next_path, "
                 "for example meituan/外卖/美食. The target manual is validated before the device is touched. "
+                "For recovery from an unfinished merchant, provide recovery_reason; revisit and complete it later. "
                 "Returns page_change_hint search entrances to query by ID, not page content (root view on first capture)."
             ),
         ),

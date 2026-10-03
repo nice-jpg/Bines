@@ -120,6 +120,38 @@ def test_visual_workflow_locks_state_and_hides_output(tmp_path):
         t.save_baseline('{"items":[]}')
 
 
+def test_baseline_repair_preserves_evidence_and_requires_regression(tmp_path):
+    t = setup(tmp_path)
+    verify(t, "wrong")
+    case_id = t.active_id
+    screenshot = t.cases[case_id]["image"]
+    t.repair_baseline('{"items":[{"name":"cup"}]}', "The saved screenshot reads cup, not wrong.")
+    assert not t.training_result()["ready"]
+    assert t.cases[case_id]["image"] == screenshot
+    assert t.cases[case_id]["baseline_revisions"][0]["baseline"]["items"][0]["name"] == "wrong"
+    reloaded = setup(tmp_path, history=t.history, visit="b")
+    with pytest.raises(ValueError):
+        reloaded.repair_baseline('{"items":[]}', "incorrect")
+    reloaded.load_validation_case(case_id)
+    reloaded.screenshot()
+    reloaded.repair_baseline('{"items":[{"name":"bowl"}]}', "Reviewing the same image again reveals a transcription error.")
+    assert len(reloaded.cases[case_id]["baseline_revisions"]) == 2
+    assert len(reloaded.cases) == 1
+
+
+def test_failed_reset_tap_can_be_retried(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    t.return_to_live_page()
+    original = t.event_hub.tap
+    t.event_hub.tap = lambda x, y: ("failed", None)
+    t.collector_tap(1, 500)
+    assert not t.restore_to_top()["restored"]
+    t.event_hub.tap = original
+    t.collector_tap(1, 500)
+    assert t._restored
+
+
 def test_two_states_require_random_sample_and_restore(tmp_path):
     t = setup(tmp_path)
     verify(t, "cup")

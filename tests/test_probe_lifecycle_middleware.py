@@ -76,6 +76,46 @@ def _payload(command_or_message) -> dict:
     return json.loads(message.content)
 
 
+def test_untrained_recovery_exit_is_allowed_but_not_completion(tmp_path):
+    from page_mechanism import CollectorTrainingRegistry
+    middleware = ProbeLifecycleMiddleware(mechanism=_mechanism(tmp_path), training_registry=CollectorTrainingRegistry())
+    state = _state(path="meituan/外卖/美食/商家")
+    state["probe_current_merchant"] = "Shop"
+    result = middleware.wrap_tool_call(_request("navigate_back", state), lambda _: Command(update={
+        "messages": [_tool_message("navigate_back")], PAGE_CONTEXT_PATH: "meituan/外卖/美食"}))
+    assert result.update["probe_unfinished_merchants"]["visit-1"]["merchant"] == "Shop"
+    state.update(result.update)
+    assert "unfinished_merchants_require_recovery" in middleware._completion_evaluation(state)[0]["missing"]
+    state[PAGE_CONTEXT_PATH] = "meituan/外卖/美食/商家"
+    state["probe_current_merchant"] = "Shop"
+    completed = middleware.wrap_tool_call(_request("is_done", state), lambda _: Command(update={
+        "messages": [_tool_message("is_done")], MERCHANT_COLLECTION_DONE: True}))
+    assert completed.update["probe_unfinished_merchants"] == {}
+
+
+def test_authorization_is_revoked_after_navigation(tmp_path):
+    middleware = ProbeLifecycleMiddleware(mechanism=_mechanism(tmp_path))
+    state = _state()
+    state[PROBE_STATUS] = PROBE_COMPLETION_AUTHORIZED
+    result = middleware.wrap_tool_call(_request("navigate_to", state), lambda _: Command(update={
+        "messages": [_tool_message("navigate_to")], PAGE_CONTEXT_PATH: "meituan/外卖/美食/商家"}))
+    assert result.update[PROBE_STATUS] == PROBE_RUNNING
+
+
+def test_repeated_failed_calls_trigger_liveness_even_with_tool_calls(tmp_path, monkeypatch):
+    def stop(payload):
+        assert payload["reason"] == "repeated_tool_failures"
+        raise GraphInterrupt()
+    monkeypatch.setattr("middleware.probe_lifecycle.interrupt", stop)
+    middleware = ProbeLifecycleMiddleware(mechanism=_mechanism(tmp_path))
+    state = _state(message=AIMessage(content="", tool_calls=[{"name": "close_package", "args": {}, "id": "call"}]))
+    for _ in range(3):
+        result = middleware.wrap_tool_call(_request("close_package", state), lambda _: pytest.fail("must not execute"))
+        state.update({key: value for key, value in result.update.items() if key != "messages"})
+    with pytest.raises(GraphInterrupt):
+        middleware.after_model(state, runtime=None)
+
+
 def test_premature_final_is_removed_and_jumps_back_to_model(tmp_path: Path) -> None:
     middleware = ProbeLifecycleMiddleware(mechanism=_mechanism(tmp_path))
 

@@ -38,7 +38,9 @@ def ids(session):
 
 def assert_frontier(session):
     hint = change_hint(session)
-    assert set(hint) == {"kind", "regions"}
+    assert set(hint) == {"kind", "update_ratio", "regions"}
+    root = next(key for key, node in session.last_sync_stats.items() if node.parent_id is None)
+    assert hint["update_ratio"] == session.update_ratio(root)
     selected = ids(session)
     assert len(selected) <= 3
     assert len(selected) == len(set(selected))
@@ -58,6 +60,7 @@ def test_local_change_does_not_mark_ancestors_and_stats_are_readonly():
     root, group, leaf = (session.last_sync_stats[i] for i in range(3))
     assert not root.self_changed and not group.self_changed and leaf.self_changed
     assert (root.changed_count, root.compared_count) == (1, 3)
+    assert change_hint(session)["update_ratio"] == pytest.approx(1 / 3)
     assert (group.changed_count, group.compared_count) == (1, 2)
     assert ids(session) == [2]
     with pytest.raises(FrozenInstanceError):
