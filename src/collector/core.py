@@ -59,7 +59,7 @@ class CollectorManager:
         page_description: str,
         merchant_schema: str,
         collection_schema: str,
-        runtime: ToolRuntime,
+        runtime: ToolRuntime[Any],
     ) -> str:
         """Delegate run.agent.py preparation to an isolated collector."""
 
@@ -110,6 +110,7 @@ class CollectorManager:
             state = agent.invoke(
                 {"messages": [{"role": "user", "content": message}]},
                 config={"recursion_limit": self.max_iterations, "configurable": {"thread_id": f"collector:{visit_id}"}},
+                context=runtime.context,
             )
         except Exception as exc:  # noqa: BLE001 - tool results should be structured.
             invoke_error = exc

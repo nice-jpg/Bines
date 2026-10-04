@@ -27,6 +27,7 @@ UNTRAINED_ALLOWED_TOOLS = frozenset(
         "navigate_back",
         "close_package",
         "think",
+        "talk",
         "authenticate_captcha",
         "captcha_authenticated",
     }

@@ -9,6 +9,35 @@ Framework execution infrastructure with no application-specific task semantics.
 - `AgentRuntime.resume_turn(session_id=..., user_input=...)` resumes the same thread.
 - `AgentPersistenceLayer(runtime)` continues until an `AgentResponse` is accepted or human intervention is required.
 - `AgentRunResult` carries output, graph state, interruption details and completion eligibility.
+- `runtime.bind_communication(session_id, sender)` returns a session proxy; the persistence layer forwards this API.
+- The proxy exposes `talk(message) -> bool` and `receive(message) -> bool`. The sender implements application delivery with a bounded network timeout.
+- `runtime.close()` stops accepting input and requests cooperative shutdown at model boundaries.
+
+## Runtime Communication
+
+`talk` is always registered with only a model-visible `message` argument. Hidden
+runtime context selects the channel. Unbound, failed or exceptional sends return
+false; successful sends return true without waiting for a user reply.
+
+Each session owns locked FIFO inboxes. `CommunicationMiddleware.before_model`
+writes stable-ID HumanMessages to checkpointed history before business manual
+injection and request compression. Input is acknowledged against message IDs in
+graph state, so model failures do not lose or duplicate already injected input.
+An in-flight request or tool finishes before the new input takes effect.
+
+Child `invoke(..., context=runtime.context)` explicitly subscribes an independent
+inbox to the parent's channel. Active children and the parent receive the same
+new input without sharing model histories; child exit removes its subscription.
+The parent retains unconsumed input. Input arriving during a final model response
+causes another call on the same checkpoint before returning.
+
+The Feishu adapter serializes all sessions on one worker and coordinates ingress
+with final completion under its scheduler lock. After a normal empty-queue
+completion it closes the proxy; later input starts a new turn. Interrupted
+sessions retain their proxy and require explicit resume input. Shutdown checks
+before and after model generation stop new tool dispatch, while already started
+operations finish. The worker closes before the model. Queues and checkpoints
+are process-local; this is not durable messaging across process restarts.
 
 An accepted response has this JSON shape:
 

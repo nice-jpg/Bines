@@ -4,6 +4,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from nTrace import NTrace, createNTraceHostMiddleware, createNTraceLLMMiddleware, createNTraceToolMiddleware
 from ._model_retry import create_model_retry_middleware
 from ._tool_error import ToolErrorMiddleware
+from .communication import _Inbox
 
 
 def build_graph(name, model, tools, system_prompt, middleware):
@@ -20,5 +21,5 @@ def build_graph(name, model, tools, system_prompt, middleware):
         createNTraceLLMMiddleware(trace),
     ]
     graph = create_agent(name=name, model=model, tools=list(tools), system_prompt=system_prompt,
-                         middleware=layers, checkpointer=InMemorySaver())
+                         middleware=layers, checkpointer=InMemorySaver(), context_schema=_Inbox)
     return graph, trace

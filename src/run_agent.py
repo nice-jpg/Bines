@@ -20,23 +20,13 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
     from model import build_model, close_model
     from tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
 
-CAPTCHA_RESUME_TEXT = "done"
-LIVENESS_RESUME_TEXT = "继续"
-MODEL_TRANSPORT_RESUME_TEXT = "继续"
+from langgraph.runtime import get_runtime
+from src.agent_runtime.communication import talk
+from src.feishu_agent_runner import FeishuAgentRunner
 
 
-class MutableNotifier:
-    """A notifier proxy whose destination can change per inbound message."""
-
-    def __init__(self) -> None:
-        self._notifier = None
-
-    def set(self, notifier) -> None:
-        self._notifier = notifier
-
-    def __call__(self, text: str) -> None:
-        if self._notifier is not None:
-            self._notifier(text)
+def notify_current_session(text: str) -> bool:
+    return talk(text, get_runtime())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,9 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     channel = FeishuChannelRuntime(load_feishu_config())
-    notifier = MutableNotifier()
-    operation_notice = OperationNoticeTool(notifier=notifier)
-    captcha_authentication = CaptchaAuthenticationTool(notifier=notifier)
+    operation_notice = OperationNoticeTool(notifier=notify_current_session)
+    captcha_authentication = CaptchaAuthenticationTool(notifier=notify_current_session)
     model = build_model()
     runtime = build_conductor_runtime(
         model=model,
@@ -61,41 +50,11 @@ def main() -> None:
         operation_notice_service=operation_notice,
     )
 
-    def on_message(message) -> None:
-        notifier.set(channel.build_notifier(message.target))
-        session_id = f"feishu:{message.chat_id}"
-        if runtime.has_pending_interrupt(session_id):
-            interrupt_kind = runtime.pending_interrupt_kind(session_id)
-            expected_text = (
-                MODEL_TRANSPORT_RESUME_TEXT
-                if interrupt_kind in {"model_transport", "execution"}
-                else LIVENESS_RESUME_TEXT
-                if interrupt_kind == "liveness"
-                else CAPTCHA_RESUME_TEXT
-            )
-            if message.text != expected_text:
-                channel.send_text(
-                    message.target,
-                    f"当前任务等待恢复。请回复“{expected_text}”继续。",
-                )
-                return
-            result = runtime.resume_turn(
-                session_id=session_id,
-                user_input=message.text,
-                max_iterations=args.max_iterations,
-            )
-        else:
-            result = runtime.run_turn(
-                [{"role": "user", "content": message.text}],
-                session_id=session_id,
-                max_iterations=args.max_iterations,
-            )
-        if result.output:
-            channel.send_text(message.target, result.output)
-
+    runner = FeishuAgentRunner(runtime, channel, args.max_iterations)
     try:
-        channel.start(on_message)
+        channel.start(runner.on_message)
     finally:
+        runner.close()
         close_model(model)
 
 

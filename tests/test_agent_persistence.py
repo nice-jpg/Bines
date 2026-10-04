@@ -186,6 +186,10 @@ def test_agent_runtime_continuation_appends_only_internal_instruction_to_same_th
     runtime.sessions = {"thread-context": [{"role": "user", "content": "original"}]}
     runtime._stateless_counter = itertools.count(1)
     runtime._pending_interrupts = {}
+    from threading import RLock
+    runtime._communications = {}
+    runtime._communication_lock = RLock()
+    runtime._closing = False
 
     result = runtime._continue_turn(
         session_id="thread-context",

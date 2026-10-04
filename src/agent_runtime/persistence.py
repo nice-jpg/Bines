@@ -75,6 +75,12 @@ class AgentPersistenceLayer:
         self.runtime = runtime
         self._session_counter = itertools.count(1)
 
+    def bind_communication(self, session_id, sender):
+        return self.runtime.bind_communication(session_id, sender)
+
+    def close(self):
+        self.runtime.close()
+
     def run_turn(
         self,
         messages: Iterable[BaseMessage | Mapping[str, Any]],

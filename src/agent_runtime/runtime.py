@@ -2,11 +2,15 @@
 from __future__ import annotations
 from dataclasses import dataclass
 import itertools
+from contextlib import nullcontext
+from collections.abc import Callable
+from threading import RLock
 from typing import Any, Iterable, Mapping, Sequence
 from langchain_core.messages import BaseMessage
 from langgraph.types import Command, Interrupt
 from langgraph.errors import GraphBubbleUp, GraphRecursionError
 from ._model_retry import is_retryable_model_transport_error
+from .communication import CommunicationMiddleware, RuntimeCommunication, _Inbox, create_talk_tool
 
 @dataclass(frozen=True)
 class AgentRunResult:
@@ -33,10 +37,53 @@ class AgentRuntime:
 
     def __init__(self, *, name: str, model, tools, system_prompt: str, middleware=()) -> None:
         from ._stability import build_graph
-        self.agent, self._trace = build_graph(name, model, tools, system_prompt, middleware)
+        tools = list(tools)
+        if any(tool.name == "talk" for tool in tools):
+            raise ValueError("talk is owned by agent_runtime")
+        self.agent, self._trace = build_graph(name, model, [*tools, create_talk_tool()], system_prompt,
+                                             [CommunicationMiddleware(), *middleware])
+        self._communications = {}
+        self._communication_lock = RLock()
+        self._closing = False
         self.sessions: dict[str, list[Any]] = {}
         self._stateless_counter = itertools.count(1)
         self._pending_interrupts: dict[str, _PendingInterrupt] = {}
+
+    def bind_communication(self, session_id: str, sender: Callable[[str], bool]) -> RuntimeCommunication:
+        with self._communication_lock:
+            if self._closing:
+                raise RuntimeError("Runtime is closing")
+            channel = self._communications.get(session_id)
+            if channel is None or channel._closed:
+                channel = RuntimeCommunication(sender)
+                self._communications[session_id] = channel
+                def release():
+                    with self._communication_lock:
+                        if self._communications.get(session_id) is channel:
+                            self._communications.pop(session_id, None)
+                channel._on_close = release
+            return channel
+
+    def close(self) -> None:
+        """Request a cooperative stop without interrupting active device operations."""
+        with self._communication_lock:
+            self._closing = True
+            for channel in list(self._communications.values()):
+                channel.close()
+
+    def _invoke_graph(self, input, config, inbox=None):
+        while True:
+            if self._closing:
+                snapshot = self.agent.get_state(config)
+                return {**snapshot.values, "__interrupt__": [{"kind": "shutdown", "message": "Runtime is shutting down."}]}
+            state = self.agent.invoke(input, config=config, **({"context": inbox} if inbox else {}))
+            if inbox is None or _extract_interrupts(state) or inbox.channel._closed:
+                return state
+            pending = inbox.pending(state.get("messages") or [])
+            if not pending:
+                return state
+            # A final model reply can race an external arrival. Continue the same checkpoint.
+            input = {"messages": pending}
 
     def run_turn(
         self,
@@ -129,7 +176,9 @@ class AgentRuntime:
 
     def _execute(self, input, *, config, session_id, thread_id, prepared_messages):
         try:
-            state = self.agent.invoke(input, config=config)
+            with self._communication_lock:
+                channel = self._communications.get(thread_id)
+            state = self._invoke_graph(input, config, channel._root if channel else None)
         except GraphRecursionError:
             return self._failed_call("recursion", None, session_id=session_id,
                                      thread_id=thread_id, config=config)
@@ -156,13 +205,15 @@ class AgentRuntime:
         """Pass native LangGraph resume input through without business interpretation."""
         return user_input
 
-    def invoke(self, input, config=None):
+    def invoke(self, input, config=None, *, context=None):
         """Run a child graph with its own checkpoint and trace identity."""
         config = dict(config or {})
         config["configurable"] = dict(config.get("configurable") or {})
         config["configurable"].setdefault("thread_id", self._thread_id_for_turn(None))
         self._trace.update(session_id=config["configurable"]["thread_id"])
-        return self.agent.invoke(input, config=config)
+        subscription = context.channel._subscribe() if isinstance(context, _Inbox) else nullcontext(None)
+        with subscription as inbox:
+            return self._invoke_graph(input, config, inbox)
 
     def has_pending_interrupt(self, session_id: str) -> bool:
         return session_id in self._pending_interrupts
@@ -268,8 +319,8 @@ def _interrupt_value(value: Any) -> Any:
 def _interrupt_kind(interrupts: Sequence[Any]) -> str:
     for item in interrupts:
         value = _interrupt_value(item)
-        if isinstance(value, Mapping) and value.get("kind") == "liveness":
-            return "liveness"
+        if isinstance(value, Mapping) and value.get("kind") in {"liveness", "shutdown"}:
+            return value["kind"]
     return "human"
 
 

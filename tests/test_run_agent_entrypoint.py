@@ -1,290 +1,38 @@
-from __future__ import annotations
+"""Entrypoint wiring; worker behavior is covered with real graphs separately."""
 
-import importlib
-import sys
-import types
-import unittest
-from pathlib import Path
+from unittest.mock import Mock
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import pytest
+
+from src import run_agent
 
 
-class RunAgentEntrypointTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._module_names = [
-            "run_agent",
-            "src.agent",
-            "src.channel.feishu",
-            "src.conductor_persistence",
-            "src.model",
-            "src.tools.common",
-            "agent",
-            "channel.feishu",
-            "conductor_persistence",
-            "model",
-            "tools.common",
-        ]
-        self._original_modules = {name: sys.modules.get(name) for name in self._module_names}
-
-    def tearDown(self) -> None:
-        for name, module in self._original_modules.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
-
-    def test_main_initializes_runtime_once_and_runs_each_feishu_message(self) -> None:
-        calls = {"runtime_init": 0, "run_turn": [], "sent": [], "notices": [], "model_close": 0}
-
-        class FakeTarget:
-            def __init__(self, chat_id):
-                self.chat_id = chat_id
-
-        class FakeMessage:
-            def __init__(self, chat_id):
-                self.chat_id = chat_id
-                self.text = f"text from {chat_id}"
-                self.target = FakeTarget(chat_id)
-
-        class FakeChannel:
-            def __init__(self, _config):
-                pass
-
-            def build_notifier(self, target):
-                return lambda text: calls["notices"].append((target.chat_id, text))
-
-            def send_text(self, target, text):
-                calls["sent"].append((target.chat_id, text))
-
-            def start(self, on_message):
-                on_message(FakeMessage("chat_1"))
-                on_message(FakeMessage("chat_2"))
-
-        class FakeRuntime:
-            def __init__(self, *, model, tools, name=None, operation_notice_service=None):
-                calls["runtime_init"] += 1
-                self.tools = tools
-                self.operation_notice_service = operation_notice_service
-
-            def has_pending_interrupt(self, _session_id):
-                return False
-
-            def pending_interrupt_kind(self, _session_id):
-                return None
-
-            def run_turn(self, messages, *, session_id=None, max_iterations):
-                calls["run_turn"].append((messages, session_id, max_iterations))
-                operation_notice = self.tools[0]
-                operation_notice.notifier("notice")
-                return types.SimpleNamespace(output=f"output_{len(calls['run_turn'])}", interrupted=False)
-
-        class FakePersistenceLayer:
-            def __init__(self, runtime):
-                self.runtime = runtime
-
-            def has_pending_interrupt(self, session_id):
-                return self.runtime.has_pending_interrupt(session_id)
-
-            def pending_interrupt_kind(self, session_id):
-                return self.runtime.pending_interrupt_kind(session_id)
-
-            def run_turn(self, messages, *, session_id, max_iterations):
-                return self.runtime.run_turn(
-                    messages,
-                    session_id=session_id,
-                    max_iterations=max_iterations,
-                )
-
-        class FakeOperationNoticeTool:
-            def __init__(self, notifier):
-                self.notifier = notifier
-
-        class FakeCaptchaAuthenticationTool:
-            def __init__(self, notifier):
-                self.notifier = notifier
-
-        class FakeModel:
-            def close(self):
-                calls["model_close"] += 1
-
-        fake_agent = types.ModuleType("src.agent")
-        fake_agent.build_conductor_runtime = FakeRuntime
-        fake_persistence = types.ModuleType("src.conductor_persistence")
-        fake_persistence.AgentPersistenceLayer = FakePersistenceLayer
-        fake_channel = types.ModuleType("src.channel.feishu")
-        fake_channel.FeishuChannelRuntime = FakeChannel
-        fake_channel.load_feishu_config = lambda: "config"
-        fake_model = types.ModuleType("src.model")
-        fake_model.build_model = FakeModel
-        fake_model.close_model = lambda model: model.close()
-        fake_tools_common = types.ModuleType("src.tools.common")
-        fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
-        fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool
-        fake_tools_common.create_common_tools = lambda operation_notice_tool, captcha_authentication_tool: [
-            operation_notice_tool,
-            captcha_authentication_tool,
-        ]
-
-        sys.modules["src.agent"] = fake_agent
-        sys.modules["src.conductor_persistence"] = fake_persistence
-        sys.modules["src.channel.feishu"] = fake_channel
-        sys.modules["src.model"] = fake_model
-        sys.modules["src.tools.common"] = fake_tools_common
-        sys.modules["tools.common"] = fake_tools_common
-        sys.modules.pop("run_agent", None)
-
-        run_agent = importlib.import_module("run_agent")
-        old_argv = sys.argv
-        try:
-            sys.argv = ["run_agent.py"]
+@pytest.mark.parametrize("start_error", [None, RuntimeError("channel stopped")])
+def test_main_wires_worker_and_closes_it_before_model(monkeypatch, start_error):
+    events = []
+    channel = Mock()
+    channel.start.side_effect = start_error
+    model = object()
+    runtime = object()
+    runner = Mock()
+    runner.close.side_effect = lambda: events.append("worker closed")
+    build_runtime = Mock(return_value=runtime)
+    build_runner = Mock(return_value=runner)
+    monkeypatch.setattr("sys.argv", ["run_agent", "--max-iterations", "42"])
+    monkeypatch.setattr(run_agent, "load_feishu_config", lambda: "config")
+    monkeypatch.setattr(run_agent, "FeishuChannelRuntime", lambda config: channel)
+    monkeypatch.setattr(run_agent, "build_model", lambda: model)
+    monkeypatch.setattr(run_agent, "build_conductor_runtime", build_runtime)
+    monkeypatch.setattr(run_agent, "create_common_tools", lambda **kwargs: [])
+    monkeypatch.setattr(run_agent, "FeishuAgentRunner", build_runner)
+    monkeypatch.setattr(run_agent, "close_model", lambda value: events.append("model closed"))
+    if start_error:
+        with pytest.raises(RuntimeError, match="channel stopped"):
             run_agent.main()
-        finally:
-            sys.argv = old_argv
-
-        self.assertEqual(calls["runtime_init"], 1)
-        self.assertEqual(len(calls["run_turn"]), 2)
-        self.assertEqual([item[1] for item in calls["run_turn"]], ["feishu:chat_1", "feishu:chat_2"])
-        self.assertEqual([item[2] for item in calls["run_turn"]], [1000, 1000])
-        self.assertEqual(calls["run_turn"][0][0], [{"role": "user", "content": "text from chat_1"}])
-        self.assertNotIn("chat_id", str(calls["run_turn"][0][0]))
-        self.assertEqual(calls["sent"], [("chat_1", "output_1"), ("chat_2", "output_2")])
-        self.assertEqual(calls["notices"], [("chat_1", "notice"), ("chat_2", "notice")])
-        self.assertEqual(calls["model_close"], 1)
-
-    def test_done_message_resumes_pending_workflow_without_runner_captcha_coupling(self) -> None:
-        calls = {"run_turn": [], "resume_turn": [], "sent": [], "model_close": 0}
-
-        class FakeTarget:
-            def __init__(self, chat_id):
-                self.chat_id = chat_id
-
-        class FakeMessage:
-            def __init__(self, chat_id, text):
-                self.chat_id = chat_id
-                self.text = text
-                self.target = FakeTarget(chat_id)
-
-        class FakeChannel:
-            def __init__(self, _config):
-                pass
-
-            def build_notifier(self, _target):
-                return lambda _text: None
-
-            def send_text(self, target, text):
-                calls["sent"].append((target.chat_id, text))
-
-            def start(self, on_message):
-                on_message(FakeMessage("chat_1", "start captcha task"))
-                on_message(FakeMessage("chat_1", "done"))
-                on_message(FakeMessage("chat_2", "done"))
-
-        class FakeRuntime:
-            def __init__(self, *, model, tools, name=None, operation_notice_service=None):
-                self.pending = {"feishu:chat_1": False}
-                self.operation_notice_service = operation_notice_service
-
-            def has_pending_interrupt(self, session_id):
-                return self.pending.get(session_id, False)
-
-            def pending_interrupt_kind(self, _session_id):
-                return "human"
-
-            def run_turn(self, messages, *, session_id=None, max_iterations):
-                calls["run_turn"].append((messages, session_id, max_iterations))
-                if session_id == "feishu:chat_1":
-                    self.pending[session_id] = True
-                    return types.SimpleNamespace(output="", interrupted=True)
-                return types.SimpleNamespace(output="normal output", interrupted=False)
-
-            def resume_turn(self, *, session_id, user_input, max_iterations):
-                calls["resume_turn"].append((session_id, user_input, max_iterations))
-                self.pending[session_id] = False
-                return types.SimpleNamespace(output="resumed output", interrupted=False)
-
-        class FakePersistenceLayer:
-            def __init__(self, runtime):
-                self.runtime = runtime
-
-            def has_pending_interrupt(self, session_id):
-                return self.runtime.has_pending_interrupt(session_id)
-
-            def pending_interrupt_kind(self, session_id):
-                return self.runtime.pending_interrupt_kind(session_id)
-
-            def run_turn(self, messages, *, session_id, max_iterations):
-                return self.runtime.run_turn(
-                    messages,
-                    session_id=session_id,
-                    max_iterations=max_iterations,
-                )
-
-            def resume_turn(self, *, session_id, user_input, max_iterations):
-                return self.runtime.resume_turn(
-                    session_id=session_id,
-                    user_input=user_input,
-                    max_iterations=max_iterations,
-                )
-
-        class FakeOperationNoticeTool:
-            def __init__(self, notifier):
-                self.notifier = notifier
-
-        class FakeCaptchaAuthenticationTool:
-            def __init__(self, notifier):
-                self.notifier = notifier
-
-        class FakeModel:
-            def close(self):
-                calls["model_close"] += 1
-
-        fake_agent = types.ModuleType("src.agent")
-        fake_agent.build_conductor_runtime = FakeRuntime
-        fake_persistence = types.ModuleType("src.conductor_persistence")
-        fake_persistence.AgentPersistenceLayer = FakePersistenceLayer
-        fake_channel = types.ModuleType("src.channel.feishu")
-        fake_channel.FeishuChannelRuntime = FakeChannel
-        fake_channel.load_feishu_config = lambda: "config"
-        fake_model = types.ModuleType("src.model")
-        fake_model.build_model = FakeModel
-        fake_model.close_model = lambda model: model.close()
-        fake_tools_common = types.ModuleType("src.tools.common")
-        fake_tools_common.CaptchaAuthenticationTool = FakeCaptchaAuthenticationTool
-        fake_tools_common.OperationNoticeTool = FakeOperationNoticeTool
-        fake_tools_common.create_common_tools = lambda operation_notice_tool, captcha_authentication_tool: [
-            operation_notice_tool,
-            captcha_authentication_tool,
-        ]
-
-        sys.modules["src.agent"] = fake_agent
-        sys.modules["src.conductor_persistence"] = fake_persistence
-        sys.modules["src.channel.feishu"] = fake_channel
-        sys.modules["src.model"] = fake_model
-        sys.modules["src.tools.common"] = fake_tools_common
-        sys.modules["tools.common"] = fake_tools_common
-        sys.modules.pop("run_agent", None)
-
-        run_agent = importlib.import_module("run_agent")
-        old_argv = sys.argv
-        try:
-            sys.argv = ["run_agent.py"]
-            run_agent.main()
-        finally:
-            sys.argv = old_argv
-
-        self.assertEqual(calls["run_turn"][0][0], [{"role": "user", "content": "start captcha task"}])
-        self.assertEqual(calls["run_turn"][1][0], [{"role": "user", "content": "done"}])
-        self.assertEqual([item[1] for item in calls["run_turn"]], ["feishu:chat_1", "feishu:chat_2"])
-        self.assertEqual(calls["resume_turn"], [("feishu:chat_1", "done", 1000)])
-        self.assertEqual(
-            calls["sent"],
-            [
-                ("chat_1", "resumed output"),
-                ("chat_2", "normal output"),
-            ],
-        )
-        self.assertEqual(calls["model_close"], 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    else:
+        run_agent.main()
+    build_runtime.assert_called_once()
+    assert build_runtime.call_args.kwargs["model"] is model
+    build_runner.assert_called_once_with(runtime, channel, 42)
+    channel.start.assert_called_once_with(runner.on_message)
+    assert events == ["worker closed", "model closed"]

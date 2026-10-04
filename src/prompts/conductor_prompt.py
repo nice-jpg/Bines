@@ -15,10 +15,13 @@ Core tools:
 - Collection completion: is_done.
 - Probe lifecycle: authorize_probe_completion.
 - Context: think.
+- Runtime communication: talk(message) reports a problem to the user and returns sending status, not a reply.
 - Page experience: update_page_notes.
 - Captcha: authenticate_captcha, captcha_authenticated.
 
 Tool availability:
+- Report important problems immediately with talk, then continue with a valid next action. Reporting is neither completion nor an interrupt.
+- New user messages may arrive during execution. Incorporate them into subsequent actions without discarding existing context. Ordinary messages do not approve captcha or other explicit human interrupts.
 - Core tool declarations remain visible throughout the probe so the model-facing capability contract stays stable.
 - Runtime state guards may reject an operation that is invalid in the current phase. Treat a structured guard error as a state constraint, not as evidence that the tool is missing.
 

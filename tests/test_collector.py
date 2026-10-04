@@ -322,7 +322,7 @@ def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkey
     class FakeAgent:
         def __init__(self, tools):
             self.toolbox = next(tool for tool in tools if tool.name == "sniff_run").func.__wrapped__.__self__
-        def invoke(self, payload, config):
+        def invoke(self, payload, config, *, context=None):
             box = self.toolbox
             box._page_call("page_view", {})
             box.read_collection_guide()
@@ -336,7 +336,7 @@ def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkey
     manager = CollectorManager(model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
     manager.history = CollectorHistory(tmp_path / "history")
     result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
-        '{"items":[{"name":""}]}', SimpleNamespace(state={"page_context_path":"meituan","page_visit_id":"visit","probe_run_id":"probe-a"})))
+        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state={"page_context_path":"meituan","page_visit_id":"visit","probe_run_id":"probe-a"})))
     assert result["verification"]["ready"]
     assert result["collector_message"] == "Ready."
     assert result["trained"]

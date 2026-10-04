@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 import langgraph.checkpoint.memory  # noqa: F401 - preload real dependencies before local stubs.
+import src.agent_runtime._stability  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import nTrace
@@ -153,18 +154,20 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.assertEqual(
             middleware_names,
             [
-                "NTraceStartMiddleware",
+                "HostTraceMiddleware",
                 "ModelRetryMiddleware",
+                "CommunicationMiddleware",
                 "ProbeControlMiddleware",
                 "CollectionPersistenceMiddleware",
                 "ToolExecutionPolicyMiddleware",
                 "ConductorContextMiddleware",
                 "CaptchaHumanInTheLoopMiddleware",
                 "ToolErrorMiddleware",
-                "NTraceEndMiddleware",
+                "ToolTraceMiddleware",
+                "LLMTraceMiddleware",
             ],
         )
-        hitl = captured["middleware"][6]
+        hitl = captured["middleware"][7]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
@@ -175,13 +178,13 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         tool_runtime = collect_calls[0]
         self.assertIs(tool_runtime["collector_manager"].mechanism, tool_runtime["mechanism"])
         self.assertIs(tool_runtime["collector_manager"].event_hub, tool_runtime["event_hub"])
-        control = captured["middleware"][2]
+        control = captured["middleware"][3]
         self.assertIs(control.mechanism, tool_runtime["mechanism"])
-        persistence = captured["middleware"][3]
+        persistence = captured["middleware"][4]
         self.assertIs(persistence.mechanism, tool_runtime["mechanism"])
-        conductor_context = captured["middleware"][5]
+        conductor_context = captured["middleware"][6]
         self.assertIs(conductor_context.mechanism, tool_runtime["mechanism"])
-        execution_policy = captured["middleware"][4]
+        execution_policy = captured["middleware"][5]
         self.assertIs(execution_policy._notice.service, notice_service)
 
     def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:

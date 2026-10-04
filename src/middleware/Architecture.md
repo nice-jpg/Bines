@@ -17,15 +17,39 @@
 conductor 的业务依赖由 `src/agent.py:build_agent()` 组装；通用运行能力由
 `src/agent_runtime/_stability.py` 统一添加。注册顺序如下：
 
-1. `NTraceStartMiddleware`
+1. `HostTraceMiddleware`
 2. `ModelRetryMiddleware`，所有模型统一使用瞬时传输错误策略
-3. `ProbeControlMiddleware`
-4. `CollectionPersistenceMiddleware`
-5. `ToolExecutionPolicyMiddleware`
-6. `ConductorContextMiddleware`
-7. `CaptchaHumanInTheLoopMiddleware`
-8. `ToolErrorMiddleware`
-9. `NTraceEndMiddleware`
+3. `CommunicationMiddleware`
+4. `ProbeControlMiddleware`
+5. `CollectionPersistenceMiddleware`
+6. `ToolExecutionPolicyMiddleware`
+7. `ConductorContextMiddleware`
+8. `CaptchaHumanInTheLoopMiddleware`
+9. `ToolErrorMiddleware`
+10. `ToolTraceMiddleware`
+11. `LLMTraceMiddleware`
+
+当前 nTrace API 已将追踪拆为 Host、Tool 和 LLM 三层；下文历史名称
+NTraceStart/NTraceEnd 描述的 host 与模型追踪职责分别对应 HostTraceMiddleware
+和 LLMTraceMiddleware。ToolTraceMiddleware 单独包围真实工具，记录工具请求和结果。
+
+### 运行时通信
+
+`src/agent_runtime/communication.py` 由 runtime 内部创建，位于所有业务
+middleware 之前。`before_model/abefore_model` 从隐藏的 runtime context 获取
+会话收件箱，将 FIFO 用户消息作为真实 HumanMessage 更新 state.messages，
+随后才注入 manual、投影压缩请求。每条消息具有稳定 ID；根据 checkpoint
+历史确认消费，失败重试不会重复注入。工具组执行完成前不插入用户消息。
+
+固定的 talk 工具仅暴露 message 参数，调用业务 sender 并返回真实布尔状态；
+不触发生命周期切换或人工中断。collector 显式接收父运行上下文，订阅独立
+收件箱并共享发送通道；退出时注销，父消息保留，不共享模型历史。
+关闭时 before_model 和 after_model 都检查通道状态，通过 shutdown interrupt
+在安全边界停止，不抢占已开始的操作。同步和异步 hooks 行为一致。
+
+runtime 返回前再次确认收件箱；飞书调度器用同一锁串行化入队与完成判定，
+防止最后一次模型响应期间到达的消息无人消费。飞书接收回调只入队，单个
+工作线程执行 agent；模型线程和接收线程不直接更新 graph state。
 
 ### 运行层边界
 
@@ -818,10 +842,11 @@ collector 由 `build_collector_runtime()` 单独创建，不注册任何 conduct
 
 1. `NTraceStartMiddleware.before_model` 创建 collector host span；
 2. `ModelRetryMiddleware` 使用通用的瞬时传输错误重试策略；
-3. `NTraceEndMiddleware.before_model` 关闭本轮刚建立的 host span；
-4. `CollectorModelMiddleware.wrap_model_call` 设置 parallel_tool_calls=false，工具集合保持固定；
-5. `ToolErrorMiddleware` 统一处理实际工具执行错误，不拦截 LangGraph control flow；
-6. `NTraceEndMiddleware.wrap_model_call` 记录 collector 实际模型请求和响应。
+3. `CommunicationMiddleware.before_model` 持久化独立收件箱的新用户消息；
+4. `NTraceEndMiddleware.before_model` 关闭本轮刚建立的 host span；
+5. `CollectorModelMiddleware.wrap_model_call` 设置 parallel_tool_calls=false，工具集合保持固定；
+6. `ToolErrorMiddleware` 统一处理实际工具执行错误，不拦截 LangGraph control flow；
+7. `NTraceEndMiddleware.wrap_model_call` 记录 collector 实际模型请求和响应。
 
 collector 的页面能力、视觉 baseline、脚本增量修改、指南和还原流程由
 `CollectorToolbox` 管理，不经过 conductor middleware。工具执行在实例锁内串行；

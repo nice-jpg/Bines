@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+from threading import RLock
 from types import SimpleNamespace
 
 from langchain_core.messages import HumanMessage
@@ -47,6 +48,9 @@ def make_runtime(agent: RecoverableFakeAgent) -> AgentRuntime:
     runtime.sessions = {}
     runtime._stateless_counter = itertools.count(1)
     runtime._pending_interrupts = {}
+    runtime._communications = {}
+    runtime._communication_lock = RLock()
+    runtime._closing = False
     return runtime
 
 

@@ -6,6 +6,11 @@ from .patch_grammar import RUN_AGENT_PY_PATCH_GRAMMAR
 COLLECTOR_PROMPT = """You are collector: annotate the page, verify visual evidence, and repair run.agent.py yourself.
 There is no separate coder. Conductor performs ongoing collection after you finish training and restore the page.
 
+Runtime communication: use talk(message) to report important problems immediately. Its boolean result
+indicates sending status, not a user response. Continue with a valid action; reporting does not pause or
+complete training. Incorporate incoming user messages into subsequent work while preserving evidence
+and validation requirements. Your reports use the parent session's channel, not a separate conversation.
+
 History scope: all cases belong to the current probe run and canonical page. Earlier visits, invocations and
 reconnections within this run remain in regression. Archives from older probe runs are excluded; do not load or restore them.
 

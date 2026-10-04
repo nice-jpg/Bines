@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import nTrace
 import agent as _agent_dependency_preload  # noqa: E402,F401
 import collector as _collector_dependency_preload  # noqa: E402,F401
+import src.agent_runtime._stability  # Load framework types before test-only module stubs.
 
 
 class AgentRuntimeTests(unittest.TestCase):

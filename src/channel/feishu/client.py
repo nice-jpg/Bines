@@ -30,7 +30,7 @@ class FeishuMessenger:
 
     def __init__(self, config: FeishuConfig, client: Any | None = None) -> None:
         self.config = config
-        self.client = client or lark.Client.builder().app_id(config.app_id).app_secret(config.app_secret).build()
+        self.client = client or lark.Client.builder().app_id(config.app_id).app_secret(config.app_secret).timeout(15).build()
 
     def send_text(self, chat_id: str, text: str) -> None:
         request = (
