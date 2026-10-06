@@ -76,7 +76,10 @@ class AgentRuntime:
             if self._closing:
                 snapshot = self.agent.get_state(config)
                 return {**snapshot.values, "__interrupt__": [{"kind": "shutdown", "message": "Runtime is shutting down."}]}
-            state = self.agent.invoke(input, config=config, **({"context": inbox} if inbox else {}))
+            state = self.agent.invoke(
+                input, config=config, durability="exit",
+                **({"context": inbox} if inbox else {}),
+            )
             if inbox is None or _extract_interrupts(state) or inbox.channel._closed:
                 return state
             pending = inbox.pending(state.get("messages") or [])

@@ -21,7 +21,8 @@ class RecoverableFakeAgent:
         )
         self._ntrace = SimpleNamespace(update=lambda **_kwargs: None)
 
-    def invoke(self, value, config):
+    def invoke(self, value, config, *, durability):
+        assert durability == "exit"
         self.invocations.append(value)
         self.configs.append(config)
         if self.should_fail:
@@ -100,7 +101,8 @@ def test_permanent_failure_is_checkpointed_but_not_automatically_retried():
     agent = RecoverableFakeAgent()
     attempts = []
 
-    def fail(value, config):
+    def fail(value, config, *, durability):
+        assert durability == "exit"
         attempts.append(value)
         raise ValueError("invalid configuration")
 
@@ -116,7 +118,8 @@ def test_permanent_failure_is_checkpointed_but_not_automatically_retried():
 def test_recursion_limit_preserves_checkpoint_and_resumes_without_new_input() -> None:
     agent = RecoverableFakeAgent()
 
-    def recursion_then_resume(value, config):
+    def recursion_then_resume(value, config, *, durability):
+        assert durability == "exit"
         agent.invocations.append(value)
         agent.configs.append(config)
         if len(agent.invocations) == 1:

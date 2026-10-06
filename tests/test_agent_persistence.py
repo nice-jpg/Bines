@@ -166,7 +166,8 @@ def test_agent_runtime_continuation_appends_only_internal_instruction_to_same_th
             self.config = None
             self._ntrace = SimpleNamespace(update=lambda **_kwargs: None)
 
-        def invoke(self, payload, config):
+        def invoke(self, payload, config, *, durability):
+            assert durability == "exit"
             self.payload = payload
             self.config = config
             return {

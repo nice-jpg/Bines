@@ -53,6 +53,13 @@ runtime 返回前再次确认收件箱；飞书调度器用同一锁串行化入
 
 ### 运行层边界
 
+所有 agent 经 `AgentRuntime._invoke_graph()` 调用 graph 时固定使用
+`durability="exit"`。正常返回、异常退出和 interrupt 时由 LangGraph 保存状态及
+必要的 pending writes；中间 middleware/model/tool 步骤不逐步保存 checkpoint。
+collector、自动续跑和 resume 共用这一入口。进程在 invoke 中途崩溃不保证中间
+步骤恢复；当前 InMemorySaver 本身也不跨进程持久化。旧 invoke 的 checkpoint
+仍会保留，本次策略不裁剪消息历史或删除已有 checkpoint。
+
 `src/agent_runtime` 不导入页面机制、设备工具、采集或业务 middleware。
 模块对外提供 create_runtime(name, model, tools, system_prompt, middleware=())，参数均为 keyword-only；
 middleware 只用于传入业务策略，Trace、模型重试、ToolError 和 checkpointer 不接受外部注入。

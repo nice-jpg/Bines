@@ -52,6 +52,13 @@ execution loop. Native resume values are passed through unchanged by default.
 
 ## Internal Ownership
 
+All graph invocations use LangGraph `durability="exit"`, including child runs,
+continuations and resumes. State is checkpointed on normal exit, handled graph
+errors and interrupts, not after every intermediate step. A process crash during
+an invocation has no intermediate recovery checkpoint. InMemorySaver remains
+process-local and still retains checkpoints from earlier invocations; this policy
+reduces checkpoint frequency, not the size or lifetime of the current history.
+
 The runtime constructs tracing, model retry, tool-error handling and the
 in-memory checkpointer. No trace object, retry callback or error handler is
 accepted by the public factory. Business middleware remains caller-owned.
