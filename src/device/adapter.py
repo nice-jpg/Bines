@@ -8,10 +8,12 @@ from posixpath import join as posix_join
 import re
 import shlex
 import subprocess
+import random
 from typing import Callable, Sequence
 
 try:
     from .results import ErrorResult, is_error_result, make_error_result
+    from .names import HOT_ACTIONS, ALL_ACTIONS
 except ImportError:  # Supports direct PYTHONPATH=src imports.
     from device.results import ErrorResult, is_error_result, make_error_result
 
@@ -133,11 +135,8 @@ class AndroidDevice:
         result = self._run_adb(["pull", device_path, local_path])
         return local_path if result.ok else _command_error_result(result)
 
-    def get_supported_actions(self, device_dir: str = DEFAULT_ACTION_DIR) -> list[str] | ErrorResult:
-        mkdir_result = self.shell(["mkdir", "-p", device_dir])
-        if is_error_result(mkdir_result):
-            return mkdir_result
-        return self.list_files(device_dir)
+    def get_supported_actions(self, device_dir: str = DEFAULT_ACTION_DIR) -> list[str]:
+        return ALL_ACTIONS
 
     def add_action(self, local_path: str, device_dir: str = DEFAULT_ACTION_DIR) -> str | ErrorResult:
         return self.push_file(local_path, device_dir)
@@ -162,12 +161,14 @@ class AndroidDevice:
             )
 
         x, y = xy
+        x_, y_ = (x + random.randint(-5, 5), y + random.randint(-5, 5))
+        if action_name in HOT_ACTIONS:
+            action_name = f'{action_name}_{random.randint(0, 2)}'
         action_path = _remote_join(device_dir, action_name)
         act_script_path = '/data/local/tmp/pi_input_replay'
-        print(f'nice-debug: perform {action_name} at {xy}')
         return self.execute_file(
             act_script_path,
-            [input_device, action_path, str(int(x)), str(int(y))],
+            [input_device, action_path, str(int(x_)), str(int(y_))],
             root=True,
         )
 
