@@ -181,7 +181,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         control = captured["middleware"][3]
         self.assertIs(control.mechanism, tool_runtime["mechanism"])
         persistence = captured["middleware"][4]
-        self.assertIs(persistence.mechanism, tool_runtime["mechanism"])
+        self.assertIs(persistence.service.mechanism, tool_runtime["mechanism"])
         conductor_context = captured["middleware"][6]
         self.assertIs(conductor_context.mechanism, tool_runtime["mechanism"])
         execution_policy = captured["middleware"][5]

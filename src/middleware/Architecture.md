@@ -614,7 +614,7 @@ result
 
 - 让原始工具先执行；可靠性层仅提供建议，不阻止采集。支持从带 warning 的 Command 提取对应 ToolMessage，合并进度后保留所有原始消息；
 - 只处理成功的 `prepare_collector` 和带内部页面快照的指定工具结果；
-- 自行构造并持有 `CollectionWorkbookSink`，共享外部 `PageMechanism` 和 `CollectorTrainingRegistry`；
+- agent 构建层创建唯一 `CollectionService` 及 workbook sink；middleware 和持续采集工具共享该服务、PageMechanism、CollectorTrainingRegistry 与 EventHub；
 - 提供与同一采集状态契约绑定的 conductor 工具 `is_done`。
 
 **输入**
@@ -736,6 +736,8 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 
 ### 10. CollectionPersistenceMiddleware: extraction and persistence
 
+单步业务逻辑位于 `src/collection/service.py`，不依赖 middleware。共享状态定义位于 `src/probe_state.py`，原 middleware 路径仅保留兼容导出。middleware 将服务的强类型结果适配为 LangChain Command/ToolMessage；服务统一负责脚本、准入、归档、抽样、进度和完成判断。
+
 **职责**
 
 - 训练前完全跳过脚本执行与落盘；训练后对 `tap_in_page`、swipe 和 `page_view` 的内部快照构造 `ReadOnlyPageView`，静默执行当前页面 `run(view)`；
@@ -761,6 +763,29 @@ ToolExecutionPolicyMiddleware 不再重复实现异常捕获。
 
 - 原始工具结果，不添加 collection/persistence 内容；不完整条目可产生独立补滑建议，显式调用 `is_done` 时返回采集完成判断；
 - 可选 `Command`，更新 `collection_initialized`、`collection_latest_new_count`、`collection_consecutive_empty_swipes`、`merchant_collection_done` 和 `collection_visit_summaries`。
+
+#### 持续采集工具的内部执行
+
+`collect_continuously(x, y, change_threshold)` 固定向 conductor 暴露，与原工具共存。它不是新 middleware，而是在原工具执行位置调用 `src/collection/continuous.py` 的组合服务：
+
+1. 通过原 ProbeControl 单设备动作门禁，获取当前访问，核验训练、脚本/契约版本及原样传入的阈值。
+2. 占用 EventHub 与 PageBridge 共用的串行锁；默认长滑，取得强类型 SwipeObservation（紧凑提示、完整快照、根变化率、错误）。不伪造 ToolCallRequest、不递归调用 middleware。
+3. 根变化率不可用、设备失败或超过阈值时停止，不采集该状态。手动工具原有相似度警告策略保持不变。
+4. 正常状态调用同一 CollectionService，每步即时落盘与抽样。不完整条目在循环内部触发短滑，不逐次生成模型消息；完整后恢复长滑。
+5. 连续三次完整且成功落盘的零新增滑动满足共享完成规则，登记商家完成状态。生命周期层清除对应未完成商家义务，等价于 is_done 成功。
+6. 循环无次数上限，每步前后通过 runtime 的只读 tool_yield_reason 检查消息与关闭请求，不消费消息；安全边界返回 yielded，由通信 middleware 继续投递。
+7. 退出时只返回一条配对 ToolMessage 和汇总 Command.update，包括进度、完成状态、访问摘要及 page_collection_started。不把内部快照序列写入 graph history。外层采集 middleware 不再次处理此工具，避免双重落盘。
+
+返回 status 为 completed、attention_required 或 yielded。超阈值结果不含页面细节，仅含操作统计、结论和变化率。错误保留此前成功归档的进度，但打断连续空滑证据。
+
+阈值证据来自本次 collector 的正常长/短向上滑动，至少各一次且结果状态经过视觉基准验证。confirm_normal_swipes 选择 operation ID，工具计算 max(ratios)+0.05，封顶 1；随机滑动、历史状态及还原点击不计入。脚本/契约修改后须重跑用例。训练返回 normal_swipe_profile，访问注册表保存阈值与样本数；缺少阈值只阻止自动循环，不封锁手动恢复。
+
+桥接层全页面变化率统一使用 Reco 根节点统计的 changed_count / compared_count，分母包含新增、删除及替换双方较大的节点数；不是除以旧树节点数后截断，也不是屏幕面积变化率。page_change_hint 顶层 update_ratio、collector 训练值和持续采集判定采用同一算法；区域入口及显式 Reco update_ratio 查询仍保留 Reco 原有契约。列表节点占比很大时全页比例也可能很高。旧进程内已训练阈值不自动迁移，重启后重新训练。
+
+运行仍在 invoke 退出时保存 checkpoint；内部每步已落盘数据持久保留，但进程被强杀不保证内部步骤可恢复。
+
+没有绑定发送通道的运行也会获得临时 runtime 通信上下文，用于协作关闭；invoke 退出释放，talk 返回 false。消息查询与关闭信号不依赖业务模块访问私有 inbox。
+同轮设备调用按 AI 消息中的声明顺序判定首个动作，而不是按执行线程抢锁的顺序；持续采集占一个外部动作名额。
 
 ### 11. ProbeControlMiddleware: page transition
 

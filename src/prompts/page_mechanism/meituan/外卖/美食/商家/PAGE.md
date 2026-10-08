@@ -55,6 +55,6 @@ The collector saves this profile from the initial top-of-page evidence. It is no
 <!-- collection-contract:begin -->
 ## Collection Requirements
 ```json
-{"primary_key": ["name"], "required_fields": ["name", "current_price"]}
+{"primary_key": ["current_price", "name"], "required_fields": ["current_price", "name"]}
 ```
 <!-- collection-contract:end -->

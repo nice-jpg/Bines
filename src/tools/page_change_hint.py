@@ -20,6 +20,19 @@ class _Selection:
         )
 
 
+def root_change_ratio(session: PageSession) -> float | None:
+    """Fraction of compared regions changed in the latest whole-page sync.
+
+    The comparison population includes inserted/deleted regions and the larger
+    side of replacements. Unlike change count divided by the old tree size, it
+    cannot saturate at one while unchanged regions remain. This is not pixel area.
+    """
+    if not session.last_sync_stats:
+        return None
+    root = next(node for node in session.last_sync_stats.values() if node.parent_id is None)
+    return root.changed_count / root.compared_count
+
+
 def change_hint(session: PageSession) -> dict:
     """Return whole-page change ratio and at most three disjoint region entrances."""
     stats = session.last_sync_stats
@@ -66,7 +79,7 @@ def change_hint(session: PageSession) -> dict:
     page_update_ratio = 0.0
     if stats:
         root = next(key for key, node in stats.items() if node.parent_id is None)
-        page_update_ratio = session.update_ratio(root)
+        page_update_ratio = root_change_ratio(session)
         choices, _ = visit(root)
         for choice in choices.values():
             if better(choice, selected):

@@ -36,11 +36,11 @@ class SystemPromptTests(unittest.TestCase):
 
     def test_conductor_prompt_forbids_direct_collection(self) -> None:
         self.assertIn("Do not collect merchant/product fields directly", SYSTEM_PROMPT)
-        self.assertIn("Do not edit run.agent.py", SYSTEM_PROMPT)
-        self.assertIn("Do not call is_done after ordinary merchant product-list swipes", SYSTEM_PROMPT)
-        self.assertIn("wait for new possible-end evidence before checking again", SYSTEM_PROMPT)
-        self.assertIn("Only done=true authorizes navigate_back", SYSTEM_PROMPT)
-        self.assertIn("transparent automatic collection", SYSTEM_PROMPT)
+        self.assertIn("Do not inspect extraction output or repair scripts", SYSTEM_PROMPT)
+        self.assertIn("do not call is_done after ordinary swipes", SYSTEM_PROMPT)
+        self.assertIn("wait for new possible-end evidence", SYSTEM_PROMPT)
+        self.assertIn("completed result uses the same three-zero-swipe completion rule", SYSTEM_PROMPT)
+        self.assertIn("Collection and persistence run silently", SYSTEM_PROMPT)
         self.assertIn("must not extract information yourself", SYSTEM_PROMPT)
 
     def test_conductor_prompt_requires_dangerous_tool_justification(self) -> None:

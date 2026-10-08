@@ -1,4 +1,5 @@
 from __future__ import annotations
+from src.collection.service import CollectionService
 
 import asyncio
 import json
@@ -186,10 +187,7 @@ def test_warning_retains_tool_result_without_snapshot() -> None:
             return True
 
     mechanism = FakeMechanism()
-    persistence = CollectionPersistenceMiddleware(
-        mechanism=mechanism,
-        training_registry=FakeRegistry(),
-    )
+    persistence = CollectionPersistenceMiddleware(CollectionService(mechanism, FakeRegistry(), None, None))
     reliability, _ = _middleware(0.96)
     request = _request(_tool("swipe_up", SCROLL_PAGE_CHANGE_POLICY))
 

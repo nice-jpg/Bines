@@ -128,7 +128,7 @@ class EventHubTests(unittest.TestCase):
         direct = hub.page_bridge.call("page_view", {})
         swiped = hub.swipe_up(10, 100)
 
-        self.assertEqual(swiped[0], {"kind": "page_change_hint", "regions": []})
+        self.assertEqual(swiped[0], {"kind": "page_change_hint", "update_ratio": 0.0, "regions": []})
         self.assertNotIn("xml", swiped[0])
 
     def test_close_package_calls_device_without_ui_capture(self) -> None:

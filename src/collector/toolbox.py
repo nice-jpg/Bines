@@ -1,6 +1,7 @@
 """Single-agent annotation, visual evidence, script repair and regression tools."""
 
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from functools import wraps
 import hashlib
 import json
@@ -14,6 +15,7 @@ from src.page_view import ReadOnlyPageView
 from src.collection_contract import CollectionContract
 from src.tools.screenshot import capture_png, image_url
 
+
 if __package__.startswith("src."):
     from src.page_mechanism import eval_collection
     from src.tools.page_bridge import PageBridge
@@ -21,6 +23,14 @@ else:
     from page_mechanism import eval_collection
     from tools.page_bridge import PageBridge
 from .history import CollectorHistory
+
+
+@dataclass(frozen=True)
+class NormalSwipeSample:
+    operation_id: str
+    action: Literal["swipe_up", "swipe_up_long"]
+    revision: int
+    ratio: float
 
 
 def encoded(value):
@@ -80,6 +90,8 @@ class CollectorToolbox:
         self._profile = {}
         self._reviewed_images = set()
         self._revision = 0
+        self._swipe_samples: dict[str, NormalSwipeSample] = {}
+        self._confirmed_swipes: tuple[str, ...] = ()
         self._random = False
         self._saw_screenshot = False
         self._profile_screenshot = False
@@ -207,7 +219,8 @@ class CollectorToolbox:
                     case["guide_fingerprint"] = guide["fingerprint"]
         return encoded(result)
 
-    def _move(self, action, x, y, *, random_state=False):
+    def _move(self, action, x, y, *, random_state=False,
+              normal_action: Literal["swipe_up", "swipe_up_long"] | None = None):
         if self.active_id or self._restored:
             raise ValueError("Validation is frozen; save its baseline and return_to_live_page before moving")
         if self.requires_merchant_profile and not self._profile:
@@ -217,15 +230,22 @@ class CollectorToolbox:
             self._revision += 1
             self._random = random_state
             self._marked.clear()
+            if normal_action:
+                ratio = self.event_hub.page_bridge.root_change_ratio()
+                if ratio is not None:
+                    operation_id = uuid4().hex
+                    self._swipe_samples[operation_id] = NormalSwipeSample(
+                        operation_id, normal_action, self._revision, ratio)
+                    page = {**page, "operation_id": operation_id}
         return encoded(page)
 
     def collector_swipe_up(self, x: int, y: int) -> str:
         """Scroll outside frozen validation; returns page_change_hint IDs to query for content."""
-        return self._move(self.event_hub.swipe_up, x, y)
+        return self._move(self.event_hub.swipe_up, x, y, normal_action="swipe_up")
 
     def collector_swipe_up_long(self, x: int, y: int) -> str:
         """Scroll a long distance outside validation; returns page_change_hint IDs to query."""
-        return self._move(self.event_hub.swipe_up_long, x, y)
+        return self._move(self.event_hub.swipe_up_long, x, y, normal_action="swipe_up_long")
 
     def collector_swipe_down(self, x: int, y: int) -> str:
         """Scroll downward outside validation, never navigate; returns page_change_hint IDs to query."""
@@ -428,8 +448,43 @@ class CollectorToolbox:
                      and len({case["revision"] for case in current}) >= 2
                      and any(case["random_state"] for case in current)
                      and (not self.requires_merchant_profile or self._profile.get("name")))
+        profile = self._swipe_profile() if passing else None
         return {"ready": ready, "score": min((g["score"] for g in self._grades.values()), default=0) if fresh else 0,
-                "validated_states": len(current) if passing else 0, "script_fingerprint": self._script_fingerprint()}
+                "validated_states": len(current) if passing else 0, "script_fingerprint": self._script_fingerprint(),
+                "normal_swipe_profile": profile}
+
+    def _swipe_profile(self) -> dict | None:
+        samples = [self._swipe_samples[key] for key in self._confirmed_swipes]
+        revisions = {case["revision"] for key, case in self.cases.items()
+                     if key not in self.historical_ids and self._grades.get(key, {}).get("score") == 100}
+        if (len(samples) < 2 or {sample.action for sample in samples} != {"swipe_up", "swipe_up_long"}
+                or any(sample.revision not in revisions for sample in samples)):
+            return None
+        threshold = min(1.0, max(sample.ratio for sample in samples) + 0.05)
+        return {"change_threshold": threshold, "sample_count": len(samples),
+                "actions": sorted({sample.action for sample in samples}),
+                "warning": "Threshold is 1; change ratio cannot detect excessive changes." if threshold == 1 else ""}
+
+    def confirm_normal_swipes(self, operation_ids: list[str]) -> str:
+        """Confirm observed normal live swipes after visual regression passes.
+
+        Include at least one short and one long upward swipe operation_id. Each resulting
+        state needs a current, passing screenshot baseline; random and historical states do not count.
+        """
+        if self._tested_stamp != self._stamp() or not self._grades or any(
+            grade["score"] != 100 for grade in self._grades.values()
+        ):
+            raise ValueError("Run full visual regression successfully before confirming swipes")
+        selected = tuple(dict.fromkeys(operation_ids))
+        if any(key not in self._swipe_samples for key in selected):
+            raise ValueError("Only live upward swipe operation IDs from this visit are allowed")
+        previous = self._confirmed_swipes
+        self._confirmed_swipes = selected
+        profile = self._swipe_profile()
+        if profile is None:
+            self._confirmed_swipes = previous
+            raise ValueError("Passing live states must cover both short and long normal swipes")
+        return encoded({"ok": True, **profile})
 
     def collector_tap(self, x: int, y: int) -> str:
         """After all cases pass, tap a same-page top-reset control; returns page_change_hint IDs."""
@@ -483,6 +538,7 @@ class CollectorToolbox:
             tools.append(StructuredTool(name=spec["name"], description=spec["description"],
                                         args_schema=spec["input_schema"], func=bind(spec["name"])))
         for function in (self.read_collection_guide, self.write_collection_guide,
+                         self.confirm_normal_swipes,
                          self.read_collection_contract, self.save_collection_contract,
                          self.read_run_agent_py, self.apply_run_agent_py_patch,
                          self.collector_swipe_up, self.collector_swipe_up_long,

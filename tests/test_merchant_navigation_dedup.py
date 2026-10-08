@@ -38,7 +38,7 @@ def test_only_successful_completion_registers_verified_merchant(tmp_path):
     state.update(reset_collection_state())
     state.update(_state(path.rsplit("/", 1)[0]))
     calls = []
-    result = PageContextMiddleware(mechanism=collection.mechanism).wrap_tool_call(
+    result = PageContextMiddleware(mechanism=collection.service.mechanism).wrap_tool_call(
         _request("navigate_to", state, x=999, y=888, next_path=path, merchant_name="商家A"),
         lambda _: calls.append("tap") or _message("navigate_to"),
     )

@@ -2,7 +2,7 @@
 
 from .runtime import AgentRunResult, AgentRuntime
 from .persistence import AgentPersistenceLayer, AgentResponse
-from .communication import RuntimeCommunication
+from .communication import RuntimeCommunication, tool_yield_reason
 
 
 def create_runtime(*, name: str, model, tools, system_prompt: str, middleware=()) -> AgentRuntime:
@@ -10,4 +10,4 @@ def create_runtime(*, name: str, model, tools, system_prompt: str, middleware=()
     return AgentRuntime(name=name, model=model, tools=tools, system_prompt=system_prompt, middleware=middleware)
 
 
-__all__ = ["create_runtime", "AgentRuntime", "AgentRunResult", "AgentPersistenceLayer", "AgentResponse", "RuntimeCommunication"]
+__all__ = ["create_runtime", "AgentRuntime", "AgentRunResult", "AgentPersistenceLayer", "AgentResponse", "RuntimeCommunication", "tool_yield_reason"]

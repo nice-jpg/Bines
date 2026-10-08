@@ -12,6 +12,7 @@ Framework execution infrastructure with no application-specific task semantics.
 - `runtime.bind_communication(session_id, sender)` returns a session proxy; the persistence layer forwards this API.
 - The proxy exposes `talk(message) -> bool` and `receive(message) -> bool`. The sender implements application delivery with a bounded network timeout.
 - `runtime.close()` stops accepting input and requests cooperative shutdown at model boundaries.
+- `tool_yield_reason(runtime)` lets long-running tools check for pending input or shutdown at safe action boundaries without consuming messages.
 
 ## Runtime Communication
 
@@ -24,6 +25,10 @@ writes stable-ID HumanMessages to checkpointed history before business manual
 injection and request compression. Input is acknowledged against message IDs in
 graph state, so model failures do not lose or duplicate already injected input.
 An in-flight request or tool finishes before the new input takes effect.
+Composite tools can finish their current finite operation and return early on the
+yield signal. Unbound invocations receive an internal, temporary communication
+context as well, so shutdown can stop long tools even without a sender. These
+contexts are released on invocation exit; an unbound talk still returns false.
 
 Child `invoke(..., context=runtime.context)` explicitly subscribes an independent
 inbox to the parent's channel. Active children and the parent receive the same

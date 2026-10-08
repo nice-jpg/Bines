@@ -260,7 +260,7 @@ class ProbeLifecycleMiddleware(AgentMiddleware[ProbeState]):
         unfinished = dict(state.get("probe_unfinished_merchants") or {})
         current_path = str(state.get(PAGE_CONTEXT_PATH) or "")
         merchant = str(state.get("probe_current_merchant") or "")
-        if tool_name == "is_done" and command_state_value(typed_result, MERCHANT_COLLECTION_DONE) is True:
+        if tool_name in {"is_done", "collect_continuously"} and command_state_value(typed_result, MERCHANT_COLLECTION_DONE) is True:
             unfinished = {key: value for key, value in unfinished.items()
                           if (value["path"], value["merchant"]) != (current_path, merchant)}
             update["probe_unfinished_merchants"] = unfinished

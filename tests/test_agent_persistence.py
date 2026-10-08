@@ -166,7 +166,7 @@ def test_agent_runtime_continuation_appends_only_internal_instruction_to_same_th
             self.config = None
             self._ntrace = SimpleNamespace(update=lambda **_kwargs: None)
 
-        def invoke(self, payload, config, *, durability):
+        def invoke(self, payload, config, *, durability, context=None):
             assert durability == "exit"
             self.payload = payload
             self.config = config
@@ -189,6 +189,7 @@ def test_agent_runtime_continuation_appends_only_internal_instruction_to_same_th
     runtime._pending_interrupts = {}
     from threading import RLock
     runtime._communications = {}
+    runtime._active_channels = set()
     runtime._communication_lock = RLock()
     runtime._closing = False
 

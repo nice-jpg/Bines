@@ -489,3 +489,84 @@ def test_legacy_xml_script_is_rejected(tmp_path):
     output = t.mechanism.run_page_script("meituan", ReadOnlyPageView(t.event_hub.page_bridge.snapshot()))
     assert not output["ok"]
     assert output["error_type"] == "TypeError"
+
+
+def test_normal_swipe_threshold_uses_verified_live_short_and_long_samples(tmp_path):
+    t = setup(tmp_path)
+    verify(t, "cup")
+    t.return_to_live_page()
+    long = json.loads(t.collector_swipe_up_long(500, 1200))
+    verify(t, "bowl")
+    t.return_to_live_page()
+    short = json.loads(t.collector_swipe_up(500, 1200))
+    with pytest.raises(ValueError, match="Passing live states"):
+        t.confirm_normal_swipes([long["operation_id"], short["operation_id"]])
+    verify(t, "bowl")
+    confirmed = json.loads(t.confirm_normal_swipes([long["operation_id"], short["operation_id"]]))
+    assert confirmed["sample_count"] == 2
+    assert confirmed["actions"] == ["swipe_up", "swipe_up_long"]
+    assert confirmed["change_threshold"] == min(1, max(long["update_ratio"], short["update_ratio"]) + .05)
+    assert t.training_result()["normal_swipe_profile"]["change_threshold"] == confirmed["change_threshold"]
+    with pytest.raises(ValueError, match="both"):
+        t.confirm_normal_swipes([short["operation_id"]])
+    with pytest.raises(ValueError, match="live"):
+        t.confirm_normal_swipes(["other-visit"])
+    t.mechanism.write_run_agent_py(t.page_path, SCRIPT + "\n# changed\n")
+    assert t.training_result()["normal_swipe_profile"] is None
+    t.sniff_run()
+    assert t.training_result()["normal_swipe_profile"] is not None
+
+
+def test_random_swipes_do_not_supply_normal_threshold_evidence(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    assert t.training_result()["normal_swipe_profile"] is None
+    assert not t._swipe_samples
+
+
+def test_move_records_the_same_normalized_ratio_as_the_page_hint(tmp_path, monkeypatch):
+    from test_page_change_hint import page, button, container, items
+    t = setup(tmp_path)
+    before = page(button("header"), container(items(2)), button("footer"))
+    after = page(button("header"), container(items(20, "new")), button("footer"))
+    t.event_hub.page_bridge.observe(before)
+    monkeypatch.setattr(t.event_hub, "swipe_up", lambda x, y: t.event_hub.page_bridge.observe(after))
+    result = json.loads(t.collector_swipe_up(500, 1200))
+    sample = t._swipe_samples[result["operation_id"]]
+    assert result["update_ratio"] == sample.ratio == pytest.approx(20 / 24)
+
+
+def test_manager_returns_and_registers_verified_swipe_threshold(tmp_path, monkeypatch):
+    initial = setup(tmp_path)
+    manager = CollectorManager(model="fake", mechanism=initial.mechanism, event_hub=initial.event_hub)
+    manager.history = CollectorHistory(tmp_path / "manager-history")
+
+    def build(box):
+        def invoke(*args, **kwargs):
+            box._page_call("page_view", {})
+            box.read_collection_guide()
+            box.screenshot()
+            box.save_merchant_profile('{"name":"Merchant"}')
+            train(box)
+            box.return_to_live_page()
+            long = json.loads(box.collector_swipe_up_long(500, 1200))
+            verify(box, "bowl")
+            box.return_to_live_page()
+            short = json.loads(box.collector_swipe_up(500, 1200))
+            verify(box, "bowl")
+            box.confirm_normal_swipes([long["operation_id"], short["operation_id"]])
+            box.return_to_live_page()
+            box.collector_tap(500, 500)
+            mark(box)
+            return {"messages": [{"content": "Ready."}]}
+        return SimpleNamespace(invoke=invoke)
+
+    monkeypatch.setattr(manager, "_build_agent", build)
+    result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
+        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state={
+            "page_context_path": "meituan", "page_visit_id": "visit", "probe_run_id": "probe"})))
+    assert result["trained"]
+    profile = result["normal_swipe_profile"]
+    record = manager.training_registry.record_for("visit")
+    assert record.change_threshold == profile["change_threshold"]
+    assert record.normal_swipe_samples == profile["sample_count"] == 2

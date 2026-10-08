@@ -130,3 +130,17 @@ def talk(message: str, runtime: ToolRuntime[Any]) -> bool:
 
 def create_talk_tool():
     return StructuredTool.from_function(talk)
+
+
+def tool_yield_reason(runtime: ToolRuntime[Any]) -> str | None:
+    """Non-consuming signal for a long-running tool at a safe action boundary."""
+    inbox = runtime.context
+    if not isinstance(inbox, _Inbox):
+        return None
+    seen = {message.id for message in runtime.state.get("messages", [])}
+    with inbox.channel._lock:
+        if inbox.channel._closed:
+            return "shutdown_requested"
+        if any(message.id not in seen for message in inbox.channel._inboxes[inbox.key]):
+            return "user_message_pending"
+    return None

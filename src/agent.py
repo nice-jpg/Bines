@@ -59,6 +59,9 @@ except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
 
 from src.agent_runtime import AgentRunResult, AgentRuntime, create_runtime
 from src.agent_runtime import AgentPersistenceLayer
+from src.collection.service import CollectionService
+from src.collection.continuous import ContinuousCollection
+from src.tools.content_provider import CollectionWorkbookSink
 
 
 class _ConductorRuntime(AgentRuntime):
@@ -107,11 +110,10 @@ def build_agent(
         mechanism=mechanism,
         event_hub=event_hub,
     )
-    collection_persistence = CollectionPersistenceMiddleware(
-        mechanism=mechanism,
-        training_registry=collector_manager.training_registry,
-        event_hub=event_hub,
-    )
+    collection_service = CollectionService(mechanism, collector_manager.training_registry,
+                                           CollectionWorkbookSink(), event_hub)
+    collection_persistence = CollectionPersistenceMiddleware(collection_service)
+    continuous_collection = ContinuousCollection(collection_service, event_hub)
     probe_control = ProbeControlMiddleware(
         mechanism=mechanism,
         training_registry=collector_manager.training_registry,
@@ -126,6 +128,7 @@ def build_agent(
                 collector_manager=collector_manager,
             ),
             *collection_persistence.create_tools(),
+            continuous_collection.create_tool(),
             *probe_control.create_tools(),
         ],
     )

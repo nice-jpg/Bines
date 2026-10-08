@@ -135,6 +135,10 @@ class CollectorManager:
         if trained:
             self.training_registry.mark_trained(visit_id, canonical_path,
                 contract_fingerprint=self.mechanism.collection_contract(canonical_path).fingerprint, **registry_args)
+            profile = verification["normal_swipe_profile"]
+            if profile is not None:
+                self.training_registry.set_swipe_threshold(
+                    visit_id, profile["change_threshold"], profile["sample_count"])
         else:
             self.training_registry.mark_untrained(visit_id, canonical_path, **registry_args)
         result = {
@@ -146,6 +150,7 @@ class CollectorManager:
             "trained": trained,
             "verification": verification,
             "restoration": restoration,
+            "normal_swipe_profile": verification["normal_swipe_profile"],
         }
         if invoke_error is not None:
             result.update(

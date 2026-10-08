@@ -121,7 +121,7 @@ class AgentRuntimeTests(unittest.TestCase):
             pass
 
         class FakeAgent:
-            def invoke(self, payload, config=None, *, durability):
+            def invoke(self, payload, config=None, *, durability, context=None):
                 assert durability == "exit"
                 captured.setdefault("configs", []).append(config)
                 if not isinstance(payload, dict):

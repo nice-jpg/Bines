@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
+from typing import Any
 import time
 
 from langchain_core.tools import StructuredTool
@@ -53,6 +55,20 @@ else:  # Supports running as: python src/run_agent.py
     )
 
 DEFAULT_POST_ACTION_UI_DELAY_SECONDS = 1.2
+
+
+class CollectionSwipe(StrEnum):
+    LONG = "swipe_up_long"
+    SHORT = "swipe_up"
+
+
+@dataclass(frozen=True)
+class SwipeObservation:
+    """One device operation and its synchronized full snapshot."""
+    hint: dict[str, Any]
+    snapshot: dict[str, Any] | None
+    change_ratio: float | None
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -149,6 +165,7 @@ class EventHub:
         self.post_action_ui_delay_seconds = DEFAULT_POST_ACTION_UI_DELAY_SECONDS
         self._sleep = sleep_func
         self.page_bridge = PageBridge(self._dump_xml)
+        self.operation_lock = self.page_bridge.operation_lock
 
     @xy_operation
     def tap(self, x: int, y: int) -> tuple:
@@ -215,6 +232,18 @@ class EventHub:
 
     def _replay_recorded_action(self, action_name: str, x: int, y: int) -> tuple:
         """Replay the action, then synchronize the shared abstract page view."""
+        with self.operation_lock:
+            return self._replay_and_refresh(action_name, x, y)
+
+    def collection_swipe(self, action: CollectionSwipe, x: int, y: int) -> SwipeObservation:
+        """Execute a collection gesture without invoking a model-facing tool."""
+        with self.operation_lock:
+            page, artifact = self._replay_and_refresh(action.value, x, y)
+            if artifact is None:
+                return SwipeObservation({}, None, None, "device_operation_failed")
+            return SwipeObservation(page, artifact["page_snapshot"], self.page_bridge.root_change_ratio())
+
+    def _replay_and_refresh(self, action_name: str, x: int, y: int) -> tuple:
         action_check_result = self._ensure_actions_checked()
         if is_error_result(action_check_result):
             return action_check_result, None
@@ -242,6 +271,10 @@ class EventHub:
         return None
 
     def _run_device_operation(self, name: str, operation: Callable, inspect_page: bool = False) -> str | ErrorResult:
+        with self.operation_lock:
+            return self._execute_device_operation(name, operation, inspect_page)
+
+    def _execute_device_operation(self, name: str, operation: Callable, inspect_page: bool) -> str | ErrorResult:
         try:
             result = operation()
         except Exception as exc:  # noqa: BLE001 - tools return structured errors instead of raising.

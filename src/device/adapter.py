@@ -165,6 +165,7 @@ class AndroidDevice:
         if action_name in HOT_ACTIONS:
             action_name = f'{action_name}_{random.randint(0, 2)}'
         action_path = _remote_join(device_dir, action_name)
+        print(f"Executing action: {action_name} at ({x_}, {y_})")
         act_script_path = '/data/local/tmp/pi_input_replay'
         return self.execute_file(
             act_script_path,

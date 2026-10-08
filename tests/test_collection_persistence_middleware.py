@@ -4,6 +4,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from src.collection.service import CollectionService
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -85,11 +86,7 @@ def _middleware(tmp_path: Path) -> tuple[CollectionPersistenceMiddleware, Collec
     mechanism.save_collection_contract("meituan/美食/商家", CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["name", "price"]}))
     registry = CollectorTrainingRegistry()
     sink = CollectionWorkbookSink(ContentProvider(tmp_path / "workspace"))
-    middleware = CollectionPersistenceMiddleware(
-        mechanism=mechanism,
-        training_registry=registry,
-        workbook_sink=sink,
-    )
+    middleware = CollectionPersistenceMiddleware(CollectionService(mechanism, registry, sink, None))
     return middleware, registry, tmp_path / "workspace" / "result.xlsx"
 
 
@@ -129,7 +126,7 @@ def test_wrap_tool_call_does_not_collect_before_training(tmp_path: Path, monkeyp
     middleware, _registry, workbook_path = _middleware(tmp_path)
     def unexpected_run(*args):
         raise AssertionError("Untrained scripts must not run")
-    monkeypatch.setattr(middleware.mechanism, "run_page_script", unexpected_run)
+    monkeypatch.setattr(middleware.service.mechanism, "run_page_script", unexpected_run)
 
     result = middleware.wrap_tool_call(_request("swipe_up"), lambda _request: _tool_message("swipe_up"))
     payload = _payload(result)
@@ -462,11 +459,8 @@ def test_script_error_is_silent_without_persisting(tmp_path: Path, caplog) -> No
     mechanism.save_collection_contract("meituan/美食/商家", CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["name"]}))
     registry = CollectorTrainingRegistry()
     _mark_trained(registry)
-    middleware = CollectionPersistenceMiddleware(
-        mechanism=mechanism,
-        training_registry=registry,
-        workbook_sink=CollectionWorkbookSink(ContentProvider(tmp_path / "workspace")),
-    )
+    middleware = CollectionPersistenceMiddleware(CollectionService(
+        mechanism, registry, CollectionWorkbookSink(ContentProvider(tmp_path / "workspace")), None))
 
     result = middleware.wrap_tool_call(_request("swipe_up"), lambda _request: _tool_message("swipe_up"))
     payload = _payload(result)
@@ -501,7 +495,7 @@ def test_persistence_failure_is_silent_and_cannot_confirm_completion(tmp_path, m
     def fail(**kwargs):
         raise OSError("disk unavailable")
 
-    monkeypatch.setattr(middleware.workbook_sink, "persist_run_result", fail)
+    monkeypatch.setattr(middleware.service.workbook_sink, "persist_run_result", fail)
     result = middleware.wrap_tool_call(request, lambda _: message)
     assert _message(result) is message
     assert "disk unavailable" in caplog.text
@@ -516,14 +510,14 @@ def test_incomplete_rows_add_separate_hint_and_can_be_collected_later(tmp_path, 
     request = _request("swipe_up_long")
     request.state[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] = 2
     message = _tool_message("swipe_up_long")
-    monkeypatch.setattr(middleware.mechanism, "run_page_script", lambda *args: {
+    monkeypatch.setattr(middleware.service.mechanism, "run_page_script", lambda *args: {
         "ok": True, "result": {"items": [{"name": "cup", "price": ""}, {"name": "bowl", "price": 0}]}})
     result = middleware.wrap_tool_call(request, lambda _: message)
     assert result.update["messages"][0] is message
     assert "short swipe_up" in result.update["messages"][1].content
     assert result.update[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 0
     assert result.update[COLLECTION_LATEST_NEW_COUNT] == 1
-    monkeypatch.setattr(middleware.mechanism, "run_page_script", lambda *args: {
+    monkeypatch.setattr(middleware.service.mechanism, "run_page_script", lambda *args: {
         "ok": True, "result": {"items": [{"name": "cup", "price": 10}, {"name": "bowl", "price": 20}]}})
     later = middleware.wrap_tool_call(request, lambda _: message)
     assert later.update[COLLECTION_LATEST_NEW_COUNT] == 1

@@ -185,3 +185,23 @@ def test_unbound_talk_returns_false_without_interrupt():
     assert not result.interrupted
     response = next(m for m in result.state["messages"] if isinstance(m, ToolMessage))
     assert response.content == "false"
+
+
+def test_unbound_long_tool_can_observe_runtime_shutdown():
+    from src.agent_runtime import tool_yield_reason
+    reasons = []
+    def operation(runtime: ToolRuntime[Any]) -> str:
+        """Finish a finite action and check the cooperative stop signal."""
+        agent.close()
+        reasons.append(tool_yield_reason(runtime))
+        return "yielded"
+    model = Model(replies=[AIMessage(content="", tool_calls=[
+        {"name": "operation", "args": {}, "id": "op-1"}
+    ])])
+    agent = create_runtime(name="test", model=model,
+                           tools=[StructuredTool.from_function(operation)], system_prompt="base")
+    result = agent.run_turn([HumanMessage(content="start")])
+    assert reasons == ["shutdown_requested"]
+    assert result.stopped_by == "shutdown_interrupt"
+    assert not agent._active_channels
+    assert not agent._communications

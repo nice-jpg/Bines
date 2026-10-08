@@ -21,7 +21,7 @@ class RecoverableFakeAgent:
         )
         self._ntrace = SimpleNamespace(update=lambda **_kwargs: None)
 
-    def invoke(self, value, config, *, durability):
+    def invoke(self, value, config, *, durability, context=None):
         assert durability == "exit"
         self.invocations.append(value)
         self.configs.append(config)
@@ -50,6 +50,7 @@ def make_runtime(agent: RecoverableFakeAgent) -> AgentRuntime:
     runtime._stateless_counter = itertools.count(1)
     runtime._pending_interrupts = {}
     runtime._communications = {}
+    runtime._active_channels = set()
     runtime._communication_lock = RLock()
     runtime._closing = False
     return runtime
@@ -101,7 +102,7 @@ def test_permanent_failure_is_checkpointed_but_not_automatically_retried():
     agent = RecoverableFakeAgent()
     attempts = []
 
-    def fail(value, config, *, durability):
+    def fail(value, config, *, durability, context=None):
         assert durability == "exit"
         attempts.append(value)
         raise ValueError("invalid configuration")
@@ -118,7 +119,7 @@ def test_permanent_failure_is_checkpointed_but_not_automatically_retried():
 def test_recursion_limit_preserves_checkpoint_and_resumes_without_new_input() -> None:
     agent = RecoverableFakeAgent()
 
-    def recursion_then_resume(value, config, *, durability):
+    def recursion_then_resume(value, config, *, durability, context=None):
         assert durability == "exit"
         agent.invocations.append(value)
         agent.configs.append(config)

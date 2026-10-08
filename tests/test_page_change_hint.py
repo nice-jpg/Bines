@@ -40,7 +40,8 @@ def assert_frontier(session):
     hint = change_hint(session)
     assert set(hint) == {"kind", "update_ratio", "regions"}
     root = next(key for key, node in session.last_sync_stats.items() if node.parent_id is None)
-    assert hint["update_ratio"] == session.update_ratio(root)
+    stats = session.last_sync_stats[root]
+    assert hint["update_ratio"] == stats.changed_count / stats.compared_count
     selected = ids(session)
     assert len(selected) <= 3
     assert len(selected) == len(set(selected))
@@ -85,6 +86,36 @@ def test_stable_container_merges_many_disconnected_changed_leaves():
     # The hint is not a filter: untouched regions and all list items remain readable.
     assert session.call("page_read", {"key": 1})["entries"][0]["value"] == "header"
     assert len(session.call("page_view", {"key": 2, "limit": -1})["regions"]) == 20
+
+
+@pytest.mark.parametrize("before_list,after_list", [
+    (container(items(2)), container(items(20, "new"))),
+    (button("old-list"), container(items(20, "new"))),
+    (container(items(20)), container(items(2, "new"))),
+])
+def test_root_ratio_preserves_unchanged_regions_when_list_size_changes(before_list, after_list):
+    before = page(button("fixed-header"), before_list, button("fixed-footer"))
+    after = page(button("fixed-header"), after_list, button("fixed-footer"))
+    bridge = PageBridge(lambda: before)
+    assert bridge.root_change_ratio() is None
+    bridge.refresh()
+    assert bridge.root_change_ratio() is None
+    hint, _ = bridge.observe(after)
+    stats = next(node for node in bridge._session.last_sync_stats.values() if node.parent_id is None)
+    assert stats.changed_count < stats.compared_count
+    assert 0 < hint["update_ratio"] < 1
+    assert hint["update_ratio"] == bridge.root_change_ratio() == stats.changed_count / stats.compared_count
+    assert_frontier(bridge._session)
+    bridge.observe(after)
+    assert bridge.root_change_ratio() == 0
+
+
+def test_growth_no_longer_saturates_root_ratio():
+    before = page(button("header"), container(items(2)), button("footer"))
+    after = page(button("header"), container(items(20, "new")), button("footer"))
+    session = synced(before, after)
+    assert session.update_ratio(0) == 1  # Reco's original public contract remains unchanged.
+    assert change_hint(session)["update_ratio"] == pytest.approx(20 / 24)
 
 
 def test_connected_local_changes_stay_one_component():

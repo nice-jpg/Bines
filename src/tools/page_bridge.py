@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-from threading import RLock
+from _thread import RLock
 from typing import Callable
 from xml.etree.ElementTree import ParseError
 
 from langchain_core.tools import StructuredTool
 from Reco.model_interface import TOOLS, PageSession
-from .page_change_hint import change_hint
+from .page_change_hint import change_hint, root_change_ratio
 if __package__.startswith("src."):
     from src.page_view import freeze_page, restore_page
 else:
@@ -27,6 +27,11 @@ class PageBridge:
         self._xml = ""
         self._lock = RLock()
         self._snapshot_info = {}
+
+    @property
+    def operation_lock(self) -> RLock:
+        """Serialize device operations and reads with view synchronization."""
+        return self._lock
 
     @property
     def xml(self) -> str:
@@ -62,6 +67,13 @@ class PageBridge:
             return freeze_page(self._session, self._xml,
                                snapshot_id=self._snapshot_info["snapshot_id"],
                                captured_at=self._snapshot_info["captured_at"])
+
+    def root_change_ratio(self) -> float | None:
+        """Return normalized whole-page region change, not pixel-area change."""
+        with self._lock:
+            if self._session is None:
+                return None
+            return root_change_ratio(self._session)
 
     def load_snapshot(self, snapshot):
         with self._lock:

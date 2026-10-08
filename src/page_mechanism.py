@@ -49,6 +49,8 @@ class CollectorTrainingRecord:
     script_fingerprint: str = ""
     restoration: dict[str, Any] = field(default_factory=dict)
     contract_fingerprint: str = ""
+    change_threshold: float | None = None
+    normal_swipe_samples: int = 0
 
 
 class PageMechanism:
@@ -549,6 +551,8 @@ class CollectorTrainingRegistry:
         with self._lock:
             record = self._records[visit_id]
             record.trained = True
+            record.change_threshold = None
+            record.normal_swipe_samples = 0
             record.merchant_profile = dict(merchant_profile or {})
             record.script_fingerprint = str(script_fingerprint or "")
             record.restoration = dict(restoration or {})
@@ -567,6 +571,8 @@ class CollectorTrainingRegistry:
         with self._lock:
             record = self._records[visit_id]
             record.trained = False
+            record.change_threshold = None
+            record.normal_swipe_samples = 0
             record.merchant_profile = dict(merchant_profile or {})
             record.script_fingerprint = str(script_fingerprint or "")
             record.restoration = dict(restoration or {})
@@ -576,6 +582,15 @@ class CollectorTrainingRegistry:
         if record is None or not record.trained:
             return False
         return current_path is None or record.page_path == self._canonical_path(current_path)
+
+    def set_swipe_threshold(self, visit_id: str, threshold: float, sample_count: int) -> None:
+        """Attach verified live swipe evidence to an already trained visit."""
+        with self._lock:
+            record = self._records[visit_id]
+            if not record.trained or not 0 <= threshold <= 1 or sample_count < 2:
+                raise ValueError("A trained visit and verified swipe samples are required")
+            record.change_threshold = threshold
+            record.normal_swipe_samples = sample_count
 
     def record_for(self, visit_id: str) -> CollectorTrainingRecord | None:
         with self._lock:
@@ -598,6 +613,8 @@ def _copy_training_record(record: CollectorTrainingRecord) -> CollectorTrainingR
         script_fingerprint=record.script_fingerprint,
         restoration=dict(record.restoration),
         contract_fingerprint=record.contract_fingerprint,
+        change_threshold=record.change_threshold,
+        normal_swipe_samples=record.normal_swipe_samples,
     )
 
 

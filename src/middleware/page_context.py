@@ -70,6 +70,7 @@ class PageContextState(AgentState):
 
 DEVICE_ACTION_TOOLS = frozenset(
     {
+        "collect_continuously",
         "run_package",
         "close_package",
         "tap_in_page",
@@ -208,6 +209,15 @@ class PageContextMiddleware(AgentMiddleware[PageContextState]):
         tool_name = invocation.name
         if tool_name not in DEVICE_ACTION_TOOLS:
             return None
+        messages = invocation.state.get("messages") or []
+        if messages:
+            latest = messages[-1]
+            calls = (latest.get("tool_calls", []) if isinstance(latest, Mapping)
+                     else latest.tool_calls if isinstance(latest, AIMessage) else [])
+            first = next((call for call in calls if call["name"] in DEVICE_ACTION_TOOLS), None)
+            if first is not None and first["id"] != invocation.call_id:
+                return _context_error(request, "multiple_device_actions",
+                                      "Only the first declared device action in one model response may execute.")
         step_key = _device_step_key(request)
         if step_key is None:
             return None

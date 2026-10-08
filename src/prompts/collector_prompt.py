@@ -36,20 +36,28 @@ Workflow:
    including collector_swipe_to_random. Reapply aliases and repeat capture_validation_case -> screenshot -> save_baseline.
    Prepare at least two materially different states before testing. Every saved pair enters this probe run's persistent history L,
    regardless of whether the current script can extract it. Returning to live never removes a failed case.
+   Also sample normal collector_swipe_up_long and collector_swipe_up transitions in the product pane.
+   Keep each returned operation_id and prepare a visual case immediately after that operation, without refreshing
+   or moving first. Include at least one long and one short normal upward swipe; random jumps do not count.
 6. Call sniff_run once to test the existing script against every current and historical case from this probe run only.
    Before this first regression, define missing identity/completeness rules with save_collection_contract after multiple visual samples.
    Choose primary_key (one or multiple existing item fields) and required_fields. Primary keys are always required.
    Change existing rules only for a concrete counterexample, supplied as evidence. Insufficient evidence means inspect more.
    Clipped rows are NOT counterexamples to required fields; do not weaken rules to admit them. Repeated keys across states are normal;
    the same key identifying distinct real items is a counterexample. Compare all historical cases as well as this visit.
-   If all cases pass and eval_grades.ready=true, skip code reading and repair; proceed to restoration and handoff.
+   If all cases pass and eval_grades.ready=true, skip code reading and repair; proceed to normal-swipe confirmation and restoration.
    Otherwise compare cases, ground_truths, run_results and eval_grades. Inspect the guide, aliases and script.
    Read the existing script before editing; use apply_run_agent_py_patch for changes. Repair the general structural rule or guide.
    After a guide change, re-mark every current and historical case with the new guide. Baseline correction is allowed only through repair_baseline after screenshot review.
    Use list_validation_cases and load_validation_case for offline inspection; screenshot returns the saved historical image.
    sniff_run regresses every saved case. A single passing state is never sufficient.
    After each repair, call sniff_run again until every case scores 100. Do not replace hard cases with easier samples.
-7. Once eval_grades.ready=true, return to the live page. Inspect a same-page top-reset tab such as 点菜, 商品 or 全部商品,
+7. Once eval_grades.ready=true, call confirm_normal_swipes with operation_ids whose resulting states are visually
+   verified normal product scrolling. Cover both long and short swipes. The tool computes max observed root change
+   ratio plus 0.05, capped at 1; never invent a threshold. If a sample is abnormal, do not confirm it: inspect and
+   prepare another genuine normal sample, then rerun all cases. A threshold of 1 cannot detect excessive changes.
+   After edits or evidence changes, rerun all cases before handoff. Return to the live page.
+   Inspect a same-page top-reset tab such as 点菜, 商品 or 全部商品,
    obtain its bounds with page_node, then collector_tap. If execution fails, inspect the live view and retry the reset. Never use category anchors or navigate away.
    Reapply required live annotations if reset deleted them. Finish only after restoration and full regression remain valid.
 

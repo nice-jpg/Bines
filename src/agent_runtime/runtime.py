@@ -43,6 +43,7 @@ class AgentRuntime:
         self.agent, self._trace = build_graph(name, model, [*tools, create_talk_tool()], system_prompt,
                                              [CommunicationMiddleware(), *middleware])
         self._communications = {}
+        self._active_channels: set[RuntimeCommunication] = set()
         self._communication_lock = RLock()
         self._closing = False
         self.sessions: dict[str, list[Any]] = {}
@@ -68,19 +69,32 @@ class AgentRuntime:
         """Request a cooperative stop without interrupting active device operations."""
         with self._communication_lock:
             self._closing = True
-            for channel in list(self._communications.values()):
+            for channel in set(self._communications.values()) | self._active_channels:
                 channel.close()
 
     def _invoke_graph(self, input, config, inbox=None):
+        # Even an unbound invocation needs a cooperative shutdown signal for long tools.
+        temporary = inbox is None
+        inbox = inbox if inbox is not None else RuntimeCommunication(lambda _: False)._root
+        with self._communication_lock:
+            self._active_channels.add(inbox.channel)
+        try:
+            return self._invoke_with_inbox(input, config, inbox)
+        finally:
+            with self._communication_lock:
+                self._active_channels.discard(inbox.channel)
+            if temporary:
+                inbox.channel.close()
+
+    def _invoke_with_inbox(self, input, config, inbox: _Inbox):
         while True:
             if self._closing:
                 snapshot = self.agent.get_state(config)
                 return {**snapshot.values, "__interrupt__": [{"kind": "shutdown", "message": "Runtime is shutting down."}]}
             state = self.agent.invoke(
-                input, config=config, durability="exit",
-                **({"context": inbox} if inbox else {}),
+                input, config=config, durability="exit", context=inbox,
             )
-            if inbox is None or _extract_interrupts(state) or inbox.channel._closed:
+            if _extract_interrupts(state) or inbox.channel._closed:
                 return state
             pending = inbox.pending(state.get("messages") or [])
             if not pending:
