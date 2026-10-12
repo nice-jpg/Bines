@@ -1,20 +1,6 @@
-"""Feishu communication channel for the Bines agent."""
+"""Feishu transport implementation."""
 
-from .client import FeishuMessenger
+from .channel import FeishuChannel
 from .config import FeishuConfig, load_feishu_config
-from .dedup import MessageDeduplicator
-from .messages import IncomingMessage, MessageTarget, ParsedMessage, parse_message_event
-from .receiver import FeishuChannel, FeishuChannelRuntime
 
-__all__ = [
-    "FeishuChannel",
-    "FeishuChannelRuntime",
-    "FeishuConfig",
-    "FeishuMessenger",
-    "IncomingMessage",
-    "MessageDeduplicator",
-    "MessageTarget",
-    "ParsedMessage",
-    "load_feishu_config",
-    "parse_message_event",
-]
+__all__: list[str] = ["FeishuChannel", "FeishuConfig", "load_feishu_config"]

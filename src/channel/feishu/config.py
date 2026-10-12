@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from pathlib import Path
 
 from dotenv import load_dotenv
 
-WORKSPACE_ENV_PATH = Path(__file__).resolve().parents[3] / "workspace" / ".env"
+from src.paths import WORKSPACE_ENV_PATH
 
 
 @dataclass(frozen=True)
@@ -18,10 +17,10 @@ class FeishuConfig:
     log_level: str = "INFO"
 
 
-def load_feishu_config(env_path: Path = WORKSPACE_ENV_PATH) -> FeishuConfig:
+def load_feishu_config() -> FeishuConfig:
     """Load Feishu channel settings from ``workspace/.env``."""
 
-    load_dotenv(env_path, override=False)
+    load_dotenv(WORKSPACE_ENV_PATH, override=False)
     return FeishuConfig(
         app_id=_required_env("FEISHU_APP_ID", "LARK_APP_ID", "APP_ID"),
         app_secret=_required_env("FEISHU_APP_SECRET", "LARK_APP_SECRET", "APP_SECRET"),
@@ -31,8 +30,8 @@ def load_feishu_config(env_path: Path = WORKSPACE_ENV_PATH) -> FeishuConfig:
 
 def _required_env(*names: str) -> str:
     for name in names:
-        value = os.getenv(name)
+        value: str | None = os.getenv(name)
         if value:
             return value
-    joined_names = ", ".join(names)
+    joined_names: str = ", ".join(names)
     raise RuntimeError(f"Missing required Feishu setting in workspace/.env: {joined_names}")
