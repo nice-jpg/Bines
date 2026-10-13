@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 from langchain.agents.middleware import ModelRetryMiddleware
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-
-RETRYABLE_HANDSHAKE_STATUS_CODES = frozenset({500, 502, 503, 504})
+RETRYABLE_HANDSHAKE_STATUS_CODES: Final[frozenset[int]] = frozenset({500, 502, 503, 504})
 
 
 def is_retryable_model_transport_error(error: BaseException) -> bool:
@@ -14,7 +15,7 @@ def is_retryable_model_transport_error(error: BaseException) -> bool:
 
     if isinstance(error, InvalidStatus):
         return error.response.status_code in RETRYABLE_HANDSHAKE_STATUS_CODES
-    return isinstance(error, (ConnectionClosed, EOFError, OSError, TimeoutError))
+    return isinstance(error, ConnectionClosed | EOFError | OSError | TimeoutError)
 
 
 def create_model_retry_middleware() -> ModelRetryMiddleware:

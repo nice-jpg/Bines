@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
-
 from langgraph.errors import GraphBubbleUp
+
+from src.tool_types import ToolResult
 
 
 class ToolErrorMiddleware(AgentMiddleware):
@@ -17,8 +17,8 @@ class ToolErrorMiddleware(AgentMiddleware):
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Any],
-    ) -> ToolMessage | Any:
+        handler: Callable[[ToolCallRequest], ToolResult],
+    ) -> ToolResult:
         try:
             return handler(request)
         except Exception as error:
@@ -29,8 +29,8 @@ class ToolErrorMiddleware(AgentMiddleware):
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Any]],
-    ) -> ToolMessage | Any:
+        handler: Callable[[ToolCallRequest], Awaitable[ToolResult]],
+    ) -> ToolResult:
         try:
             return await handler(request)
         except Exception as error:
@@ -42,11 +42,11 @@ class ToolErrorMiddleware(AgentMiddleware):
 def make_tool_error_message(request: ToolCallRequest, error: Exception) -> ToolMessage:
     """Build a concise error result associated with the original tool call."""
 
-    tool_name = request.tool_call.get("name") or "unknown_tool"
-    tool_call_id = request.tool_call["id"]
-    error_type = type(error).__name__
-    error_message = str(error).strip() or "No error message was provided."
-    content = (
+    tool_name: str = request.tool_call.get("name") or "unknown_tool"
+    tool_call_id: str | None = request.tool_call["id"]
+    error_type: str = type(error).__name__
+    error_message: str = str(error).strip() or "No error message was provided."
+    content: str = (
         f"Tool '{tool_name}' failed with {error_type}: {error_message}\n"
         "Review the failure, correct the tool arguments or choose another action, and continue."
     )

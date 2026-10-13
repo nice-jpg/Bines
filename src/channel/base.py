@@ -3,12 +3,17 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
-from src.messaging.messages import IncomingMessage, OutgoingMessage
+from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
 
 type MessageListener = Callable[[IncomingMessage], bool]
 
 
 class Channel(ABC):
+    @property
+    @abstractmethod
+    def channel_id(self) -> str:
+        """Stable channel identity for this transport."""
+
     @abstractmethod
     def bind_message_listener(self, listener: MessageListener) -> None:
         """Bind before startup. False means the message was not accepted."""

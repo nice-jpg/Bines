@@ -22,8 +22,8 @@ from lark_oapi.channel.types import (  # pyright: ignore[reportMissingTypeStubs]
 )
 from lark_oapi.core.enum import LogLevel  # pyright: ignore[reportMissingTypeStubs]
 
+from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
 from src.channel.base import Channel, MessageListener
-from src.messaging.messages import IncomingMessage, OutgoingMessage
 
 from .config import FeishuConfig
 from .dedup import MessageDeduplicator
@@ -44,6 +44,10 @@ class FeishuChannel(Channel):
         self._started: bool = False
         self._deduplicator: MessageDeduplicator = MessageDeduplicator()
         self._thread: Thread = Thread(target=self._run, name=f"channel-{channel_id}")
+
+    @property
+    def channel_id(self) -> str:
+        return self._channel_id
 
     def bind_message_listener(self, listener: MessageListener) -> None:
         if self._started:
@@ -76,12 +80,19 @@ class FeishuChannel(Channel):
     def _receive(self, message: InboundMessage) -> None:
         if not isinstance(message.content, TextContent) or not message.content.text.strip():
             return
+        text: str = message.content.text
+        for mention in message.mentions:
+            replacement: str = "@" + (
+                mention.name or mention.open_id or mention.user_id or mention.key.lstrip("@")
+            )
+            text = text.replace(mention.key, replacement)
         incoming: IncomingMessage = IncomingMessage(
             self._channel_id,
             message.conversation.chat_id,
             message.id,
-            message.content.text.strip(),
-            None if message.conversation.chat_type == "p2p" else message.id,
+            text,
+            message.sender.open_id,
+            message.sender.display_name,
         )
         # Different configured accounts may use the same vendor message IDs.
         identity: str = (
@@ -140,7 +151,7 @@ class FeishuChannel(Channel):
                         sdk.send(  # pyright: ignore[reportUnknownMemberType]
                             message.conversation_id,
                             OutboundText(text=message.text),
-                            {"receive_id_type": "chat_id", "reply_to": message.reply_to},
+                            {"receive_id_type": "chat_id"},
                         ),
                         timeout=30,
                     )

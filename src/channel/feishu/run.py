@@ -2,9 +2,9 @@
 
 from threading import Event
 
+from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
 from src.channel.feishu.channel import FeishuChannel
 from src.channel.feishu.config import load_feishu_config
-from src.messaging.messages import IncomingMessage, OutgoingMessage
 
 
 def main() -> None:
@@ -16,7 +16,6 @@ def main() -> None:
                 message.channel_id,
                 message.conversation_id,
                 f"Received text message: {message.text}",
-                message.reply_to,
             )
         )
         return True
