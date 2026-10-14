@@ -15,6 +15,7 @@ from langgraph.types import Command, Interrupt, StateSnapshot
 from nTrace import NTrace, createNTraceHostMiddleware, createNTraceLLMMiddleware, createNTraceToolMiddleware
 from src.agent_runtime.conversation import ConversationSession, MessageBlock
 from src.agent_runtime.messaging.messages import MessageStreamClosed
+from src.application.trace import trace_client
 from src.framework_data import is_string_mapping
 from src.json_types import JsonValue
 from src.message_text import latest_message_text
@@ -67,7 +68,7 @@ class AgentEngine(ABC):
             raise ValueError("talk is owned by AgentEngine")
         prompt: str = self._system_prompt()
         name: str = self._name()
-        trace: NTrace = NTrace(agent_name=name, system_prompt=prompt)
+        trace: NTrace = NTrace(agent_name=name, system_prompt=prompt, client=trace_client())
         layers: list[RuntimeMiddleware] = [
             createNTraceHostMiddleware(trace),
             create_model_retry_middleware(),

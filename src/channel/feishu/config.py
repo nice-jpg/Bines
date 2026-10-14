@@ -1,16 +1,13 @@
-"""Feishu channel configuration loaded from the workspace environment."""
+"""Validate Feishu-specific fields from the configuration service."""
 
-from __future__ import annotations
-
-import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
+from src.configuration.errors import ConfigurationError
+from src.configuration.manager import ConfigurationManager
 
-from src.paths import WORKSPACE_ENV_PATH
 
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class FeishuConfig:
     app_id: str
     app_secret: str
@@ -18,20 +15,11 @@ class FeishuConfig:
 
 
 def load_feishu_config() -> FeishuConfig:
-    """Load Feishu channel settings from ``workspace/.env``."""
-
-    load_dotenv(WORKSPACE_ENV_PATH, override=False)
-    return FeishuConfig(
-        app_id=_required_env("FEISHU_APP_ID", "LARK_APP_ID", "APP_ID"),
-        app_secret=_required_env("FEISHU_APP_SECRET", "LARK_APP_SECRET", "APP_SECRET"),
-        log_level=os.getenv("FEISHU_LOG_LEVEL", "INFO"),
-    )
-
-
-def _required_env(*names: str) -> str:
-    for name in names:
-        value: str | None = os.getenv(name)
-        if value:
-            return value
-    joined_names: str = ", ".join(names)
-    raise RuntimeError(f"Missing required Feishu setting in workspace/.env: {joined_names}")
+    values: Mapping[str, str] = ConfigurationManager.instance().get_channel("feishu")
+    for key in ("app_id", "app_secret"):
+        if not values.get(key, "").strip():
+            raise ConfigurationError("Missing required Feishu setting: " + key)
+    level: str = values.get("log_level", "INFO").upper()
+    if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+        raise ConfigurationError("Invalid Feishu log_level.")
+    return FeishuConfig(app_id=values["app_id"], app_secret=values["app_secret"], log_level=level)

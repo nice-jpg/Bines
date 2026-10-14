@@ -5,9 +5,11 @@ from threading import Event
 from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
 from src.channel.feishu.channel import FeishuChannel
 from src.channel.feishu.config import load_feishu_config
+from src.configuration.manager import ConfigurationManager
 
 
 def main() -> None:
+    ConfigurationManager.initialize()
     channel: FeishuChannel = FeishuChannel(load_feishu_config(), "feishu")
 
     def on_message(message: IncomingMessage) -> bool:
