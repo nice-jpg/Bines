@@ -31,6 +31,11 @@ from websockets.exceptions import ConnectionClosed
 from websockets.frames import Close
 from websockets.protocol import State
 
+from src.agent_messages.text import (
+    message_additional_kwargs,
+    message_content,
+    message_response_metadata,
+)
 from src.codex.protocol_types import (
     CodexMessageMetadata,
     CodexRequestOptions,
@@ -57,9 +62,8 @@ from src.codex.protocol_types import (
 from src.configuration.errors import ConfigurationError, ConfigurationKeyError
 from src.configuration.manager import ConfigurationManager
 from src.configuration.types import ConfigValue
-from src.framework_data import is_string_mapping
-from src.json_types import JsonObject, JsonValue, json_object, json_value, load_json
-from src.message_text import message_additional_kwargs, message_content, message_response_metadata
+from src.serialization.json import JsonObject, JsonValue, json_object, json_value, load_json
+from src.serialization.validation import is_string_mapping
 
 DEFAULT_CODEX_WS_URL: Final[str] = "wss://chatgpt.com/backend-api/codex/responses"
 

@@ -5,6 +5,7 @@ from collections.abc import Callable
 from threading import RLock
 from typing import Final
 
+from src.common.event_log import WorkspaceEventLogger
 from src.device.commands.executor import DEFAULT_SCREENSHOT_PATH, AndroidCommandExecutor
 from src.device.commands.shadow_control import start_shadow_service, stop_shadow_service
 from src.device.services.gestures import GestureReplay
@@ -13,7 +14,6 @@ from src.device.services.screenshots import capture_png
 from src.device.types.observations import CollectionSwipe, SwipeObservation
 from src.device.types.results import CommandResult, DeviceError, make_error_result
 from src.device.types.shadow import ShadowServiceStatus
-from src.storage.event_log import WorkspaceEventLogger
 
 DEFAULT_POST_ACTION_UI_DELAY_SECONDS: Final[float] = 1.2
 _POST_ACTION_SLEEP: Final[Callable[[float], None]] = time.sleep

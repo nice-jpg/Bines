@@ -1,61 +1,68 @@
-"""Run the Bines agent with the Feishu communication channel."""
-
-from __future__ import annotations
+"""Assemble one engine, coordinator, worker and ID-addressed gateway."""
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
-if __package__ in (None, ""):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-try:
-    from src.agent import build_conductor_runtime
-    from src.channel.feishu import FeishuChannelRuntime, load_feishu_config
-    from src.model import build_model, close_model
-    from src.tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
-except ModuleNotFoundError:  # Supports running as: python src/run_agent.py
-    from agent import build_conductor_runtime
-    from channel.feishu import FeishuChannelRuntime, load_feishu_config
-    from model import build_model, close_model
-    from tools.common import CaptchaAuthenticationTool, OperationNoticeTool, create_common_tools
+from langchain_core.language_models import BaseChatModel
 
-from langgraph.runtime import get_runtime
-from src.agent_runtime.communication import talk
-from src.feishu_agent_runner import FeishuAgentRunner
-
-
-def notify_current_session(text: str) -> bool:
-    return talk(text, get_runtime())
+from src.agent_runtime.coordinator import AgentCoordinator
+from src.agent_runtime.worker import AgentWorker
+from src.application.gateway_manager import GatewayManager
+from src.application.model import build_model, close_model
+from src.application.trace import trace_client
+from src.channel.feishu import FeishuChannel, load_feishu_config
+from src.conductor.engine import ConductorEngine
+from src.configuration.manager import ConfigurationManager
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Bines agent through Feishu.")
+    parser: argparse.ArgumentParser = argparse.ArgumentParser(
+        description="Run the Bines agent through Feishu."
+    )
     parser.add_argument("--max-iterations", type=int, default=1000)
     return parser
 
 
 def main() -> None:
-    args = build_parser().parse_args()
-    channel = FeishuChannelRuntime(load_feishu_config())
-    operation_notice = OperationNoticeTool(notifier=notify_current_session)
-    captcha_authentication = CaptchaAuthenticationTool(notifier=notify_current_session)
-    model = build_model()
-    runtime = build_conductor_runtime(
-        model=model,
-        tools=create_common_tools(
-            operation_notice_tool=operation_notice,
-            captcha_authentication_tool=captcha_authentication,
-        ),
-        operation_notice_service=operation_notice,
-    )
-
-    runner = FeishuAgentRunner(runtime, channel, args.max_iterations)
+    args: argparse.Namespace = build_parser().parse_args()
+    ConfigurationManager.initialize()
+    trace_client()
+    channel: FeishuChannel = FeishuChannel(load_feishu_config(), "feishu")
+    manager: GatewayManager = GatewayManager.instance()
+    gateway_id: str = manager.create(channel)
+    model: BaseChatModel | None = None
+    worker: AgentWorker | None = None
+    engine: ConductorEngine | None = None
+    started: bool = False
     try:
-        channel.start(runner.on_message)
+        model = build_model()
+        engine = ConductorEngine(model=model, gateway_id=gateway_id, max_iterations=args.max_iterations)
+        worker = AgentWorker(AgentCoordinator(engine))
+        manager.start(gateway_id)
+        worker.start()
+        started = True
+        try:
+            worker.join()
+        except KeyboardInterrupt:
+            pass
     finally:
-        runner.close()
-        close_model(model)
+        manager.stop(gateway_id)
+        try:
+            if worker is not None and started:
+                worker.join()
+            elif engine is not None:
+                engine.close()
+        finally:
+            manager.finish_output(gateway_id)
+            manager.join(gateway_id)
+            try:
+                if model is not None:
+                    close_model(model)
+            finally:
+                manager.release(gateway_id)
 
 
 if __name__ == "__main__":

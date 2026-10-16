@@ -254,7 +254,7 @@ PageBridge 为离线冻结场景保留 XML 来源回调形式；在线操作服�
 
 扩大检查时使用 `--continue-on-collection-errors` 得到 **392 passed、19 failed、13 collection errors、30 subtests passed**（在新增的 5 项跨层测试加入前）。其中 src/tasks 在本次实施前已缺失，阻断 Agent/Runtime 测试收集及评估相关测试；另有 Codex 缓存预期、middleware 组合及页面文档缺失等失败。未为本次设备重构恢复被删除的业务目录，也不宣称全套通过。
 
-静态验证：Ruff、显式变量/动态访问审查、类型例外登记与导入环检查通过。全 src Pyright 的 8 项错误均来自 src/agent.py 对缺失 src.tasks 的依赖，device 及其新目录无类型诊断。
+静态验证：Ruff、显式变量/动态访问审查、类型例外登记与导入环检查通过。全 src Pyright 的 8 项错误均来自 src/conductor/engine.py 对缺失 src.tasks 的依赖，device 及其新目录无类型诊断。
 
 未完成真机、原生回放或实际 nScreen 接管验收。Mermaid 保留可编辑源码，未进行实际渲染验证。
 

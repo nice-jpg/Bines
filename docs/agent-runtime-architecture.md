@@ -67,6 +67,7 @@ flowchart TB
         input_middleware --> call_7 --> conversation
         input_middleware --> call_8 --> conversation
         coordinator --> call_9 --> conversation
+        engine --> call_9
     end
     thread_object --> worker_entry --> worker
     classDef method fill:#cbd5e1,stroke:#334155,color:#0f172a,rx:0,ry:0
@@ -265,3 +266,15 @@ Engine.close 负责本地执行资源及其 ConversationSession.close；Coordina
 Pyright strict 覆盖 120 个文件，0 errors；Ruff、显式类型 AST 检查、类型例外登记及导入环检查均通过。Mermaid 已检查结构，编辑器未连接，未进行实际渲染验证。
 
 仓库根目录无范围 pytest 会收集第三方/示例，出现 16 个收集错误；上述回归明确限定在 tests 与 trainer/tests。未运行 C 编译、回放或真实飞书/模型联网验证。
+
+## 工具装配与主动通信（2026-10-16）
+
+AgentEngine 提供 `send_message(message: str) -> bool`，转发至自己拥有的 ConversationSession。会话未绑定时发送失败，不从父 Agent 或全局执行上下文猜测接收方。
+
+基类不再注入 talk，也不保留该名称。每个派生类的 `_create_tools()` 是唯一总装配入口；派生类可以用该发送能力构造 talk、其他形式的通信工具，或不向模型提供发送工具。工具实现按功能放置在 src/tools 子目录。
+
+ConductorEngine 与 CollectorEngine 显式绑定 talk 到自身发送方法；SubagentEngine 可使用已提供的自定义 talk，否则绑定自身能力。图中的 Engine 与 ConversationSession 关系不变，增加的是 Engine 对外发送接口。ConversationInputMiddleware 仅负责模型调用边界的输入，工具路由 ContextVar 及旧全局通知包装已删除。
+
+### 通信消息与模型对话消息的边界
+
+`agent_runtime/messaging` 表示 channel 传输的 `IncomingMessage`、`OutgoingMessage` 及队列/关闭语义，不存放 LangChain 对话历史的读取工具。`src/agent_messages` 是独立共享模块，提供 LangChain 输入、历史消息、正文与 metadata 读取，以及工具响应类型。业务 Engine、middleware、模型适配与 runtime 均直接引用该模块；agent_messages 不依赖 runtime。两类消息在会话输入边界转换，不因名称相同而共享类型或目录。完整原根目录文件归属见 [source-layout.md](source-layout.md)。

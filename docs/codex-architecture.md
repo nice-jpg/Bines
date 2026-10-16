@@ -18,7 +18,7 @@
 | [codex_oauth.py](../src/codex/codex_oauth.py) | 两个行为类、工厂、消息与工具转换、响应汇总和协议日志 |
 | [protocol_types.py](../src/codex/protocol_types.py) | 请求/响应 TypedDict、联合类型和 Pydantic TypeAdapter 校验函数 |
 
-`src/model.py` 从 ConfigurationManager 选择模型配置，并在 provider 为 codex 时调用工厂。认证路径和 WebSocket 地址通过 `get_other("codex", ...)` 读取。配置初始化必须在构造默认 TokenProvider 前完成。
+`src/application/model.py` 从 ConfigurationManager 选择模型配置，并在 provider 为 codex 时调用工厂。认证路径和 WebSocket 地址通过 `get_other("codex", ...)` 读取。配置初始化必须在构造默认 TokenProvider 前完成。
 
 LangChain 提供 BaseChatModel、消息、工具和 Runnable；websockets 提供连接和连接状态；asyncio 提供独立事件循环及跨线程 Future。protocol_types 只依赖类型校验与基础 JSON 类型，不反向依赖模型类。
 
@@ -270,6 +270,6 @@ ResponseInput 是输入条目的联合别名。read_response_event、read_respon
 
 本次实际运行 tests/test_codex_oauth.py：**42 passed、2 failed，另有 13 个子测试通过**。两项失败均与既有 prompt_cache_key 期望不符：一个要求请求使用传入 cache-key，一个读取当前类不存在的同名属性。本文如实记录实际使用 session_id 的实现。
 
-同时尝试运行 tests/test_model_transport_recovery.py，但当前工作区缺少 src/tasks，导入 src.agent 时收集失败。不能把之前的全套测试结果作为本次验证结果，也没有为完成文档恢复或修改该目录。
+同时尝试运行 tests/test_model_transport_recovery.py，但当前工作区缺少 src/tasks，导入 src.conductor.engine 时收集失败。不能把之前的全套测试结果作为本次验证结果，也没有为完成文档恢复或修改该目录。
 
 未执行真实模型调用、认证登录或 WebSocket 联网验证。Mermalaid 编辑器未配对，架构图保留 Mermaid 源码，未完成渲染器验证。

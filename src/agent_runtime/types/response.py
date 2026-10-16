@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass
 
-from src.json_types import JsonObject, JsonValue, load_json
+from src.serialization.json import JsonObject, JsonValue, load_json
 
 
 @dataclass(frozen=True)

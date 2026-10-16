@@ -8,7 +8,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
 
-from src.tool_types import ToolResult
+from src.agent_messages.tool_results import ToolResult
 
 
 class ToolErrorMiddleware(AgentMiddleware):

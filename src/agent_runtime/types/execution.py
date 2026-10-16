@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from src.json_types import JsonValue
+from src.serialization.json import JsonValue
 
 
 class EngineStatus(StrEnum):

@@ -4,8 +4,8 @@ from collections.abc import Mapping, Sequence
 
 from langgraph.types import Interrupt
 
-from src.framework_data import is_value_sequence
-from src.json_types import JsonValue, json_value
+from src.serialization.json import JsonValue, json_value
+from src.serialization.validation import is_value_sequence
 
 from .execution import InterruptKind
 

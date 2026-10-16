@@ -7,17 +7,17 @@ from typing import Final
 from langchain_core.tools import StructuredTool
 
 from src.device import DeviceError, DeviceOperationService
-from src.json_types import JsonObject
-from src.tool_factory import create_tool
-from src.tools.device.pages import create_page_tools
-from src.tools.device.screenshots import ImageContent, screenshot_content
-from src.tools.operation_effect import (
+from src.serialization.json import JsonObject
+from src.tools.device.effect import (
     OPERATION_EFFECT_POLICY_METADATA_KEY,
     SCROLL_PAGE_CHANGE_POLICY,
     OperationEffectPolicy,
 )
-from src.tools.operation_policy import EXTERNAL_OPERATION_POLICY_METADATA_KEY, ExternalOperationPolicy
-from src.tools.safety import (
+from src.tools.device.pages import create_page_tools
+from src.tools.device.screenshots import ImageContent, screenshot_content
+from src.tools.notifications.policy import EXTERNAL_OPERATION_POLICY_METADATA_KEY, ExternalOperationPolicy
+from src.tools.shared.factory import create_tool
+from src.tools.shared.safety import (
     DANGEROUS_TOOL_POLICY_METADATA_KEY,
     DangerousActionJustification,
     DangerousToolPolicy,
@@ -129,12 +129,6 @@ def create_conductor_event_hub_tools(event_hub: DeviceOperationService | None = 
     """Expose only non-ambiguous raw device operations to conductor."""
 
     return create_event_hub_tools(event_hub, tool_names=CONDUCTOR_EVENT_HUB_TOOL_NAMES)
-
-
-def build_tools() -> list[StructuredTool]:
-    """Return the default recorded touch-operation tools."""
-
-    return create_event_hub_tools()
 
 
 def _build_tool(spec: ToolSpec, hub: DeviceOperationService) -> StructuredTool:

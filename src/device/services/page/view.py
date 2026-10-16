@@ -7,7 +7,7 @@ from uuid import uuid4
 
 from Reco.model_interface import PageSession
 from src.device.types.page import PageSnapshot
-from src.json_types import JsonObject, JsonValue, json_object
+from src.serialization.json import JsonObject, JsonValue, json_object
 
 
 class MissingPageAlias(ValueError):

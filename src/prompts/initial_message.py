@@ -9,7 +9,7 @@ from datetime import date
 from pathlib import Path
 from typing import Final
 
-from src.paths import WORKSPACE_ROOT
+from src.common.paths import WORKSPACE_ROOT
 
 DEFAULT_SHELL: Final[str] = "zsh"
 DEFAULT_TIMEZONE: Final[str] = "Asia/Shanghai"

@@ -13,15 +13,15 @@ from langgraph.errors import GraphBubbleUp, GraphRecursionError
 from langgraph.types import Command, Interrupt, StateSnapshot
 
 from nTrace import NTrace, createNTraceHostMiddleware, createNTraceLLMMiddleware, createNTraceToolMiddleware
+from src.agent_messages.text import latest_message_text
+from src.agent_messages.types import GraphInput, InputMessage
 from src.agent_runtime.conversation import ConversationSession, MessageBlock
 from src.agent_runtime.messaging.messages import MessageStreamClosed
 from src.application.trace import trace_client
-from src.framework_data import is_string_mapping
-from src.json_types import JsonValue
-from src.message_text import latest_message_text
-from src.message_types import GraphInput, InputMessage
+from src.serialization.json import JsonValue
+from src.serialization.validation import is_string_mapping
 
-from .middleware.communication import ConversationInputMiddleware, create_talk_tool, read_pending_input
+from .middleware.communication import ConversationInputMiddleware, read_pending_input
 from .middleware.model_retry import create_model_retry_middleware, is_retryable_model_transport_error
 from .middleware.tool_error import ToolErrorMiddleware
 from .types.execution import (
@@ -64,8 +64,8 @@ class AgentEngine(ABC):
         from langchain.agents import create_agent  # pyright: ignore[reportUnknownVariableType]
 
         tools: list[BaseTool] = list(self._create_tools())
-        if any(tool.name == "talk" for tool in tools):
-            raise ValueError("talk is owned by AgentEngine")
+        if len({tool.name for tool in tools}) != len(tools):
+            raise ValueError("Agent tools must have unique names")
         prompt: str = self._system_prompt()
         name: str = self._name()
         trace: NTrace = NTrace(agent_name=name, system_prompt=prompt, client=trace_client())
@@ -81,12 +81,16 @@ class AgentEngine(ABC):
         graph: RuntimeGraph = create_agent(
             name=name,
             model=model,
-            tools=[*tools, create_talk_tool()],
+            tools=tools,
             system_prompt=prompt,
             middleware=layers,
             checkpointer=InMemorySaver(),
         )
         return graph, trace
+
+    def send_message(self, message: str) -> bool:
+        """Send to this engine's bound conversation without defining a model tool."""
+        return self._conversation.send_message(message)
 
     @property
     def gateway_id(self) -> str:

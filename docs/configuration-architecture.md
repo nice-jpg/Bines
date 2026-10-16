@@ -4,7 +4,7 @@
 
 ## 1. 目的与边界
 
-配置的职责是向所有模块提供同一份、经过校验的启动配置。重构前 `src/model.py` 和 `src/channel/feishu/config.py` 分别调用 `load_dotenv`，Codex 直接读取环境变量，nTrace 客户端也有自己的环境变量回退。原有读取时机分散，导致配置结果依赖模块初始化顺序，也无法自然表达多组模型和连接。
+配置的职责是向所有模块提供同一份、经过校验的启动配置。重构前 `src/application/model.py` 和 `src/channel/feishu/config.py` 分别调用 `load_dotenv`，Codex 直接读取环境变量，nTrace 客户端也有自己的环境变量回退。原有读取时机分散，导致配置结果依赖模块初始化顺序，也无法自然表达多组模型和连接。
 
 新增进程内唯一的 `ConfigurationManager`。由主线程在创建模型、Channel、Trace 客户端及工作线程之前显式初始化，集中读取一次，之后只提供查询。业务模块不读取文件、环境变量，也不调用 `load_dotenv`。管理器不创建模型、连接或后台线程，不成为业务服务容器。
 
@@ -404,7 +404,7 @@ ConfigurationManager.initialize()
 config: ConfigurationManager = ConfigurationManager.instance()
 ```
 
-`src/run_agent.py`、`src/raw_run.py` 和飞书 smoke 入口均已接入。mind_controller 默认模型入口在主线程初始化配置及 Trace 客户端；训练适配器在主线程直接运行时初始化，在主工具工作线程运行时仅取得已初始化的服务。自定义宿主若跳过这些入口，需要先在自己的主线程完成初始化。
+`src/run_agent.py`、`src/application/raw_run.py` 和飞书 smoke 入口均已接入。mind_controller 默认模型入口在主线程初始化配置及 Trace 客户端；训练适配器在主线程直接运行时初始化，在主工具工作线程运行时仅取得已初始化的服务。自定义宿主若跳过这些入口，需要先在自己的主线程完成初始化。
 
 可参考 [config.toml 示例](configuration.example.toml) 创建 `workspace/config.toml`；示例凭据都是占位值。未创建新文件时仍从旧 `.env` 和环境快照读取，不会替换用户当前配置文件。
 

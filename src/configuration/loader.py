@@ -11,8 +11,8 @@ from urllib.parse import SplitResult, urlsplit
 from dotenv import dotenv_values
 from dotenv.variables import parse_variables
 
-from src.framework_data import is_string_mapping, is_value_sequence
-from src.paths import WORKSPACE_ROOT
+from src.common.paths import WORKSPACE_ROOT
+from src.serialization.validation import is_string_mapping, is_value_sequence
 
 from .defaults import DEFAULT_TRACE_SERVER_URL
 from .errors import ConfigurationError

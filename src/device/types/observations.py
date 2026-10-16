@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from src.device.types.page import PageSnapshot
-from src.json_types import JsonValue
+from src.serialization.json import JsonValue
 
 
 class CollectionSwipe(StrEnum):

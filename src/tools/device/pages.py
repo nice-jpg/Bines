@@ -7,7 +7,7 @@ from langchain_core.tools import StructuredTool
 
 from Reco.model_interface import TOOLS
 from src.device import PageArtifact, PageBridge
-from src.json_types import JsonValue
+from src.serialization.json import JsonValue
 
 
 def create_page_tools(bridge: PageBridge) -> list[StructuredTool]:

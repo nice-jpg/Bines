@@ -7,11 +7,11 @@ from typing import Final, Literal
 from langchain_core.tools import StructuredTool
 
 from src.device import DeviceOperationService, PageOperationResult
-from src.tool_factory import create_tool
-from src.tools.operation_effect import (
+from src.tools.device.effect import (
     NAVIGATION_PAGE_CHANGE_POLICY,
     OPERATION_EFFECT_POLICY_METADATA_KEY,
 )
+from src.tools.shared.factory import create_tool
 
 NAVIGATION_TOOL_NAMES: Final[tuple[str, str, str]] = ("tap_in_page", "navigate_to", "navigate_back")
 
