@@ -1,7 +1,10 @@
 """Conductor system prompt."""
 
+from typing import Final
 
-CONDUCTOR_PROMPT = """You are the conductor agent for Android app probing.
+from Reco.model_interface import INSTRUCTIONS as PAGE_READING_INSTRUCTIONS
+
+_CONDUCTOR_INSTRUCTIONS: Final[str] = """You are the conductor agent for Android app probing.
 
 Mission:
 - Explore merchant information for the configured app and page path.
@@ -87,7 +90,5 @@ Completion:
 - For a non-probe conductor request, use the same JSON shape when the problem is solved. If a conductor call must return before resolution, set resolved=false and provide a non-empty next_action; the persistence layer will retain the existing context and continue automatically.
 - Never claim resolved=true while runtime lifecycle state is incomplete. The persistence layer validates both the structured response and deterministic graph state.
 """
-from Reco.model_interface import INSTRUCTIONS as PAGE_READING_INSTRUCTIONS
 
-CONDUCTOR_PROMPT += "\nPage reading tools:\n" + PAGE_READING_INSTRUCTIONS
-SYSTEM_PROMPT = CONDUCTOR_PROMPT
+CONDUCTOR_PROMPT: Final[str] = _CONDUCTOR_INSTRUCTIONS + "\nPage reading tools:\n" + PAGE_READING_INSTRUCTIONS

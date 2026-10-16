@@ -1,6 +1,8 @@
 """Grammar accepted by the collector patch tool."""
 
-RUN_AGENT_PY_PATCH_GRAMMAR = """start: begin_patch update_hunk+ end_patch
+from typing import Final
+
+RUN_AGENT_PY_PATCH_GRAMMAR: Final[str] = """start: begin_patch update_hunk+ end_patch
 begin_patch: "*** Begin Patch" LF
 end_patch: "*** End Patch" LF?
 
