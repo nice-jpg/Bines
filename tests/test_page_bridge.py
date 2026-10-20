@@ -1,4 +1,5 @@
 """Reco contract and model-visible/internal snapshot boundaries."""
+from src.tools.device.pages import create_page_tools
 
 import json
 
@@ -6,8 +7,9 @@ import pytest
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage
 from Reco.model_interface import TOOLS
-from src.tools.page_bridge import PageBridge
-from src.tools.event_hub import EventHub, create_conductor_event_hub_tools
+from src.device.services.page.bridge import PageBridge
+from src.device.services.operations import DeviceOperationService
+from src.tools.device.operations import create_conductor_event_hub_tools
 
 
 XML = '<hierarchy><node class="android.widget.Button" text="商品" clickable="true" bounds="[0,0][100,80]" resource-id="private-id"/></hierarchy>'
@@ -27,7 +29,7 @@ def test_action_hint_keeps_complete_internal_snapshot():
 
 def test_bridge_tools_match_reco_schema_and_do_not_leak_xml():
     bridge = PageBridge(lambda: XML)
-    tools = {tool.name: tool for tool in bridge.create_tools()}
+    tools = {tool.name: tool for tool in create_page_tools(bridge)}
     assert {name: tool.args_schema for name, tool in tools.items()} == {
         spec["name"]: spec["input_schema"] for spec in TOOLS
     }
@@ -89,10 +91,10 @@ def test_reco_evidence_and_script_snapshot_keep_the_same_nodes():
 
 
 def test_device_tool_returns_abstract_content_and_hidden_snapshot():
-    hub = EventHub(sleep_func=lambda _: None)
-    hub._actions_checked = True
-    hub.device.act = lambda **kwargs: ""
-    hub.device.dump_ui = lambda: XML
+    hub = DeviceOperationService()
+    hub._sleep = lambda _: None
+    from tests.test_event_hub import FakeDevice
+    hub.executor.runner = FakeDevice(ui_result=XML)
     tools = {tool.name: tool for tool in create_conductor_event_hub_tools(hub)}
     assert "uiautomate" not in tools
     result = tools["swipe_up"].invoke({

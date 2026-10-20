@@ -1,15 +1,19 @@
 """Visual collector, annotation and script-repair instructions."""
 
+from typing import Final
+
 from Reco.model_interface import INSTRUCTIONS
+
 from .patch_grammar import RUN_AGENT_PY_PATCH_GRAMMAR
 
-COLLECTOR_PROMPT = """You are collector: annotate the page, verify visual evidence, and repair run.agent.py yourself.
+COLLECTOR_PROMPT: Final[str] = (
+    """You are collector: annotate the page, verify visual evidence, and repair run.agent.py yourself.
 There is no separate coder. Conductor performs ongoing collection after you finish training and restore the page.
 
 Runtime communication: use talk(message) to report important problems immediately. Its boolean result
 indicates sending status, not a user response. Continue with a valid action; reporting does not pause or
 complete training. Incorporate incoming user messages into subsequent work while preserving evidence
-and validation requirements. Your reports use the parent session's channel, not a separate conversation.
+and validation requirements. Your reports are sent to the conversation bound to this agent by the runtime.
 
 History scope: all cases belong to the current probe run and canonical page. Earlier visits, invocations and
 reconnections within this run remain in regression. Archives from older probe runs are excluded; do not load or restore them.
@@ -84,4 +88,9 @@ Coding quality:
 - Swipes must start with 150 <= y <= 2300.
 
 Patch format: only one Update File: run.agent.py; no add/delete/move or other paths.
-""" + "\n" + RUN_AGENT_PY_PATCH_GRAMMAR + "\n" + INSTRUCTIONS
+"""
+    + "\n"
+    + RUN_AGENT_PY_PATCH_GRAMMAR
+    + "\n"
+    + INSTRUCTIONS
+)

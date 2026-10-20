@@ -11,13 +11,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from openpyxl import load_workbook
 from openpyxl.workbook.workbook import Workbook as OpenpyxlWorkbook
-from tools.content_provider import CollectionWorkbookSink, ContentProvider, _read_xlsx, create_content_provider_tools
+from workbook_helpers import collection_sink, workbook_service
+from workbook_helpers import read_xlsx as _read_xlsx
+from src.tools.workbooks.tools import create_content_provider_tools
 
 
 class ContentProviderTests(unittest.TestCase):
     def test_create_append_and_update_excel_file_under_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            provider = ContentProvider(tmp_dir)
+            provider = workbook_service(tmp_dir)
             created = Path(
                 provider.create_excel_file(
                     "reports/stores.xlsx",
@@ -40,14 +42,14 @@ class ContentProviderTests(unittest.TestCase):
 
     def test_rejects_paths_outside_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            provider = ContentProvider(tmp_dir)
+            provider = workbook_service(tmp_dir)
 
             with self.assertRaises(ValueError):
                 provider.create_excel_file("../outside.xlsx")
 
     def test_create_rename_and_write_specific_sheet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            provider = ContentProvider(tmp_dir)
+            provider = workbook_service(tmp_dir)
             path = Path(
                 provider.create_excel_file(
                     "result.xlsx",
@@ -96,7 +98,7 @@ class ContentProviderTests(unittest.TestCase):
 
     def test_rejects_invalid_or_duplicate_sheet_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            provider = ContentProvider(tmp_dir)
+            provider = workbook_service(tmp_dir)
             provider.create_excel_file("result.xlsx", sheet_name="商家A")
 
             with self.assertRaisesRegex(ValueError, "already exists"):
@@ -107,7 +109,7 @@ class ContentProviderTests(unittest.TestCase):
                 provider.create_excel_sheet("result.xlsx", "A" * 32)
 
     def test_content_provider_registers_multi_sheet_tools(self) -> None:
-        tool_names = [tool.name for tool in create_content_provider_tools(ContentProvider())]
+        tool_names = [tool.name for tool in create_content_provider_tools()]
 
         self.assertIn("create_excel_sheet", tool_names)
         self.assertIn("rename_excel_sheet", tool_names)
@@ -115,8 +117,8 @@ class ContentProviderTests(unittest.TestCase):
 
     def test_concurrent_provider_instances_serialize_updates_to_same_workbook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            first_provider = ContentProvider(tmp_dir)
-            second_provider = ContentProvider(tmp_dir)
+            first_provider = workbook_service(tmp_dir)
+            second_provider = workbook_service(tmp_dir)
             path = Path(
                 first_provider.create_excel_file(
                     "result.xlsx",
@@ -138,7 +140,7 @@ class ContentProviderTests(unittest.TestCase):
 
     def test_failed_save_preserves_existing_workbook(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            provider = ContentProvider(tmp_dir)
+            provider = workbook_service(tmp_dir)
             path = Path(
                 provider.create_excel_file(
                     "result.xlsx",
@@ -167,7 +169,7 @@ class ContentProviderTests(unittest.TestCase):
 
     def test_corrupted_workbook_returns_recovery_guidance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            provider = ContentProvider(tmp_dir)
+            provider = workbook_service(tmp_dir)
             Path(tmp_dir, "result.xlsx").write_bytes(b"incomplete zip")
 
             with self.assertRaisesRegex(
@@ -178,8 +180,8 @@ class ContentProviderTests(unittest.TestCase):
 
     def test_collection_workbook_sink_creates_index_sheet_and_dynamic_merchant_sheet(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
-            provider = ContentProvider(tmp_dir)
-            sink = CollectionWorkbookSink(provider)
+            provider = workbook_service(tmp_dir)
+            sink = collection_sink(provider)
 
             path = Path(tmp_dir) / "result.xlsx"
             self.assertTrue(path.is_file())

@@ -1,27 +1,35 @@
 """Channel-only Feishu smoke runner."""
 
-from __future__ import annotations
+from threading import Event
 
-try:
-    from src.channel.feishu.config import load_feishu_config
-    from src.channel.feishu.receiver import FeishuChannelRuntime
-except ModuleNotFoundError:  # Supports running with src on PYTHONPATH.
-    from channel.feishu.config import load_feishu_config
-    from channel.feishu.receiver import FeishuChannelRuntime
+from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
+from src.channel.feishu.channel import FeishuChannel
+from src.channel.feishu.config import load_feishu_config
+from src.configuration.manager import ConfigurationManager
 
 
 def main() -> None:
-    channel = FeishuChannelRuntime(load_feishu_config())
+    ConfigurationManager.initialize()
+    channel: FeishuChannel = FeishuChannel(load_feishu_config(), "feishu")
 
-    def on_message(message) -> None:
-        channel.send_text(message.target, f"Received text message: {message.text}")
+    def on_message(message: IncomingMessage) -> bool:
+        channel.send_message(
+            OutgoingMessage(
+                message.channel_id,
+                message.conversation_id,
+                f"Received text message: {message.text}",
+            )
+        )
+        return True
 
-    channel.on_parse_error = lambda parsed, _data: (
-        channel.send_text(parsed.incoming.target, parsed.error_text or "Failed to parse message.")
-        if parsed.incoming is not None
-        else None
-    )
-    channel.start(on_message)
+    channel.bind_message_listener(on_message)
+    channel.start()
+    try:
+        Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        channel.close()
 
 
 if __name__ == "__main__":

@@ -6,7 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from subagents_manager import FORK_BOILERPLATE_TAG, SubagentManager
+from src.agent_runtime.types.execution import EngineResult, EngineStatus
+from src.agent_messages.text import latest_message_text
+from src.tools.subagents.manager import FORK_BOILERPLATE_TAG, SubagentManager
 
 
 class FakeTool:
@@ -27,10 +29,22 @@ class FakeAgent:
 class SubagentManagerTests(unittest.TestCase):
     def make_manager(self, **kwargs) -> SubagentManager:
         from unittest.mock import patch
-        factory = patch("subagents_manager.create_runtime", kwargs.get("create_agent_factory", lambda **_: FakeAgent()))
+        create_graph = kwargs.get("create_agent_factory", lambda **_: FakeAgent())
+        class FakeEngine:
+            def __init__(self, *, record, messages, prompt, model, gateway_id):
+                self.graph = create_graph(model=model, tools=record.tools, system_prompt=prompt, name=record.name)
+                self.history = {"messages": messages}
+            def run_turn(self):
+                self.history = self.graph.invoke(self.history)
+                return EngineResult(EngineStatus.COMPLETED, latest_message_text(self.history))
+            def close(self):
+                pass
+        factory = patch("src.tools.subagents.manager.SubagentEngine", FakeEngine)
         factory.start()
         self.addCleanup(factory.stop)
+        from gateway_helpers import GatewayHandle, RecordingChannel
         return SubagentManager(
+            gateway_id=GatewayHandle(RecordingChannel()).gateway_id,
             model="model",
             parent_context_provider=kwargs.get("parent_context_provider", lambda: []),
             tool_factory=kwargs.get(
@@ -112,11 +126,11 @@ class SubagentManagerTests(unittest.TestCase):
         manager.spawn_subagent("merchant", "delegated", "Collect merchant.", tool_names="tap,uiautomate")
 
         tool_names = [tool.name for tool in manager._records["subagent-1"].tools]
-        self.assertIn("notify_user", tool_names)
+        self.assertNotIn("notify_user", tool_names)
         self.assertIn("authenticate_captcha", tool_names)
         self.assertIn("captcha_authenticated", tool_names)
         self.assertIn("think", tool_names)
-        self.assertIn("query_manual", tool_names)
+        self.assertNotIn("query_manual", tool_names)
         self.assertIn("tap", tool_names)
         self.assertIn("uiautomate", tool_names)
 

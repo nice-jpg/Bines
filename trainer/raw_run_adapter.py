@@ -1,4 +1,4 @@
-"""Adapt ``src/raw_run.py`` to the mind_controller slave contract."""
+"""Adapt ``src/application/raw_run.py`` to the mind_controller slave contract."""
 
 from __future__ import annotations
 
@@ -6,9 +6,23 @@ import importlib
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextvars import Context
-from dataclasses import is_dataclass, replace
+from dataclasses import dataclass, field
 from pathlib import Path
+from threading import current_thread, main_thread
 from typing import Any
+from uuid import uuid4
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from src.application.trace import trace_client
+from src.configuration.manager import ConfigurationManager
+from src.conductor.engine import ConductorEngine
+from src.agent_runtime.coordinator import AgentCoordinator
+from src.agent_runtime.types.execution import EngineResult, EngineStatus, InterruptKind
+from src.application.gateway_manager import GatewayManager
+from src.channel.base import Channel, MessageListener
+from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
+from src.application.model import close_model
+from src.prompts import conductor_prompt
 
 try:
     # This is the canonical import when launched through mind_controller/run_master.py.
@@ -19,7 +33,7 @@ except ModuleNotFoundError:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
-SYSTEM_PROMPT_PATH = SRC_DIR / "prompts" / "system_prompt.py"
+SYSTEM_PROMPT_PATH = SRC_DIR / "prompts" / "conductor_prompt.py"
 PAGE_MECHANISM_DIR = SRC_DIR / "prompts" / "page_mechanism"
 APP_PROBE_MESSAGE = "执行应用探测任务"
 CAPTCHA_RESUME_TEXT = "done"
@@ -30,14 +44,59 @@ src_entry = str(SRC_DIR)
 if src_entry not in sys.path:
     sys.path.insert(0, src_entry)
 
-RunResult = Any
+
+@dataclass
+class RunResult:
+    output: str
+    state: Mapping[str, object]
+    summary: list[dict[str, object]] = field(default_factory=list)
+
+
+class TrainingEngine(ConductorEngine):
+    def _system_prompt(self) -> str:
+        return conductor_prompt.CONDUCTOR_PROMPT
+
+    @property
+    def evaluation_state(self) -> Mapping[str, object]:
+        # A training report is read after execution; Coordinator never reads graph state.
+        return dict(self._state)
+
+
+class TrainingChannel(Channel):
+    def __init__(self, notifier: Callable[[str], None], session_id: str) -> None:
+        self._notifier = notifier
+        self._session_id = session_id
+        self._listener: MessageListener | None = None
+
+    @property
+    def channel_id(self) -> str:
+        return "training"
+
+    def bind_message_listener(self, listener: MessageListener) -> None:
+        self._listener = listener
+
+    def submit(self, text: str) -> None:
+        if self._listener is None or not self._listener(
+            IncomingMessage("training", self._session_id, uuid4().hex, text, "trainer")
+        ):
+            raise RuntimeError("Training input was not accepted")
+
+    def send_message(self, message: OutgoingMessage) -> None:
+        self._notifier(message.text)
+
+    def start(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
 Evaluator = Callable[[RunResult], int | dict[str, Any]]
-RuntimeFactory = Callable[..., Any]
+EngineFactory = Callable[..., TrainingEngine]
 ModelFactory = Callable[[], Any]
-ToolFactory = Callable[[Callable[[str], None]], Sequence[Any]]
 NotifierFactory = Callable[[], Callable[[str], None]]
-PromptReloader = Callable[[], RuntimeFactory]
-HumanInputProvider = Callable[[RunResult], str]
+PromptReloader = Callable[[], EngineFactory]
+HumanInputProvider = Callable[[EngineResult], str]
 
 
 class RawRunSlave:
@@ -47,9 +106,8 @@ class RawRunSlave:
         self,
         *,
         evaluator: Evaluator | None = None,
-        runtime_factory: RuntimeFactory | None = None,
+        engine_factory: EngineFactory | None = None,
         model_factory: ModelFactory | None = None,
-        tool_factory: ToolFactory | None = None,
         notifier_factory: NotifierFactory | None = None,
         prompt_reloader: PromptReloader | None = None,
         human_input_provider: HumanInputProvider | None = None,
@@ -61,11 +119,10 @@ class RawRunSlave:
         if max_iterations < 1:
             raise ValueError("max_iterations must be >= 1")
         self._evaluator = evaluator or _evaluate_raw_run
-        self._runtime_factory = runtime_factory
+        self._engine_factory = engine_factory
         self._model_factory = model_factory or _build_raw_model
-        self._tool_factory = tool_factory or _build_common_tools
         self._notifier_factory = notifier_factory or _build_plain_notifier
-        self._prompt_reloader = prompt_reloader or _reload_agent_runtime
+        self._prompt_reloader = prompt_reloader or _reload_training_engine
         self._human_input_provider = human_input_provider or _read_human_input
         self.task_message = task_message
         self.session_id = session_id
@@ -75,22 +132,50 @@ class RawRunSlave:
     def run(self) -> RunResult:
         """Return the complete raw result with an LLM-safe summary attached."""
 
-        runtime_factory = self._runtime_factory or self._prompt_reloader()
+        if current_thread() is main_thread():
+            ConfigurationManager.initialize()
+        else:
+            ConfigurationManager.instance()
+        trace_client()
+        factory = self._engine_factory or self._prompt_reloader()
         notifier = self._notifier_factory()
-        runtime = runtime_factory(
-            model=self._model_factory(),
-            tools=list(self._tool_factory(notifier)),
-            name="main",
-        )
-        result = _call_in_detached_context(
-            runtime.run_turn,
-            [{"role": "user", "content": self.task_message}],
-            session_id=self.session_id,
-            max_iterations=self.max_iterations,
-        )
-        result = self._resume_interrupts(runtime, result)
-        result = self._attach_summary(result, self._summary(result))
-        return result
+        channel = TrainingChannel(notifier, self.session_id)
+        manager = GatewayManager.instance()
+        gateway_id = manager.create(channel)
+        coordinator = None
+        model = None
+        try:
+            model = self._model_factory()
+            engine = factory(model=model, gateway_id=gateway_id, max_iterations=self.max_iterations)
+            coordinator = AgentCoordinator(engine)
+            manager.start(gateway_id)
+            channel.submit(self.task_message)
+            result = _call_in_detached_context(coordinator.run)
+            while result.status == EngineStatus.INTERRUPTED:
+                token = "done" if result.interrupt_kind == InterruptKind.HUMAN else "继续"
+                user_input = self._human_input_provider(result).strip()
+                if user_input != token:
+                    if self.print_result:
+                        print(f"[HITL] Input ignored; enter {token!r} to resume.")
+                    continue
+                channel.submit(user_input)
+                result = _call_in_detached_context(coordinator.run)
+            report = RunResult(result.output, engine.evaluation_state)
+            report.summary = self._summary(report)
+            return report
+        finally:
+            manager.stop(gateway_id)
+            try:
+                if coordinator is not None:
+                    _call_in_detached_context(coordinator.close)
+            finally:
+                manager.finish_output(gateway_id)
+                manager.join(gateway_id)
+                try:
+                    if model is not None:
+                        close_model(model)
+                finally:
+                    manager.release(gateway_id)
 
     def eval(self, result: RunResult) -> int | dict[str, Any]:
         """Delegate scoring to the evaluator defined by raw_run."""
@@ -107,9 +192,9 @@ class RawRunSlave:
         return SlaveDebugInfo(
             prompt_paths=prompt_paths,
             prompt_structure=(
-                "system_prompt.py defines the global collection policy and tool protocol. "
+                "conductor_prompt.py defines the global collection policy and tool protocol. "
                 "Each PAGE.md defines canonical, page-specific operating instructions and "
-                "is loaded dynamically by query_manual using the current page path."
+                "is injected by the runtime together with task.md for the current page path."
             ),
             responsibility=(
                 "Run one complete Android application-probing and merchant/product "
@@ -142,25 +227,8 @@ class RawRunSlave:
             working_directory=REPO_ROOT,
         )
 
-    def _resume_interrupts(self, runtime: Any, result: RunResult) -> RunResult:
-        while bool(getattr(result, "interrupted", False)):
-            if not runtime.has_pending_interrupt(self.session_id):
-                raise RuntimeError(
-                    "slave returned interrupted=True without a pending runtime checkpoint"
-                )
-            user_input = str(self._human_input_provider(result)).strip()
-            if user_input != CAPTCHA_RESUME_TEXT:
-                continue
-            result = _call_in_detached_context(
-                runtime.resume_turn,
-                session_id=self.session_id,
-                user_input=user_input,
-                max_iterations=self.max_iterations,
-            )
-        return result
-
     def _summary(self, result: RunResult) -> list[Any]:
-        state = getattr(result, "state", None)
+        state = result.state
         if not isinstance(state, Mapping):
             raise ValueError("raw run result.state must be a mapping")
         messages = state.get("messages")
@@ -169,18 +237,17 @@ class RawRunSlave:
 
         reports: list[Any] = []
         for message in messages:
-            message_type = getattr(message, "type", None)
-            if message_type == "human":
+            if isinstance(message, HumanMessage):
                 reports.append(
                     {
-                        "type": message_type,
+                        "type": message.type,
                         "content": message.content,
                     }
                 )
-            elif message_type == "ai":
+            elif isinstance(message, AIMessage):
                 reports.append(
                     {
-                        "type": message_type,
+                        "type": message.type,
                         "content": message.content,
                         "tool_calls": [
                             {
@@ -191,42 +258,17 @@ class RawRunSlave:
                         ],
                     }
                 )
-            elif message_type == "tool":
+            elif isinstance(message, ToolMessage):
                 if message.name == "notify_user":
                     continue
                 reports.append(
                     {
-                        "type": message_type,
+                        "type": message.type,
                         "name": message.name,
                         "status": message.status,
                     }
                 )
         return reports
-
-    @staticmethod
-    def _attach_summary(result: RunResult, summary: list[Any]) -> RunResult:
-        if is_dataclass(result):
-            try:
-                return replace(result, summary=summary)
-            except TypeError as exc:
-                raise TypeError(
-                    "raw run result dataclass must declare a summary field"
-                ) from exc
-        try:
-            setattr(result, "summary", summary)
-        except (AttributeError, TypeError) as exc:
-            raise TypeError("raw run result must support a summary field") from exc
-        return result
-
-
-def _build_common_tools(notifier: Callable[[str], None]) -> Sequence[Any]:
-    raw_run = _raw_run_module()
-    operation_notice = raw_run.OperationNoticeTool(notifier=notifier)
-    captcha_authentication = raw_run.CaptchaAuthenticationTool(notifier=notifier)
-    return raw_run.create_common_tools(
-        operation_notice_tool=operation_notice,
-        captcha_authentication_tool=captcha_authentication,
-    )
 
 
 def _evaluate_raw_run(result: RunResult) -> int | dict[str, Any]:
@@ -242,30 +284,20 @@ def _build_plain_notifier() -> Callable[[str], None]:
 
 
 def _raw_run_module() -> Any:
-    return importlib.import_module("raw_run")
+    return importlib.import_module("src.application.raw_run")
 
 
-def _reload_agent_runtime() -> RuntimeFactory:
-    """Reload the import-time SYSTEM_PROMPT binding used by AgentRuntime."""
-
-    system_prompt_module = importlib.import_module("prompts.system_prompt")
-    prompts_module = importlib.import_module("prompts")
-    agent_module = importlib.import_module("agent")
-
+def _reload_training_engine() -> EngineFactory:
+    """Reload the prompt read by the training engine's protected extension point."""
     importlib.invalidate_caches()
-    importlib.reload(system_prompt_module)
-    # prompts.__init__ re-exports SYSTEM_PROMPT, and agent imports that value.
-    importlib.reload(prompts_module)
-    importlib.reload(agent_module)
-    return agent_module.AgentRuntime
+    importlib.reload(conductor_prompt)
+    return TrainingEngine
 
 
-def _read_human_input(_result: RunResult) -> str:
+def _read_human_input(result: EngineResult) -> str:
+    token = CAPTCHA_RESUME_TEXT if result.interrupt_kind == InterruptKind.HUMAN else "继续"
     try:
-        return input(
-            "Agent execution is waiting for human captcha authentication. "
-            f"Complete it, then enter {CAPTCHA_RESUME_TEXT!r}: "
-        )
+        return input(f"Agent execution paused. Resolve the issue, then enter {token!r}: ")
     except EOFError as exc:
         raise RuntimeError(
             "HITL input is unavailable; provide RawRunSlave(human_input_provider=...) "

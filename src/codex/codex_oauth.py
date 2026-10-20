@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import concurrent.futures
 import json
 import logging
-import os
 import threading
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 from uuid import uuid7
 
 import websockets
@@ -17,27 +17,80 @@ from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackMana
 from langchain_core.language_models.base import LanguageModelInput
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, SystemMessage, ToolMessage
+from langchain_core.messages.ai import InputTokenDetails, OutputTokenDetails, UsageMetadata
+from langchain_core.messages.tool import ToolCall
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from langchain_core.utils.function_calling import convert_to_openai_tool
-from pydantic import Field, PrivateAttr
+from langchain_core.utils.function_calling import (
+    convert_to_openai_tool,  # pyright: ignore[reportUnknownVariableType]
+)
+from pydantic import BaseModel, Field, PrivateAttr
+from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
+from websockets.frames import Close
+from websockets.protocol import State
 
-logger = logging.getLogger(__name__)
+from src.agent_messages.text import (
+    message_additional_kwargs,
+    message_content,
+    message_response_metadata,
+)
+from src.codex.protocol_types import (
+    CodexMessageMetadata,
+    CodexRequestOptions,
+    CreateResponseRequest,
+    CustomCallInput,
+    FunctionCallInput,
+    FunctionOutput,
+    InputContent,
+    ReasoningConfig,
+    ReasoningInput,
+    ResponseEvent,
+    ResponseInput,
+    ResponseItem,
+    ResponseMetadata,
+    ResponsePayload,
+    ResponseText,
+    ResponseUsage,
+    UsageSummary,
+    read_codex_message_metadata,
+    read_request_options,
+    read_response_event,
+    read_response_usage,
+)
+from src.common.utils.json import JsonObject, JsonValue, json_object, json_value, load_json
+from src.common.utils.validation import is_string_mapping
+from src.configuration.errors import ConfigurationError, ConfigurationKeyError
+from src.configuration.manager import ConfigurationManager
+from src.configuration.types import ConfigValue
+
+DEFAULT_CODEX_WS_URL: Final[str] = "wss://chatgpt.com/backend-api/codex/responses"
+
+logger: logging.Logger = logging.getLogger(__name__)
+
+
+def _codex_setting(name: str) -> str | None:
+    try:
+        value: ConfigValue = ConfigurationManager.instance().get_other("codex", name)
+    except ConfigurationKeyError:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigurationError("Codex connection settings must be nonempty strings.")
+    return value
 
 
 class CodexOAuthTokenProvider:
     """Loads Codex login credentials the same way as ws_probe_codex_login.sh."""
 
-    def __init__(self, auth_path: str | Path | None = None) -> None:
-        self.auth_path = Path(auth_path or self._default_auth_path()).expanduser()
+    def __init__(self) -> None:
+        self.auth_path: Path = self._default_auth_path().expanduser()
 
     def _default_auth_path(self) -> Path:
-        auth_json = os.getenv("AUTH_JSON")
+        auth_json: str | None = _codex_setting("auth_json")
         if auth_json:
             return Path(auth_json)
-        codex_home = Path(os.getenv("CODEX_HOME", "~/.codex")).expanduser()
+        codex_home: Path = Path(_codex_setting("home") or "~/.codex").expanduser()
         return codex_home / "auth.json"
 
     def get_credentials(self) -> tuple[str, str]:
@@ -47,20 +100,24 @@ class CodexOAuthTokenProvider:
                 "Run `codex login` first, or set AUTH_JSON to a file-based Codex auth state."
             )
 
-        data = json.loads(self.auth_path.read_text(encoding="utf-8"))
+        data: JsonValue = load_json(self.auth_path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise RuntimeError(f"Invalid Codex auth file: {self.auth_path}. Expected a JSON object.")
-        tokens = data.get("tokens")
+        tokens: JsonValue = data.get("tokens")
         if not isinstance(tokens, dict):
             tokens = {}
-        token = tokens.get("access_token") or data.get("OPENAI_API_KEY")
+        token: JsonValue = tokens.get("access_token") or data.get("OPENAI_API_KEY")
         if not token:
             raise RuntimeError(
                 f"Token not found in {self.auth_path}. Expected `.tokens.access_token` "
                 "or `.OPENAI_API_KEY`, matching ws_probe_codex_login.sh."
             )
-        account_id = tokens.get("account_id") or ""
-        return str(token), str(account_id)
+        account_id: str | int | float | list[JsonValue] | dict[str, JsonValue] | bool = (
+            tokens.get("account_id") or ""
+        )
+        if not isinstance(token, str) or not isinstance(account_id, str):
+            raise RuntimeError("Codex access token and account id must be strings")
+        return token, account_id
 
     def get_token(self) -> str:
         token, _account_id = self.get_credentials()
@@ -75,7 +132,7 @@ class OpenAICodexModel(BaseChatModel):
     """LangChain chat model backed by Codex's ChatGPT WebSocket endpoint."""
 
     model: str = "gpt-5.1"
-    ws_url: str = "wss://chatgpt.com/backend-api/codex/responses"
+    ws_url: str = DEFAULT_CODEX_WS_URL
     wait_seconds: float = 600.0
     connect_timeout_seconds: float = 20.0
     max_connection_age_seconds: float = 55.0 * 60.0
@@ -85,9 +142,9 @@ class OpenAICodexModel(BaseChatModel):
     store_responses: bool = False
     session_id: str = Field(default_factory=lambda: str(uuid7()))
     token_provider: CodexOAuthTokenProvider = Field(default_factory=CodexOAuthTokenProvider)
-    _usage_records: list[dict[str, Any]] = PrivateAttr(default_factory=list)
+    _usage_records: list[ResponseUsage] = PrivateAttr(default_factory=list[ResponseUsage])
     _usage_totals: dict[str, int] = PrivateAttr(default_factory=dict)
-    _ws: Any | None = PrivateAttr(default=None)
+    _ws: ClientConnection | None = PrivateAttr(default=None)
     _request_lock: asyncio.Lock | None = PrivateAttr(default=None)
     _connected_at: float | None = PrivateAttr(default=None)
     _connection_response_id: str | None = PrivateAttr(default=None)
@@ -105,9 +162,9 @@ class OpenAICodexModel(BaseChatModel):
         messages: list[BaseMessage],
         stop: list[str] | None = None,
         run_manager: CallbackManagerForLLMRun | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> ChatResult:
-        message = self._submit_request(messages, **kwargs).result()
+        message: AIMessage = self._submit_request(messages, **kwargs).result()
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     async def _agenerate(
@@ -115,20 +172,19 @@ class OpenAICodexModel(BaseChatModel):
         messages: list[BaseMessage],
         stop: list[str] | None = None,
         run_manager: AsyncCallbackManagerForLLMRun | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> ChatResult:
-        message = await asyncio.wrap_future(self._submit_request(messages, **kwargs))
+        message: AIMessage = await asyncio.wrap_future(self._submit_request(messages, **kwargs))
         return ChatResult(generations=[ChatGeneration(message=message)])
 
-    
     def bind_tools(
         self,
-        tools: Sequence[builtins.dict[str, Any] | type | Callable | BaseTool],
+        tools: Sequence[builtins.dict[str, Any] | type[BaseModel] | Callable[..., Any] | BaseTool],
         *,
         tool_choice: builtins.dict[str, Any] | str | bool | None = None,
         strict: bool | None = None,
         parallel_tool_calls: bool | None = None,
-        **kwargs: Any,
+        **kwargs: object,
     ) -> Runnable[LanguageModelInput, AIMessage]:
         """Bind LangChain tools using OpenAI-compatible tool schemas.
 
@@ -137,22 +193,25 @@ class OpenAICodexModel(BaseChatModel):
         tools are converted once here and later injected into ``response.create``.
         """
 
-        formatted_tools = [_to_responses_tool(convert_to_openai_tool(tool, strict=strict)) for tool in tools]
-        bind_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        formatted_tools: list[JsonObject] = [
+            _to_responses_tool(json_object(convert_to_openai_tool(tool, strict=strict))) for tool in tools
+        ]
+        bind_kwargs: dict[str, object] = {key: value for key, value in kwargs.items() if value is not None}
         bind_kwargs["tools"] = formatted_tools
         if tool_choice is not None:
-            bind_kwargs["tool_choice"] = _normalize_tool_choice(tool_choice)
+            bind_kwargs["tool_choice"] = _normalize_tool_choice(
+                json_object(tool_choice) if isinstance(tool_choice, dict) else tool_choice
+            )
         if parallel_tool_calls is not None:
             bind_kwargs["parallel_tool_calls"] = parallel_tool_calls
         return self.bind(**bind_kwargs)
 
-
     def _submit_request(
         self,
         messages: list[BaseMessage],
-        **kwargs: Any,
+        **kwargs: object,
     ) -> concurrent.futures.Future[AIMessage]:
-        loop = self._ensure_transport_started()
+        loop: asyncio.AbstractEventLoop | None = self._ensure_transport_started()
         return asyncio.run_coroutine_threadsafe(self._request(messages, **kwargs), loop)
 
     def _ensure_transport_started(self) -> asyncio.AbstractEventLoop:
@@ -167,8 +226,8 @@ class OpenAICodexModel(BaseChatModel):
             ):
                 return self._transport_loop
 
-            loop = asyncio.new_event_loop()
-            ready = threading.Event()
+            loop: asyncio.AbstractEventLoop | None = asyncio.new_event_loop()
+            ready: threading.Event = threading.Event()
 
             def run_transport_loop() -> None:
                 asyncio.set_event_loop(loop)
@@ -177,14 +236,14 @@ class OpenAICodexModel(BaseChatModel):
                 try:
                     loop.run_forever()
                 finally:
-                    pending = asyncio.all_tasks(loop)
+                    pending: set[asyncio.Task[object]] = asyncio.all_tasks(loop)
                     for task in pending:
                         task.cancel()
                     if pending:
                         loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
                     loop.close()
 
-            thread = threading.Thread(
+            thread: threading.Thread | None = threading.Thread(
                 target=run_transport_loop,
                 name=f"codex-websocket-{id(self)}",
                 daemon=True,
@@ -195,22 +254,23 @@ class OpenAICodexModel(BaseChatModel):
             ready.wait()
             return loop
 
-    async def _request(self, messages: list[BaseMessage], **kwargs: Any) -> AIMessage:
+    async def _request(self, messages: list[BaseMessage], **kwargs: object) -> AIMessage:
         if self._request_lock is None:
             raise RuntimeError("Codex WebSocket transport is not initialized.")
-        request_id = str(uuid7())
+        request_id: str = str(uuid7())
 
         async with self._request_lock:
             # Retry a failed send once. Rebuild after reconnecting because an
             # unstored previous response belongs to the old connection.
+            ws: ClientConnection | None = None
             for attempt in range(2):
                 try:
                     ws = await self._ensure_connection()
                 except Exception as error:
                     self._log_transport_failure(request_id, "connect", error)
                     raise
-                request = self._build_request_for_connection(messages, kwargs)
-                payload = json.dumps(request, ensure_ascii=False)
+                request: CreateResponseRequest = self._build_request_for_connection(messages, kwargs)
+                payload: str = json.dumps(request, ensure_ascii=False)
                 _write_protocol_log("request", request)
                 try:
                     await ws.send(payload)
@@ -225,8 +285,10 @@ class OpenAICodexModel(BaseChatModel):
                 else:
                     break
 
+            if ws is None:
+                raise RuntimeError("Codex connection was not established")
             try:
-                message = await self._read_response(ws)
+                message: AIMessage = await self._read_response(ws)
             except asyncio.CancelledError:
                 await self._invalidate_connection()
                 raise
@@ -243,16 +305,14 @@ class OpenAICodexModel(BaseChatModel):
     def _build_request_for_connection(
         self,
         messages: list[BaseMessage],
-        kwargs: Mapping[str, Any],
-    ) -> dict[str, Any]:
-        explicit_continuation = "previous_response_id" in kwargs
+        kwargs: Mapping[str, object],
+    ) -> CreateResponseRequest:
+        options: CodexRequestOptions = read_request_options(kwargs)
+        explicit_continuation: bool = "previous_response_id" in options
         return self._build_request(
             messages,
-            auto_previous_response=(
-                not explicit_continuation
-                and self._can_continue_from_history(messages)
-            ),
-            **kwargs,
+            auto_previous_response=(not explicit_continuation and self._can_continue_from_history(messages)),
+            **options,
         )
 
     def _can_continue_from_history(self, messages: Sequence[BaseMessage]) -> bool:
@@ -263,10 +323,11 @@ class OpenAICodexModel(BaseChatModel):
             return True
         return _message_response_is_stored(messages[anchor_index])
 
-    async def _ensure_connection(self) -> Any:
-        loop = asyncio.get_running_loop()
+    async def _ensure_connection(self) -> ClientConnection:
+        loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         if (
-            _connection_is_open(self._ws)
+            self._ws is not None
+            and _connection_is_open(self._ws)
             and self._connected_at is not None
             and loop.time() - self._connected_at < self._connection_reuse_seconds()
         ):
@@ -274,8 +335,8 @@ class OpenAICodexModel(BaseChatModel):
 
         await self._invalidate_connection()
         token, account_id = self.token_provider.get_credentials()
-        sid = self.session_id
-        headers = {
+        sid: str = self.session_id
+        headers: dict[str, str] = {
             "Authorization": f"Bearer {token}",
             "OpenAI-Beta": "responses_websockets=2026-02-06",
             "originator": "codex_cli_rs",
@@ -314,7 +375,7 @@ class OpenAICodexModel(BaseChatModel):
         close_code: int | None = None
         close_reason: str | None = None
         if isinstance(error, ConnectionClosed):
-            close_frame = error.rcvd or error.sent
+            close_frame: Close | None = error.rcvd or error.sent
             if close_frame is not None:
                 close_code = close_frame.code
                 close_reason = close_frame.reason or None
@@ -331,7 +392,7 @@ class OpenAICodexModel(BaseChatModel):
         )
 
     async def _invalidate_connection(self) -> None:
-        ws = self._ws
+        ws: ClientConnection | None = self._ws
         self._ws = None
         self._connected_at = None
         self._connection_response_id = None
@@ -345,12 +406,14 @@ class OpenAICodexModel(BaseChatModel):
     def close(self) -> None:
         """Close the persistent WebSocket transport, if it is running."""
 
-        state = self._begin_transport_shutdown()
+        state: tuple[asyncio.AbstractEventLoop, threading.Thread] | None = self._begin_transport_shutdown()
         if state is None:
             return
         loop, thread = state
         try:
-            future = asyncio.run_coroutine_threadsafe(self._close_connection_when_idle(), loop)
+            future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
+                self._close_connection_when_idle(), loop
+            )
             future.result(timeout=max(self.wait_seconds, 5.0))
         finally:
             self._finish_transport_shutdown(loop, thread)
@@ -358,12 +421,14 @@ class OpenAICodexModel(BaseChatModel):
     async def aclose(self) -> None:
         """Asynchronously close the persistent WebSocket transport."""
 
-        state = self._begin_transport_shutdown()
+        state: tuple[asyncio.AbstractEventLoop, threading.Thread] | None = self._begin_transport_shutdown()
         if state is None:
             return
         loop, thread = state
         try:
-            future = asyncio.run_coroutine_threadsafe(self._close_connection_when_idle(), loop)
+            future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
+                self._close_connection_when_idle(), loop
+            )
             await asyncio.wrap_future(future)
         finally:
             loop.call_soon_threadsafe(loop.stop)
@@ -376,8 +441,8 @@ class OpenAICodexModel(BaseChatModel):
         with self._transport_guard:
             if self._transport_closing:
                 return None
-            loop = self._transport_loop
-            thread = self._transport_thread
+            loop: asyncio.AbstractEventLoop | None = self._transport_loop
+            thread: threading.Thread | None = self._transport_thread
             if loop is None or loop.is_closed() or thread is None or not thread.is_alive():
                 self._transport_loop = None
                 self._transport_thread = None
@@ -417,13 +482,13 @@ class OpenAICodexModel(BaseChatModel):
             self._request_lock = None
             self._transport_closing = False
 
-    def get_usage_summary(self) -> dict[str, Any]:
+    def get_usage_summary(self) -> UsageSummary:
         """Return cumulative token usage observed by this model instance."""
 
         return {
             "responses": len(self._usage_records),
             "totals": dict(self._usage_totals),
-            "records": [dict(record) for record in self._usage_records],
+            "records": [record.copy() for record in self._usage_records],
         }
 
     def reset_usage(self) -> None:
@@ -436,23 +501,23 @@ class OpenAICodexModel(BaseChatModel):
         self,
         messages: list[BaseMessage],
         *,
-        tools: Sequence[Mapping[str, Any]] | None = None,
-        tool_choice: dict[str, Any] | str | bool | None = None,
+        tools: Sequence[Mapping[str, JsonValue]] | None = None,
+        tool_choice: JsonObject | str | bool | None = None,
         parallel_tool_calls: bool = True,
         previous_response_id: str | None = None,
         store: bool | None = None,
         auto_previous_response: bool = True,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        instructions = self.instructions
-        leading_system_count = 0
+        **kwargs: object,
+    ) -> CreateResponseRequest:
+        instructions: str = self.instructions
+        leading_system_count: int = 0
         for message in messages:
             if not isinstance(message, SystemMessage):
                 break
             instructions = f"{instructions}\n\n{self._message_text(message)}"
             leading_system_count += 1
 
-        should_store = self.store_responses if store is None else bool(store)
+        should_store: bool = self.store_responses if store is None else bool(store)
         anchor_index: int | None = None
         if previous_response_id is not None:
             previous_response_id = str(previous_response_id).strip() or None
@@ -461,25 +526,23 @@ class OpenAICodexModel(BaseChatModel):
         elif auto_previous_response:
             anchor_index, previous_response_id = _latest_response_anchor(messages)
 
-        input_start = leading_system_count
+        input_start: int = leading_system_count
         if anchor_index is not None:
             input_start = max(input_start, anchor_index + 1)
 
-        input_messages: list[dict[str, Any]] = []
+        input_messages: list[ResponseInput] = []
         for message in messages[input_start:]:
             if isinstance(message, SystemMessage):
                 input_messages.append(
                     {
                         "type": "message",
                         "role": "developer",
-                        "content": [
-                            {"type": "input_text", "text": self._message_text(message)}
-                        ],
+                        "content": [{"type": "input_text", "text": self._message_text(message)}],
                     }
                 )
                 continue
             if isinstance(message, ToolMessage):
-                custom_output = _custom_tool_output(message)
+                custom_output: FunctionOutput | None = _custom_tool_output(message)
                 if custom_output is not None:
                     input_messages.append(custom_output)
                 else:
@@ -487,18 +550,19 @@ class OpenAICodexModel(BaseChatModel):
                         {
                             "type": "function_call_output",
                             "call_id": str(message.tool_call_id or ""),
-                            "output": _to_responses_input_content(message) if isinstance(message.content, list)
+                            "output": _to_responses_input_content(message)
+                            if isinstance(message_content(message), list)
                             else self._message_text(message),
                         }
                     )
                 continue
             if isinstance(message, AIMessage):
-                for reasoning_item in (
-                    message.additional_kwargs.get("reasoning_items", []) or []
-                ):
-                    if isinstance(reasoning_item, Mapping):
-                        input_messages.append(dict(reasoning_item))
-                content = self._message_text(message)
+                codex_metadata: CodexMessageMetadata = read_codex_message_metadata(
+                    message_additional_kwargs(message)
+                )
+                for reasoning_item in codex_metadata.get("reasoning_items", []):
+                    input_messages.append(reasoning_item)
+                content: str = self._message_text(message)
                 if content:
                     input_messages.append(
                         {
@@ -507,11 +571,9 @@ class OpenAICodexModel(BaseChatModel):
                             "content": [{"type": "output_text", "text": content}],
                         }
                     )
-                custom_call_ids = set(
-                    message.additional_kwargs.get("custom_tool_call_ids", []) or []
-                )
+                custom_call_ids: set[str] = set(codex_metadata.get("custom_tool_call_ids", []))
                 for tool_call in message.tool_calls:
-                    call_id = _tool_call_id(tool_call)
+                    call_id: str = _tool_call_id(tool_call)
                     if call_id in custom_call_ids:
                         input_messages.append(_to_responses_custom_tool_call(tool_call))
                     else:
@@ -525,14 +587,16 @@ class OpenAICodexModel(BaseChatModel):
                 }
             )
 
-        reasoning = (
+        reasoning: ReasoningConfig | None = (
             {
                 "effort": self.reasoning_effort,
                 "summary": "detailed" if self.reasoning_effort else "auto",
-            } if self.reasoning_effort is not None else None
+            }
+            if self.reasoning_effort is not None
+            else None
         )
 
-        request = {
+        request: CreateResponseRequest = {
             "type": "response.create",
             "model": self.model,
             "instructions": instructions,
@@ -547,44 +611,43 @@ class OpenAICodexModel(BaseChatModel):
         }
         if previous_response_id is not None:
             request["previous_response_id"] = previous_response_id
-            request["prompt_cache_options"] = {
-                "comparison_response_id": previous_response_id,
-                "ttl": "30ms"
-            }
+            request["prompt_cache_options"] = {"comparison_response_id": previous_response_id, "ttl": "30ms"}
         return request
 
     def _message_text(self, message: BaseMessage) -> str:
-        content = message.content
+        content: object = message_content(message)
         if isinstance(content, str):
             return content
         return json.dumps(content, ensure_ascii=False)
 
-    async def _read_response(self, ws: Any) -> AIMessage:
+    async def _read_response(self, ws: ClientConnection) -> AIMessage:
         text_parts: dict[tuple[int, int], list[str]] = {}
-        output_items: dict[str, dict[str, Any]] = {}
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.wait_seconds
+        output_items: dict[str, ResponseItem] = {}
+        loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        deadline: float = loop.time() + self.wait_seconds
         while True:
-            remaining = deadline - loop.time()
+            remaining: float = deadline - loop.time()
             if remaining <= 0:
                 raise TimeoutError("No response.completed event received from Codex WebSocket.")
-            message = await asyncio.wait_for(ws.recv(), timeout=remaining)
+            message: str | bytes = await asyncio.wait_for(ws.recv(), timeout=remaining)
             if isinstance(message, bytes):
                 continue
-            data = json.loads(message)
-            event_type = data.get("type")
+            data: ResponseEvent = read_response_event(message)
+            event_type: str | None = data.get("type")
             if event_type in {"response.output_text.delta", "response.text.delta"}:
-                text_key = (data.get("output_index", 0), data.get("content_index", 0))
+                text_key: tuple[int, int] = (data.get("output_index", 0), data.get("content_index", 0))
                 text_parts.setdefault(text_key, []).append(str(data.get("delta", "")))
             elif event_type in {"response.output_text.done", "response.text.done"}:
-                if isinstance(data.get("text"), str):
+                completed_text: str | None = data.get("text")
+                if completed_text is not None:
                     text_key = (data.get("output_index", 0), data.get("content_index", 0))
-                    text_parts[text_key] = [data["text"]]
+                    text_parts[text_key] = [completed_text]
             elif event_type in {"response.output_item.added", "response.output_item.done"}:
-                item = data.get("item")
-                if isinstance(item, dict):
-                    item_key = (
-                        f"index:{data['output_index']}" if "output_index" in data
+                item: ResponseItem | None = data.get("item")
+                if item is not None:
+                    item_key: str = (
+                        f"index:{data['output_index']}"
+                        if "output_index" in data
                         else _response_item_key(item, len(output_items))
                     )
                     output_items[item_key] = item
@@ -592,9 +655,7 @@ class OpenAICodexModel(BaseChatModel):
                 _write_protocol_log("response", data)
                 return self._completed_message(
                     data,
-                    fallback_text="".join(
-                        chunk for key in sorted(text_parts) for chunk in text_parts[key]
-                    ),
+                    fallback_text="".join(chunk for key in sorted(text_parts) for chunk in text_parts[key]),
                     fallback_items=list(output_items.values()),
                 )
             elif event_type in {"response.failed", "response.incomplete"}:
@@ -604,14 +665,14 @@ class OpenAICodexModel(BaseChatModel):
 
     def _completed_message(
         self,
-        data: dict[str, Any],
+        data: ResponseEvent,
         fallback_text: str = "",
         *,
-        fallback_items: Sequence[Mapping[str, Any]] = (),
+        fallback_items: Sequence[ResponseItem] = (),
     ) -> AIMessage:
-        response = data.get("response")
-        output = response.get("output") if isinstance(response, Mapping) else None
-        if not isinstance(output, list) or not output:
+        response: ResponsePayload | None = data.get("response")
+        output: Sequence[ResponseItem] | None = response.get("output") if response is not None else None
+        if output is None or not output:
             output = fallback_items
         return _message_from_response_items(
             output,
@@ -622,53 +683,55 @@ class OpenAICodexModel(BaseChatModel):
         )
 
     def _record_usage(self, message: AIMessage) -> None:
-        usage = message.response_metadata.get("usage") if isinstance(message.response_metadata, dict) else None
-        if not isinstance(usage, Mapping):
+        raw_usage: object = message_response_metadata(message).get("usage")
+        if not is_string_mapping(raw_usage):
             return
-
-        record = dict(usage)
-        self._usage_records.append(record)
+        usage: ResponseUsage = read_response_usage(raw_usage)
+        self._usage_records.append(usage.copy())
         _add_usage_total(self._usage_totals, "input_tokens", usage.get("input_tokens"))
         _add_usage_total(self._usage_totals, "output_tokens", usage.get("output_tokens"))
         _add_usage_total(self._usage_totals, "total_tokens", usage.get("total_tokens"))
-
-        input_details = usage.get("input_tokens_details")
-        if isinstance(input_details, Mapping):
+        input_details: dict[str, int] | None = usage.get("input_tokens_details")
+        if input_details is not None:
             _add_usage_total(self._usage_totals, "cached_tokens", input_details.get("cached_tokens"))
-        output_details = usage.get("output_tokens_details")
-        if isinstance(output_details, Mapping):
+        output_details: dict[str, int] | None = usage.get("output_tokens_details")
+        if output_details is not None:
             _add_usage_total(self._usage_totals, "reasoning_tokens", output_details.get("reasoning_tokens"))
 
 
-def _to_responses_input_content(message: BaseMessage) -> list[dict[str, str]]:
+def _to_responses_input_content(message: BaseMessage) -> list[InputContent]:
     """Preserve text/image blocks instead of serializing image bytes as text."""
-    content = message.content
+    content: JsonValue = json_value(message_content(message))
     if isinstance(content, str):
         return [{"type": "input_text", "text": content}]
 
-    result: list[dict[str, str]] = []
+    if not isinstance(content, list):
+        raise ValueError("Message content must be text or a list of blocks")
+    result: list[InputContent] = []
     for block in content:
         if isinstance(block, str):
             result.append({"type": "input_text", "text": block})
             continue
-        kind = block.get("type")
+        if not isinstance(block, dict):
+            raise ValueError("Message content blocks must be strings or objects")
+        kind: JsonValue = block.get("type")
         if kind in ("text", "input_text"):
-            text = block.get("text")
+            text: JsonValue = block.get("text")
             if not isinstance(text, str):
                 raise ValueError("Text input blocks require a string 'text'")
             result.append({"type": "input_text", "text": text})
             continue
         if kind == "image_url":
-            image = block.get("image_url")
-            url = image.get("url") if isinstance(image, Mapping) else image
-            detail = image.get("detail") if isinstance(image, Mapping) else None
+            image: JsonValue = block.get("image_url")
+            url: JsonValue = image.get("url") if isinstance(image, dict) else image
+            detail: JsonValue = image.get("detail") if isinstance(image, dict) else None
             if not isinstance(url, str) or not url:
                 raise ValueError("Image input blocks require a non-empty image URL")
-            converted = {"type": "input_image", "image_url": url}
+            converted: InputContent = {"type": "input_image", "image_url": url}
         elif kind == "input_image":
             converted = {"type": "input_image"}
             for key in ("image_url", "file_id"):
-                value = block.get(key)
+                value: JsonValue = block.get(key)
                 if value is not None:
                     if not isinstance(value, str) or not value:
                         raise ValueError(f"Image input '{key}' must be a non-empty string")
@@ -686,12 +749,12 @@ def _to_responses_input_content(message: BaseMessage) -> list[dict[str, str]]:
     return result
 
 
-def _to_responses_tool(tool: Mapping[str, Any]) -> dict[str, Any]:
+def _to_responses_tool(tool: Mapping[str, JsonValue]) -> JsonObject:
     """Convert OpenAI chat-completions tool schema to Responses API schema."""
 
-    if tool.get("type") == "function" and isinstance(tool.get("function"), Mapping):
-        function = tool["function"]
-        result = {
+    function: JsonValue = tool.get("function")
+    if tool.get("type") == "function" and isinstance(function, dict):
+        result: JsonObject = {
             "type": "function",
             "name": function.get("name", ""),
             "description": function.get("description", ""),
@@ -703,11 +766,11 @@ def _to_responses_tool(tool: Mapping[str, Any]) -> dict[str, Any]:
     return dict(tool)
 
 
-def _write_protocol_log(kind: str, data: Mapping[str, Any]) -> None:
-    log_dir = Path("workspace/logs/codex_responses")
+def _write_protocol_log(kind: str, data: Mapping[str, object]) -> None:
+    log_dir: Path = Path("workspace/logs/codex_responses")
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now(timezone.utc).isoformat()
+        timestamp: str = datetime.now(UTC).isoformat()
         with (log_dir / f"codex_{timestamp}_{kind}.json").open("w", encoding="utf-8") as file:
             json.dump(data, file, ensure_ascii=False)
     except OSError:
@@ -715,43 +778,28 @@ def _write_protocol_log(kind: str, data: Mapping[str, Any]) -> None:
         logger.warning("Unable to write Codex protocol log", exc_info=True)
 
 
-def _response_item_key(item: Mapping[str, Any], fallback_index: int) -> str:
-    return str(
-        item.get("id")
-        or item.get("call_id")
-        or item.get("item_id")
-        or f"item_{fallback_index}"
-    )
+def _response_item_key(item: ResponseItem, fallback_index: int) -> str:
+    return str(item.get("id") or item.get("call_id") or item.get("item_id") or f"item_{fallback_index}")
 
 
-def _connection_is_open(ws: Any | None) -> bool:
-    if ws is None:
-        return False
-    state = getattr(ws, "state", None)
-    if state is not None:
-        return getattr(state, "name", str(state)).upper() == "OPEN"
-    closed = getattr(ws, "closed", None)
-    if closed is not None:
-        return not bool(closed)
-    return True
+def _connection_is_open(ws: ClientConnection | None) -> bool:
+    return ws is not None and ws.state is State.OPEN
 
 
 def _message_from_response_items(
-    items: Sequence[Any],
+    items: Sequence[ResponseItem],
     fallback_text: str = "",
-    usage: Mapping[str, Any] | None = None,
+    usage: ResponseUsage | None = None,
     response_id: str | None = None,
     response_store: bool | None = None,
 ) -> AIMessage:
     texts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    reasoning_items: list[dict[str, Any]] = []
+    tool_calls: list[ToolCall] = []
+    reasoning_items: list[ReasoningInput] = []
     custom_tool_call_ids: list[str] = []
     for item in items:
-        if not isinstance(item, Mapping):
-            continue
         if item.get("type") == "reasoning":
-            reasoning_item = _reasoning_input_item(item)
+            reasoning_item: ReasoningInput | None = _reasoning_input_item(item)
             if reasoning_item is not None:
                 reasoning_items.append(reasoning_item)
             continue
@@ -759,12 +807,14 @@ def _message_from_response_items(
             tool_calls.append(_parse_responses_function_call(item))
             continue
         if item.get("type") == "custom_tool_call":
-            tool_call = _parse_responses_custom_tool_call(item)
+            tool_call: ToolCall = _parse_responses_custom_tool_call(item)
             tool_calls.append(tool_call)
-            custom_tool_call_ids.append(tool_call["id"])
+            custom_call_id: str | None = tool_call["id"]
+            if custom_call_id is not None:
+                custom_tool_call_ids.append(custom_call_id)
             continue
         texts.extend(_response_item_texts(item))
-    metadata = _response_metadata(
+    metadata: ResponseMetadata = _response_metadata(
         usage,
         response_id=response_id,
         response_store=response_store,
@@ -774,82 +824,78 @@ def _message_from_response_items(
         tool_calls=tool_calls,
         additional_kwargs={
             **({"reasoning_items": reasoning_items} if reasoning_items else {}),
-            **(
-                {"custom_tool_call_ids": custom_tool_call_ids}
-                if custom_tool_call_ids
-                else {}
-            ),
+            **({"custom_tool_call_ids": custom_tool_call_ids} if custom_tool_call_ids else {}),
         },
         response_metadata=metadata,
         usage_metadata=_usage_metadata(usage),
     )
 
 
-def _reasoning_input_item(item: Mapping[str, Any]) -> dict[str, Any] | None:
-    encrypted_content = item.get("encrypted_content")
+def _reasoning_input_item(item: ResponseItem) -> ReasoningInput | None:
+    encrypted_content: str | None = item.get("encrypted_content")
     if not isinstance(encrypted_content, str) or not encrypted_content:
         return None
-    result: dict[str, Any] = {
+    result: ReasoningInput = {
         "type": "reasoning",
         "summary": list(item.get("summary") or []),
         "encrypted_content": encrypted_content,
     }
-    content = item.get("content")
-    if isinstance(content, list) and content:
+    content: list[ResponseText] | None = item.get("content")
+    if content is not None and content:
         result["content"] = list(content)
     return result
 
 
-def _response_item_texts(item: Mapping[str, Any]) -> list[str]:
+def _response_item_texts(item: ResponseItem) -> list[str]:
     texts: list[str] = []
-    if isinstance(item.get("output_text"), str):
-        texts.append(str(item["output_text"]))
-    if isinstance(item.get("text"), str) and item.get("type") in {"message", "output_text"}:
-        texts.append(str(item["text"]))
-
-    content = item.get("content")
-    if isinstance(content, list):
-        for content_item in content:
-            if isinstance(content_item, Mapping) and isinstance(content_item.get("text"), str):
-                texts.append(str(content_item["text"]))
+    output_text: str | None = item.get("output_text")
+    if output_text is not None:
+        texts.append(output_text)
+    text: str | None = item.get("text")
+    if text is not None and item.get("type") in {"message", "output_text"}:
+        texts.append(text)
+    for content_item in item.get("content", []):
+        block_text: str | None = content_item.get("text")
+        if block_text is not None:
+            texts.append(block_text)
     return texts
 
 
-def _response_usage(data: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    response = data.get("response")
-    if not isinstance(response, Mapping):
+def _response_usage(data: ResponseEvent) -> ResponseUsage | None:
+    response: ResponsePayload | None = data.get("response")
+    if response is None:
         return None
-    usage = response.get("usage")
-    return usage if isinstance(usage, Mapping) else None
+    usage: ResponseUsage | None = response.get("usage")
+    return usage
 
 
-def _response_id(data: Mapping[str, Any]) -> str | None:
-    response = data.get("response")
-    if not isinstance(response, Mapping):
+def _response_id(data: ResponseEvent) -> str | None:
+    response: ResponsePayload | None = data.get("response")
+    if response is None:
         return None
-    response_id = response.get("id")
+    response_id: str | None = response.get("id")
     if not isinstance(response_id, str) or not response_id.strip():
         return None
     return response_id
 
 
-def _response_store(data: Mapping[str, Any]) -> bool | None:
-    response = data.get("response")
-    if not isinstance(response, Mapping):
+def _response_store(data: ResponseEvent) -> bool | None:
+    response: ResponsePayload | None = data.get("response")
+    if response is None:
         return None
-    store = response.get("store")
+    store: bool | None = response.get("store")
     return store if isinstance(store, bool) else None
 
 
 def _response_metadata(
-    usage: Mapping[str, Any] | None,
+    usage: ResponseUsage | None,
     *,
     response_id: str | None = None,
     response_store: bool | None = None,
-) -> dict[str, Any]:
-    metadata: dict[str, Any] = {}
+) -> ResponseMetadata:
+    metadata: ResponseMetadata = {}
     if usage:
-        usage_dict = dict(usage)
+        usage_dict: ResponseUsage = usage.copy()
         metadata.update(
             {
                 "usage": usage_dict,
@@ -865,7 +911,7 @@ def _response_metadata(
 
 def _latest_response_anchor(messages: Sequence[BaseMessage]) -> tuple[int | None, str | None]:
     for index in range(len(messages) - 1, -1, -1):
-        response_id = _message_response_id(messages[index])
+        response_id: str | None = _message_response_id(messages[index])
         if response_id is not None:
             return index, response_id
     return None, None
@@ -884,10 +930,8 @@ def _response_anchor_index(
 def _message_response_id(message: BaseMessage) -> str | None:
     if not isinstance(message, AIMessage):
         return None
-    metadata = message.response_metadata
-    if not isinstance(metadata, Mapping):
-        return None
-    response_id = metadata.get("response_id")
+    metadata: Mapping[str, object] = message_response_metadata(message)
+    response_id: object | None = metadata.get("response_id")
     if not isinstance(response_id, str) or not response_id.strip():
         return None
     return response_id
@@ -895,43 +939,38 @@ def _message_response_id(message: BaseMessage) -> str | None:
 
 def _message_response_is_stored(message: BaseMessage) -> bool:
     return bool(
-        isinstance(message, AIMessage)
-        and isinstance(message.response_metadata, Mapping)
-        and message.response_metadata.get("response_store") is True
+        isinstance(message, AIMessage) and message_response_metadata(message).get("response_store") is True
     )
 
 
-def _usage_metadata(usage: Mapping[str, Any] | None) -> dict[str, Any] | None:
+def _usage_metadata(usage: ResponseUsage | None) -> UsageMetadata | None:
     if not usage:
         return None
-    metadata: dict[str, Any] = {
+    metadata: UsageMetadata = {
         "input_tokens": _int_or_zero(usage.get("input_tokens")),
         "output_tokens": _int_or_zero(usage.get("output_tokens")),
         "total_tokens": _int_or_zero(usage.get("total_tokens")),
     }
-    input_details = usage.get("input_tokens_details")
-    if isinstance(input_details, Mapping):
-        metadata["input_token_details"] = dict(input_details)
-    output_details = usage.get("output_tokens_details")
-    if isinstance(output_details, Mapping):
-        metadata["output_token_details"] = dict(output_details)
+    input_details: dict[str, int] | None = usage.get("input_tokens_details")
+    if input_details is not None:
+        metadata["input_token_details"] = InputTokenDetails(**input_details)
+    output_details: dict[str, int] | None = usage.get("output_tokens_details")
+    if output_details is not None:
+        metadata["output_token_details"] = OutputTokenDetails(**output_details)
     return metadata
 
 
-def _int_or_zero(value: Any) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
+def _int_or_zero(value: int | None) -> int:
+    return value if value is not None else 0
 
 
-def _add_usage_total(totals: dict[str, int], key: str, value: Any) -> None:
-    amount = _int_or_zero(value)
+def _add_usage_total(totals: dict[str, int], key: str, value: int | None) -> None:
+    amount: int = _int_or_zero(value)
     if amount:
         totals[key] = totals.get(key, 0) + amount
 
 
-def _normalize_tool_choice(tool_choice: dict[str, Any] | str | bool) -> dict[str, Any] | str:
+def _normalize_tool_choice(tool_choice: JsonObject | str | bool) -> JsonObject | str:
     if isinstance(tool_choice, bool):
         return "required" if tool_choice else "none"
     if isinstance(tool_choice, str):
@@ -940,47 +979,47 @@ def _normalize_tool_choice(tool_choice: dict[str, Any] | str | bool) -> dict[str
         if tool_choice in {"auto", "none", "required"}:
             return tool_choice
         return {"type": "function", "name": tool_choice}
-    if isinstance(tool_choice, Mapping):
-        if tool_choice.get("type") == "function" and isinstance(tool_choice.get("function"), Mapping):
-            return {"type": "function", "name": str(tool_choice["function"].get("name", ""))}
-        return dict(tool_choice)
-    return "auto"
+    function: JsonValue = tool_choice.get("function")
+    if tool_choice.get("type") == "function" and isinstance(function, dict):
+        name: JsonValue = function.get("name", "")
+        if not isinstance(name, str):
+            raise TypeError("Tool choice function name must be text")
+        return {"type": "function", "name": name}
+    return dict(tool_choice)
 
 
-def _tool_call_id(tool_call: Mapping[str, Any]) -> str:
-    return str(tool_call.get("id") or tool_call.get("call_id") or "")
+def _tool_call_id(tool_call: ToolCall) -> str:
+    return tool_call["id"] or ""
 
 
-def _to_responses_function_call(tool_call: Mapping[str, Any]) -> dict[str, Any]:
-    call_id = tool_call.get("id") or tool_call.get("call_id")
-    name = tool_call.get("name")
-    args = tool_call.get("args") or tool_call.get("arguments") or {}
+def _to_responses_function_call(tool_call: ToolCall) -> FunctionCallInput:
+    args: JsonObject = json_object(tool_call["args"])
     return {
         "type": "function_call",
-        "call_id": str(call_id or uuid7()),
-        "name": str(name or ""),
-        "arguments": args if isinstance(args, str) else json.dumps(args, ensure_ascii=False),
+        "call_id": tool_call["id"] or str(uuid7()),
+        "name": tool_call["name"],
+        "arguments": json.dumps(args, ensure_ascii=False),
     }
 
 
-def _to_responses_custom_tool_call(tool_call: Mapping[str, Any]) -> dict[str, Any]:
-    call_id = tool_call.get("id") or tool_call.get("call_id")
-    name = tool_call.get("name")
-    args = tool_call.get("args") or {}
-    tool_input = args.get("__arg1", "") if isinstance(args, Mapping) else args
+def _to_responses_custom_tool_call(tool_call: ToolCall) -> CustomCallInput:
+    args: JsonObject = json_object(tool_call["args"])
+    tool_input: JsonValue = args.get("__arg1", "")
+    if not isinstance(tool_input, str):
+        raise TypeError("Custom tool input must be a string")
     return {
         "type": "custom_tool_call",
-        "call_id": str(call_id or uuid7()),
-        "name": str(name or ""),
-        "input": str(tool_input),
+        "call_id": tool_call["id"] or str(uuid7()),
+        "name": tool_call["name"],
+        "input": tool_input,
     }
 
 
-def _parse_responses_function_call(item: Mapping[str, Any]) -> dict[str, Any]:
-    arguments = item.get("arguments") or {}
+def _parse_responses_function_call(item: ResponseItem) -> ToolCall:
+    arguments: JsonValue = item.get("arguments") or {}
     if isinstance(arguments, str):
         try:
-            arguments = json.loads(arguments) if arguments else {}
+            arguments = load_json(arguments) if arguments else {}
         except json.JSONDecodeError:
             arguments = {"__raw_arguments": arguments}
     if not isinstance(arguments, dict):
@@ -992,7 +1031,7 @@ def _parse_responses_function_call(item: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _parse_responses_custom_tool_call(item: Mapping[str, Any]) -> dict[str, Any]:
+def _parse_responses_custom_tool_call(item: ResponseItem) -> ToolCall:
     return {
         "name": str(item.get("name", "")),
         "args": {"__arg1": str(item.get("input", ""))},
@@ -1000,12 +1039,12 @@ def _parse_responses_custom_tool_call(item: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
-def _custom_tool_output(message: ToolMessage) -> dict[str, Any] | None:
-    content = message.content
+def _custom_tool_output(message: ToolMessage) -> FunctionOutput | None:
+    content: JsonValue = json_value(message_content(message))
     if not isinstance(content, list):
         return None
     for block in content:
-        if isinstance(block, Mapping) and block.get("type") == "custom_tool_call_output":
+        if isinstance(block, dict) and block.get("type") == "custom_tool_call_output":
             return {
                 "type": "custom_tool_call_output",
                 "call_id": str(message.tool_call_id or ""),
@@ -1017,24 +1056,17 @@ def _custom_tool_output(message: ToolMessage) -> dict[str, Any] | None:
 def create_chat_model(
     *,
     model: str,
-    temperature: float = 0.0,
-    token_provider: CodexOAuthTokenProvider | None = None,
-    base_url: str | None = None,
     reasoning_effort: str | None = "medium",
     prompt_cache_key: str | None = None,
     stream_max_retries: int = 5,
 ) -> OpenAICodexModel:
-    provider = token_provider or CodexOAuthTokenProvider()
-    model_kwargs: dict[str, Any] = {
-        "model": model,
-        "token_provider": provider,
-        "ws_url": base_url
-        or os.getenv("CODEX_WS_URL", "wss://chatgpt.com/backend-api/codex/responses"),
-        "reasoning_effort": reasoning_effort,
-        "stream_max_retries": stream_max_retries,
-    }
-    if prompt_cache_key is not None:
-        model_kwargs["prompt_cache_key"] = prompt_cache_key
+    # Preserve the legacy no-op: Pydantic previously ignored this undeclared field.
+    # Session identity remains the request cache key.
+    del prompt_cache_key
     return OpenAICodexModel(
-        **model_kwargs,
+        model=model,
+        token_provider=CodexOAuthTokenProvider(),
+        ws_url=_codex_setting("ws_url") or DEFAULT_CODEX_WS_URL,
+        reasoning_effort=reasoning_effort,
+        stream_max_retries=stream_max_retries,
     )

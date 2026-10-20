@@ -1,5 +1,6 @@
 from __future__ import annotations
-from src.collection.service import CollectionService
+
+from src.conductor.state import read_conductor_state, merge_fields
 
 import asyncio
 import json
@@ -7,22 +8,23 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from src.tools.collection.service import CollectionService
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 
-from device.results import make_error_result
-from middleware.device_operation_reliability import DeviceOperationReliabilityMiddleware
-from middleware.collection_persistence import CollectionPersistenceMiddleware
-from tools.operation_effect import (
+from src.device.services.page.bridge import PageBridge
+from src.device.services.page.similarity import PageSimilarityResult
+from src.device.types.results import make_error_result
+from src.strategy.general.reliability import DeviceOperationReliabilityMiddleware
+from src.strategy.merchant.persistence import CollectionPersistenceMiddleware
+from src.tools.device.effect import (
     NAVIGATION_PAGE_CHANGE_POLICY,
     OPERATION_EFFECT_POLICY_METADATA_KEY,
     SCROLL_PAGE_CHANGE_POLICY,
 )
-from tools.page_similarity import PageSimilarityResult
-from tools.page_bridge import PageBridge
-
 
 XML = '<hierarchy><node bounds="[0,0][100,80]" text="page"/></hierarchy>'
 
@@ -55,7 +57,7 @@ def _request(tool: StructuredTool):
     return SimpleNamespace(
         tool=tool,
         tool_call={"name": tool.name, "id": "call-1", "args": {}},
-        state={"page_context_path": "meituan/外卖", "page_visit_id": "visit-1"},
+        state=read_conductor_state({"page_context_path": "meituan/外卖", "page_visit_id": "visit-1", "page_visit": {"kind": "general"}}),
         runtime=SimpleNamespace(config={"configurable": {"thread_id": "thread-1"}}),
     )
 
@@ -146,7 +148,7 @@ def test_precheck_failure_warns_after_device_operation() -> None:
 
 def test_unverifiable_post_result_exposes_no_page_details() -> None:
     middleware, _ = _middleware(0.5)
-    from tools.page_similarity import PageSimilarityEvaluator
+    from src.device.services.page.similarity import PageSimilarityEvaluator
 
     middleware.evaluator = PageSimilarityEvaluator()
     result = middleware.wrap_tool_call(

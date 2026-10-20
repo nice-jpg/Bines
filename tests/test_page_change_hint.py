@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 import pytest
 from Reco.model_interface import PageSession
-from src.tools.page_bridge import PageBridge
-from src.tools.page_change_hint import change_hint
+from src.device.services.page.bridge import PageBridge
+from src.device.services.page.change_hint import change_hint
 
 
 def button(text, kind="Button"):

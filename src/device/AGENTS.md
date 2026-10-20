@@ -1,128 +1,65 @@
-# src/device Agent Notes
+# Device module notes
 
-This directory provides synchronous Android-device operations and recorded
-touch-action translation.
+See `docs/device-architecture.md` for the three-layer design and validation limits.
 
-## Modules
+## Layers
 
-- `adapter.py`
-  - `AndroidDevice` is the adb-backed device facade.
-  - `CommandResult` wraps raw subprocess output. Public device helpers return
-    normal success values on success and a structured `{ok: false, ...}` error
-    result on failure instead of raising command exceptions.
-  - Default paths:
-    - actions directory: `/sdcard/Documents/actions/`
-    - input device: `/dev/input/event3`
-    - UI dump path: `/sdcard/window_dump.xml`
+- `commands/`: `AndroidCommandExecutor` owns the finite adb command interface.
+  Every command returns `CommandResult` with normalized `DeviceError` on failure,
+  including runner exceptions and explicit errors printed with exit code zero.
+  No public arbitrary shell API, gesture policy, Reco or LangChain dependency.
+  `shadow_control.py` is the existing nScreen SDK boundary.
+- `services/`: `DeviceOperationService` owns one executor, `GestureReplay`, and
+  `PageBridge`, using a shared RLock for device operations and page consistency.
+  `page/` owns Reco queries, immutable snapshots, change hints and page algorithms.
+  PageBridge reads commands directly, never calls back into the operation service.
+  Offline callers may supply an XML callback without constructing a device.
+- `src/tools/device/`: device, navigation and Reco tool factories plus PNG message
+  encoding. Preserve schemas, role visibility, metadata and policy identities.
+- `types/`: results, observations, gestures, page evidence and image/status data.
 
-- `translator.py`
-  - Parses `getevent` logs from local action files.
-  - Normalizes the first recorded touch coordinate to `(0, 0)` before packet
-    generation, so replay-time `x/y` deltas place the gesture.
-  - Converts parsed events into PIAR replay packets for the native helper.
-  - Pushes missing translated actions to the device action directory.
+Old forwarding modules have been removed. Business callers import public device
+capabilities and types from `src.device`. Within device, use canonical internal
+imports to avoid package initialization cycles. Tool factories are exposed from
+`src.tools.device`; device must never import that Agent-facing package.
 
-- `native/`
-  - Contains the `pi_input_replay` Android ARM64 helper and source.
-  - The helper consumes `PIAR1` packets and applies optional `x/y` coordinate
-    deltas at replay time.
+## Gesture and native contracts
 
-- `actions/`
-  - Local source action recordings.
-  - Files are treated as `getevent` text logs by `translator.translate()`.
+`GestureReplay` alone chooses common gesture recordings and applies independent
+integer X/Y offsets in [-2, 2]. Uncommon gestures, currently swipe_back, use the
+fixed recording and unmodified coordinates. The command executor never randomizes.
 
-## AndroidDevice API
+Deployment compares actual remote files against required recording filenames,
+including swipe_back. Upload/conversion failures must not mark deployment ready.
+Pure conversion preserves getevent parsing, coordinate origin normalization and
+PIAR1 packet encoding. Do not modify recordings or native code as part of Python
+refactoring; do not compile or run native replay without a separate task.
 
-Use `AndroidDevice(serial="", adb_path="adb", runner=None)` for device access.
-The optional `runner` makes tests independent of real adb.
+Default device paths remain `/sdcard/Documents/actions/`, `/dev/input/event3`,
+`/sdcard/window_dump.xml`, and `/data/local/tmp/pi_input_replay`. UI capture uses
+`/data/local/tmp/project -d` after disabling animations, not uiautomator dump.
 
-Core operations return the documented success value or an error result:
+## Page and screenshot contracts
 
-- `shell(command, root=False) -> str | ErrorResult`
-- `shell_raw(command, root=False) -> CommandResult`
-- `dump_ui() -> str | ErrorResult`
-- `screenshot(device_path=DEFAULT_SCREENSHOT_PATH) -> str | ErrorResult`
-- `run_package(package_name) -> str | ErrorResult`
-- `close_package(package_name) -> str | ErrorResult`
-- `execute_file(device_file_path, args=None, root=False) -> str | ErrorResult`
-- `list_files(device_dir) -> list[str] | ErrorResult`
-- `push_file(local_path, device_dir) -> str | ErrorResult`
-- `pull_file(device_path, local_path) -> str | ErrorResult`
-- `get_supported_actions(device_dir=DEFAULT_ACTION_DIR) -> list[str] | ErrorResult`
-- `add_action(local_path, device_dir=DEFAULT_ACTION_DIR) -> str | ErrorResult`
-- `act(action_name, xy, device_dir=DEFAULT_ACTION_DIR, input_device=DEFAULT_INPUT_DEVICE) -> str | ErrorResult`
+Reco TOOLS is the single source for page tool names and schemas. First capture
+returns the root view; subsequent observations return compact page_change_hint
+with at most three non-ancestor entrances. Complete XML and snapshots stay in
+artifacts. Preserve snapshot IDs, alias restoration and script view interfaces.
 
-`dump_ui()` disables window, transition, and animator scales before running the
-custom `/data/local/tmp/project -d` dump helper to reduce idle-state failures on
-dynamic pages. `close_package()` executes `adb shell am force-stop`.
-
-Conductor, collector and offline audits share a screenshot service that captures
-with screenshot(), then pulls the remote PNG to
-a temporary local file using pull_file(). It returns image content to the model,
-not the device path. UI XML remains internal to PageBridge.
-
-After actions, PageBridge synchronizes its complete tree with Reco.sync and sends
-page_change_hint: at most three mutually non-ancestor region IDs and update_ratio
-values, without node content or deletion events. These are search priorities, not
-exhaustive changes or proof of operation success. First capture returns the root
-view; no change returns empty regions. Complete snapshots remain in internal
-artifacts. Explicit page queries can retrieve full context at any time.
-
-Current `act()` behavior:
-
-- Ensures the action name exists in `get_supported_actions()`.
-- Resolves the remote action path as `{device_dir}/{action_name}`.
-- Executes `/data/local/tmp/pi_input_replay` as root with:
-  `input_device`, `action_path`, `x`, `y`.
-
-## Action Translation
-
-Use `check_actions(device, local_dir="src/device/actions", device_dir=DEFAULT_ACTION_DIR)`
-to sync missing local actions to the device.
-
-Flow:
-
-1. Read local action filenames from `local_dir`.
-2. Compare them with `device.get_supported_actions(device_dir)`.
-3. For each missing action, call `translate(action_path, device, device_dir)`.
-4. `translate()` parses the getevent log, shifts all X/Y touch coordinates by
-   the first recorded X/Y value, builds a PIAR packet, writes a temporary
-   same-name file, and calls `device.add_action()`.
-
-PIAR packet format:
-
-- Header: `b"PIAR1\0\0\0"`
-- Frames are split on `EV_SYN` / `SYN_REPORT`.
-- Each frame writes:
-  - `delay_us` as little-endian `uint32`
-  - event count as little-endian `uint32`
-- Each event writes:
-  - type as little-endian `uint16`
-  - code as little-endian `uint16`
-  - value as little-endian `int32`
-
-The parser supports both pathless and device-path `getevent` lines, symbolic
-tokens such as `EV_ABS`, `ABS_MT_POSITION_X`, `BTN_TOUCH`, `DOWN`/`UP`, and
-signed hex values like `ffffffff -> -1`.
-
-Only touch coordinate events are shifted during origin normalization:
-`ABS_MT_POSITION_X`, `ABS_X`, `ABS_MT_POSITION_Y`, and `ABS_Y`. Pressure,
-tracking id, slot, key, and sync events remain unchanged.
+Screenshot capture and pull run under one operation lock; services return PNG
+bytes or DeviceError. Agent adapters encode image_url and preserve the legacy
+ValueError boundary. Do not bypass the service via direct executor access in
+business code. Locks are per service, not globally per physical device.
 
 ## Tests
 
-Run:
+Use fake command runners; do not assume a connected Android device. Run the
+project Python 3.14 interpreter, for example:
 
 ```bash
-PYTHONPYCACHEPREFIX=/private/tmp/bines_pycache python3 -m py_compile src/device/*.py tests/test_device_actions.py
-PYTHONPYCACHEPREFIX=/private/tmp/bines_pycache python3 -m unittest tests.test_device_actions
+python -m pytest tests/test_device_actions.py tests/test_device_layers.py tests/test_event_hub.py tests/test_page_bridge.py
 ```
 
-The tests use fake adb runners and do not require a connected Android device.
-
-## Important Cautions
-
-- Do not import `src.device` through the top-level `src` package in tests unless
-  LangChain dependencies are installed; tests currently use `PYTHONPATH=src`
-  and import `device.*` directly.
-- Keep replay output as PIAR binary unless the native helper contract changes.
+Add command-failure, deployment, randomization or cross-layer contract tests when
+changing those behaviors. Real-device and nScreen integration require separate
+validation; passing fake-runner tests does not establish device compatibility.

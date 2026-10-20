@@ -1,3 +1,7 @@
+---
+page_strategy: general
+---
+
 # Meituan `外卖` Page
 
 ## Overview

@@ -1,38 +1,52 @@
-"""Entrypoint wiring; worker behavior is covered with real graphs separately."""
+"""Entrypoint assembles business engines without constructing their tools."""
 
 from unittest.mock import Mock
-
 import pytest
-
 from src import run_agent
+from src.application.gateway_manager import GatewayManager
 
 
-@pytest.mark.parametrize("start_error", [None, RuntimeError("channel stopped")])
-def test_main_wires_worker_and_closes_it_before_model(monkeypatch, start_error):
+def test_main_joins_worker_before_gateway_release_and_model_close(monkeypatch):
     events = []
-    channel = Mock()
-    channel.start.side_effect = start_error
+    gateway = Mock()
+    gateway.create.return_value = "id"
+    worker = Mock()
+    worker.join.side_effect = [KeyboardInterrupt(), None]
+    worker.join.return_value = None
+    gateway.join.side_effect = lambda *a: events.append("gateway")
     model = object()
-    runtime = object()
-    runner = Mock()
-    runner.close.side_effect = lambda: events.append("worker closed")
-    build_runtime = Mock(return_value=runtime)
-    build_runner = Mock(return_value=runner)
-    monkeypatch.setattr("sys.argv", ["run_agent", "--max-iterations", "42"])
-    monkeypatch.setattr(run_agent, "load_feishu_config", lambda: "config")
-    monkeypatch.setattr(run_agent, "FeishuChannelRuntime", lambda config: channel)
+    engine = Mock(gateway_id="id")
+    build_engine = Mock(return_value=engine)
     monkeypatch.setattr(run_agent, "build_model", lambda: model)
-    monkeypatch.setattr(run_agent, "build_conductor_runtime", build_runtime)
-    monkeypatch.setattr(run_agent, "create_common_tools", lambda **kwargs: [])
-    monkeypatch.setattr(run_agent, "FeishuAgentRunner", build_runner)
-    monkeypatch.setattr(run_agent, "close_model", lambda value: events.append("model closed"))
-    if start_error:
-        with pytest.raises(RuntimeError, match="channel stopped"):
-            run_agent.main()
-    else:
+    monkeypatch.setattr(run_agent, "ConductorEngine", build_engine)
+    monkeypatch.setattr(run_agent, "AgentCoordinator", lambda e: "coordinator")
+    monkeypatch.setattr(run_agent, "AgentWorker", lambda c: worker)
+    monkeypatch.setattr(run_agent, "FeishuChannel", lambda *a: "channel")
+    monkeypatch.setattr(run_agent, "load_feishu_config", lambda: "config")
+    monkeypatch.setattr(GatewayManager, "instance", lambda: gateway)
+    gateway.release.side_effect = lambda *a: events.append("release")
+    monkeypatch.setattr(run_agent, "close_model", lambda m: events.append("model"))
+    monkeypatch.setattr("sys.argv", ["run_agent", "--max-iterations", "42"])
+    run_agent.main()
+    build_engine.assert_called_once_with(model=model, gateway_id="id", max_iterations=42)
+    assert events == ["gateway", "model", "release"]
+    assert worker.join.call_count == 2
+    gateway.stop.assert_called_once_with("id")
+
+
+def test_failed_engine_construction_releases_gateway_and_model(monkeypatch):
+    monkeypatch.setattr(run_agent, "load_feishu_config", lambda: None)
+    monkeypatch.setattr(run_agent, "FeishuChannel", lambda *a: Mock())
+    monkeypatch.setattr(run_agent, "build_model", lambda: "model")
+
+    def fail(**kwargs):
+        raise ValueError("invalid engine")
+
+    monkeypatch.setattr(run_agent, "ConductorEngine", fail)
+    close = Mock()
+    monkeypatch.setattr(run_agent, "close_model", close)
+    monkeypatch.setattr("sys.argv", ["run_agent"])
+    with pytest.raises(ValueError, match="invalid engine"):
         run_agent.main()
-    build_runtime.assert_called_once()
-    assert build_runtime.call_args.kwargs["model"] is model
-    build_runner.assert_called_once_with(runtime, channel, 42)
-    channel.start.assert_called_once_with(runner.on_message)
-    assert events == ["worker closed", "model closed"]
+    assert not GatewayManager.instance()._registrations
+    close.assert_called_once_with("model")

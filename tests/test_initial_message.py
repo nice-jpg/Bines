@@ -4,10 +4,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import date
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from prompts import build_initial_message, build_initial_messages
+from src.prompts import build_initial_messages
 
 
 class InitialMessageTests(unittest.TestCase):
@@ -31,11 +33,10 @@ class InitialMessageTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            message = build_initial_message(
-                workspace,
-                current_date="2026-06-14",
-                timezone="Asia/Shanghai",
-            )
+            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
+                with patch("src.prompts.initial_message.date") as clock:
+                    clock.today.return_value = date.fromisoformat("2026-06-14")
+                    message = "\n\n".join(build_initial_messages())
 
         self.assertIn("<environment_context>", message)
         self.assertIn(f"  <cwd>{workspace}</cwd>", message)
@@ -71,11 +72,10 @@ class InitialMessageTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            message = build_initial_message(
-                workspace,
-                current_date="2026-06-14",
-                timezone="Asia/Shanghai",
-            )
+            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
+                with patch("src.prompts.initial_message.date") as clock:
+                    clock.today.return_value = date.fromisoformat("2026-06-14")
+                    message = "\n\n".join(build_initial_messages())
 
         self.assertIn("- 应用包名：com.sankuai.meituan", message)
         self.assertIn("- 城市：安徽省宿州市", message)
@@ -113,11 +113,10 @@ class InitialMessageTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            message = build_initial_message(
-                workspace,
-                current_date="2026-06-14",
-                timezone="Asia/Shanghai",
-            )
+            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
+                with patch("src.prompts.initial_message.date") as clock:
+                    clock.today.return_value = date.fromisoformat("2026-06-14")
+                    message = "\n\n".join(build_initial_messages())
 
         self.assertIn("- 应用包名：com.sankuai.meituan", message)
         self.assertIn("- 城市：安徽省宿州市", message)
@@ -151,11 +150,10 @@ class InitialMessageTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            message = build_initial_message(
-                workspace,
-                current_date="2026-06-14",
-                timezone="Asia/Shanghai",
-            )
+            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
+                with patch("src.prompts.initial_message.date") as clock:
+                    clock.today.return_value = date.fromisoformat("2026-06-14")
+                    message = "\n\n".join(build_initial_messages())
 
         outer = message.index("- subpage：外卖（当前页面内可点击跳转，路径：外卖）")
         inner = message.index("- subpage：频道（当前页面内可点击跳转，路径：外卖 -> 频道）")
@@ -182,11 +180,10 @@ class InitialMessageTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            message = build_initial_message(
-                workspace,
-                current_date="2026-06-14",
-                timezone="Asia/Shanghai",
-            )
+            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
+                with patch("src.prompts.initial_message.date") as clock:
+                    clock.today.return_value = date.fromisoformat("2026-06-14")
+                    message = "\n\n".join(build_initial_messages())
 
         self.assertIn("- 应用包名：未配置", message)
         self.assertIn("- 城市：未配置", message)
@@ -201,7 +198,10 @@ class InitialMessageTests(unittest.TestCase):
             workspace = Path(tmp_dir)
             (workspace / "config.xml").write_text("", encoding="utf-8")
 
-            message = build_initial_message(workspace, current_date="2026-06-14")
+            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
+                with patch("src.prompts.initial_message.date") as clock:
+                    clock.today.return_value = date.fromisoformat("2026-06-14")
+                    message = "\n\n".join(build_initial_messages())
 
         self.assertIn("- 应用包名：未配置", message)
         self.assertIn("- 城市：未配置", message)
@@ -213,7 +213,10 @@ class InitialMessageTests(unittest.TestCase):
             workspace = Path(tmp_dir)
             (workspace / "config.xml").write_text("<config></config>", encoding="utf-8")
 
-            messages = build_initial_messages(workspace, current_date="2026-06-14")
+            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
+                with patch("src.prompts.initial_message.date") as clock:
+                    clock.today.return_value = date.fromisoformat("2026-06-14")
+                    messages = build_initial_messages()
 
         self.assertEqual(len(messages), 2)
         self.assertIn("<environment_context>", messages[0])

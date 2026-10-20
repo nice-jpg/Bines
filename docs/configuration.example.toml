@@ -1,0 +1,42 @@
+# Copy to workspace/config.toml and replace placeholders before starting Bines.
+# A present config.toml is authoritative: legacy .env and process variables do not override it.
+schema_version = 1
+
+[model]
+default = "primary"
+
+[model.providers.primary]
+provider = "openai"
+base_url = "https://api.openai.com/v1"
+api_key = "replace-with-your-api-key"
+model = "replace-with-your-model"
+
+# A second group can use the same provider with a different endpoint or model.
+[model.providers.codex]
+provider = "codex"
+model = "replace-with-your-codex-model"
+
+[model.providers.codex.options]
+reasoning_effort = "medium"
+stream_max_retries = 5
+
+[channel.feishu]
+default = "operations"
+
+[channel.feishu.connections.operations]
+app_id = "replace-with-your-app-id"
+app_secret = "replace-with-your-app-secret"
+log_level = "INFO"
+
+[trace]
+enabled = true
+server_url = "http://127.0.0.1:8765"
+
+[other.trace]
+request_timeout = 30.0
+
+# Optional: otherwise use ~/.codex/auth.json.
+# [other.codex]
+# auth_json = "/path/to/auth.json"
+# home = "/path/to/codex-home"
+# ws_url = "wss://chatgpt.com/backend-api/codex/responses"

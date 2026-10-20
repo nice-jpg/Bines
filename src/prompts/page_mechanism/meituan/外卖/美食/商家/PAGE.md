@@ -1,3 +1,7 @@
+---
+page_strategy: merchant
+---
+
 # Meituan `外卖/美食` Merchant Page
 
 ## Overview

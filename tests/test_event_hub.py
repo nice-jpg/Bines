@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import inspect
+import shlex
+from unittest.mock import patch
+from src.device.types.results import CommandResult, DeviceError
+from src.device.services.gestures import GESTURES
 import sys
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from device.results import make_error_result
-from tools.event_hub import EventHub, create_event_hub_tools
-from tools.tool_decorators import dangerous_policy_for, is_xy_operation
+from src.device.types.results import make_error_result
+from src.device.services.operations import DeviceOperationService
+from src.tools.device.operations import create_event_hub_tools
+from src.tools.shared.safety import DANGEROUS_TOOL_POLICY_METADATA_KEY, DangerousToolPolicy
 
 
 class FakeLogger:
@@ -34,71 +39,86 @@ class FakeDevice:
         self.ui_result = ui_result
         self.calls: list[tuple] = []
 
-    def act(self, action_name: str, xy: tuple[int, int]):
-        self.calls.append(("act", action_name, xy))
-        return self.act_result
-
-    def dump_ui(self):
-        self.calls.append(("dump_ui",))
-        return self.ui_result
-
-    def close_package(self, package_name: str):
-        self.calls.append(("close_package", package_name))
-        return ""
+    def __call__(self, args):
+        output = ""
+        error = None
+        if "ls" in args:
+            output = "\n".join(name for spec in GESTURES.values() for name in spec.recordings)
+        elif "su" in args:
+            command = shlex.split(args[-1])
+            name = Path(command[2]).name
+            if name[-2:] in {"_0", "_1", "_2"}:
+                name = name[:-2]
+            self.calls.append(("act", name, (int(command[3]), int(command[4]))))
+            if isinstance(self.act_result, DeviceError): error = self.act_result
+        elif "cat" in args:
+            self.calls.append(("dump_ui",))
+            output = self.ui_result
+        elif "force-stop" in args:
+            self.calls.append(("close_package", args[-1]))
+        return CommandResult(args, 1 if error else 0, output, "", error)
 
 
 class EventHubTests(unittest.TestCase):
-    def test_event_hub_methods_declare_tool_behavior_with_decorators(self) -> None:
-        self.assertTrue(is_xy_operation(EventHub.tap))
-        self.assertTrue(is_xy_operation(EventHub.swipe_up))
-        self.assertTrue(is_xy_operation(EventHub.swipe_up_long))
-        self.assertTrue(is_xy_operation(EventHub.swipe_to_random))
-        self.assertTrue(is_xy_operation(EventHub.swipe_down))
-        self.assertIsNotNone(dangerous_policy_for(EventHub.run_package))
-        self.assertIsNotNone(dangerous_policy_for(EventHub.close_package))
-        self.assertFalse(hasattr(EventHub, "uiautomate"))
+    def setUp(self):
+        patcher = patch("src.device.services.gestures.random.randint", return_value=0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_device_tools_have_explicit_typed_policy_and_coordinate_schema(self) -> None:
+        tools = {tool.name: tool for tool in create_event_hub_tools()}
+        for name in ("tap", "swipe_up", "swipe_up_long", "swipe_down"):
+            self.assertEqual(set(tools[name].args), {"x", "y"})
+        for name in ("run_package", "close_package"):
+            policy = tools[name].metadata[DANGEROUS_TOOL_POLICY_METADATA_KEY]
+            self.assertIsInstance(policy, DangerousToolPolicy)
+            self.assertEqual(set(tools[name].args), {"package_name", "justification"})
 
     def test_touch_action_returns_uiautomate_result_after_success(self) -> None:
         logger = FakeLogger()
         sleeper = FakeSleeper()
-        hub = EventHub(logger=logger, sleep_func=sleeper)
-        hub.device = FakeDevice(ui_result='<hierarchy><node text="验证码 优惠券" bounds="[0,0][10,10]" /></hierarchy>')
-        hub._actions_checked = True
+        hub = DeviceOperationService()
+        hub.logger = logger
+        hub.page_bridge._logger = logger
+        hub._sleep = sleeper
+        hub.executor.runner = FakeDevice(ui_result='<hierarchy><node text="验证码 优惠券" bounds="[0,0][10,10]" /></hierarchy>')
 
         result = hub.tap(11, 22)
 
         self.assertIn("验证码", result[0]["summary"])
         self.assertIn("page_xml", result[1])
         self.assertEqual(sleeper.calls, [1.2])
-        self.assertEqual(hub.device.calls, [("act", "tap", (11, 22)), ("dump_ui",)])
+        self.assertEqual(hub.executor.runner.calls, [("act", "tap", (11, 22)), ("dump_ui",)])
         self.assertIn(("captcha", "Detected captcha signal in UI hierarchy", {"source": "page_view"}), logger.records)
         self.assertIn(("popup", "Detected popup signal in UI hierarchy", {"source": "page_view"}), logger.records)
 
     def test_touch_action_returns_and_logs_error_result_after_failure(self) -> None:
         logger = FakeLogger()
         sleeper = FakeSleeper()
-        hub = EventHub(logger=logger, sleep_func=sleeper)
+        hub = DeviceOperationService()
+        hub.logger = logger
+        hub.page_bridge._logger = logger
+        hub._sleep = sleeper
         error = make_error_result("command_error", "adb failed", details={"args": ["adb"]})
-        hub.device = FakeDevice(act_result=error)
-        hub._actions_checked = True
+        hub.executor.runner = FakeDevice(act_result=error)
 
         result = hub.swipe_up(10, 100)
 
-        self.assertEqual(result, (error, None))
+        self.assertEqual(result, (error.as_dict(), None))
         self.assertEqual(sleeper.calls, [])
-        self.assertEqual(hub.device.calls, [("act", "swipe_up", (10, 100))])
+        self.assertEqual(hub.executor.runner.calls, [("act", "swipe_up", (10, 100))])
         self.assertEqual(logger.records, [("command_error", "adb failed", {"args": ["adb"]})])
 
     def test_new_swipe_actions_use_recorded_action_replay(self) -> None:
-        hub = EventHub(sleep_func=lambda _seconds: None)
-        hub.device = FakeDevice()
-        hub._actions_checked = True
+        hub = DeviceOperationService()
+        hub._sleep = lambda _seconds: None
+        hub.executor.runner = FakeDevice()
 
         hub.swipe_up_long(20, 1800)
         hub.swipe_to_random(30, 1600)
 
         self.assertEqual(
-            hub.device.calls,
+            hub.executor.runner.calls,
             [
                 ("act", "swipe_up_long", (20, 1800)),
                 ("dump_ui",),
@@ -109,21 +129,22 @@ class EventHubTests(unittest.TestCase):
 
     def test_page_view_does_not_sleep_when_called_directly(self) -> None:
         sleeper = FakeSleeper()
-        hub = EventHub(sleep_func=sleeper)
-        hub.device = FakeDevice(ui_result='<hierarchy><node text="hello"/></hierarchy>')
+        hub = DeviceOperationService()
+        hub._sleep = sleeper
+        hub.executor.runner = FakeDevice(ui_result='<hierarchy><node text="hello"/></hierarchy>')
 
         result, artifact = hub.page_bridge.call("page_view", {})
 
         self.assertEqual(result["summary"], "hello")
         self.assertIn("page_xml", artifact)
         self.assertEqual(sleeper.calls, [])
-        self.assertEqual(hub.device.calls, [("dump_ui",)])
+        self.assertEqual(hub.executor.runner.calls, [("dump_ui",)])
 
     def test_touch_action_returns_region_view_without_collection_wrapper(self) -> None:
         sleeper = FakeSleeper()
-        hub = EventHub(sleep_func=sleeper)
-        hub.device = FakeDevice(ui_result='<hierarchy><node text="hello"/></hierarchy>')
-        hub._actions_checked = True
+        hub = DeviceOperationService()
+        hub._sleep = sleeper
+        hub.executor.runner = FakeDevice(ui_result='<hierarchy><node text="hello"/></hierarchy>')
 
         direct = hub.page_bridge.call("page_view", {})
         swiped = hub.swipe_up(10, 100)
@@ -132,13 +153,13 @@ class EventHubTests(unittest.TestCase):
         self.assertNotIn("xml", swiped[0])
 
     def test_close_package_calls_device_without_ui_capture(self) -> None:
-        hub = EventHub()
-        hub.device = FakeDevice()
+        hub = DeviceOperationService()
+        hub.executor.runner = FakeDevice()
 
         result = hub.close_package("com.sankuai.meituan")
 
         self.assertEqual(result, "")
-        self.assertEqual(hub.device.calls, [("close_package", "com.sankuai.meituan")])
+        self.assertEqual(hub.executor.runner.calls, [("close_package", "com.sankuai.meituan")])
 
     def test_dangerous_tool_wrapper_consumes_justification_before_event_hub(self) -> None:
         calls = []
@@ -164,7 +185,7 @@ class EventHubTests(unittest.TestCase):
         self.assertEqual(result, "started")
         self.assertEqual(calls, ["com.sankuai.meituan"])
         self.assertEqual(
-            list(inspect.signature(EventHub.run_package).parameters),
+            list(inspect.signature(DeviceOperationService.run_package).parameters),
             ["self", "package_name"],
         )
 

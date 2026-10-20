@@ -1,3 +1,7 @@
+---
+page_strategy: general
+---
+
 # Meituan `美食` Page
 
 ## Canonical Manual Path

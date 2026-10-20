@@ -7,17 +7,20 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from page_helpers import collector_history
 from src.collector.history import CollectorHistory
-from src.middleware.probe_state import PROBE_RUN_ID, ProbeState, initial_probe_state, reset_collection_state
+from src.conductor.state import ConductorState, initial_probe_state, reset_collection_state
 
 
 def record(run_id, case_id="case"):
     return {"run_id": run_id, "case_id": case_id, "page_visit_id": "visit",
-            "image": "data:image/png;base64,evidence", "baseline": {"items": []}}
+            "image": "data:image/png;base64,evidence", "baseline": {"items": []},
+            "snapshot": {"xml": "<hierarchy />", "aliases": {}, "snapshot_id": case_id, "captured_at": "now"},
+            "schema": {"items": []}, "revision": 0, "random_state": False, "guide_fingerprint": "guide"}
 
 
 def test_history_isolates_runs_pages_and_legacy_records(tmp_path):
-    history = CollectorHistory(tmp_path)
+    history = collector_history(tmp_path)
     legacy = tmp_path / "app/page/old/case/record.json"
     legacy.parent.mkdir(parents=True)
     legacy.write_text("obsolete and not even valid JSON")
@@ -31,7 +34,7 @@ def test_history_isolates_runs_pages_and_legacy_records(tmp_path):
 
 
 def test_other_run_cannot_be_written_or_loaded_in_current_namespace(tmp_path):
-    history = CollectorHistory(tmp_path)
+    history = collector_history(tmp_path)
     with pytest.raises(ValueError, match="another probe run"):
         history.commit("app", "visit", [record("other")], [], run_id="current")
     history.commit("app", "visit", [record("current")], [], run_id="current")
@@ -46,19 +49,19 @@ def test_other_run_cannot_be_written_or_loaded_in_current_namespace(tmp_path):
 @pytest.mark.parametrize("run_id", ["", "..", ".", "../other", "/tmp/other"])
 def test_run_scope_cannot_escape_history_root(tmp_path, run_id):
     with pytest.raises(ValueError, match="run ID"):
-        CollectorHistory(tmp_path).load("app", run_id=run_id)
+        collector_history(tmp_path).load("app", run_id=run_id)
 
 
 def test_checkpoint_keeps_run_across_invokes_and_failed_node_resume():
     observed = []
 
     def model(state):
-        observed.append(state[PROBE_RUN_ID])
+        observed.append(state['probe']['run_id'])
         if len(observed) == 1:
             raise ConnectionError("disconnected")
         return {}
 
-    graph = StateGraph(ProbeState)
+    graph = StateGraph(ConductorState)
     graph.add_node("model", model)
     graph.add_edge(START, "model")
     graph.add_edge("model", END)
@@ -68,14 +71,14 @@ def test_checkpoint_keeps_run_across_invokes_and_failed_node_resume():
     with pytest.raises(ConnectionError):
         agent.invoke({"messages": [HumanMessage("start")], **state}, config)
     resumed = agent.invoke(None, config)
-    assert resumed[PROBE_RUN_ID] == state[PROBE_RUN_ID]
+    assert resumed['probe']['run_id'] == state['probe']['run_id']
     continued = agent.invoke({"messages": [HumanMessage("continue")], **reset_collection_state()}, config)
-    assert continued[PROBE_RUN_ID] == state[PROBE_RUN_ID]
-    assert observed == [state[PROBE_RUN_ID]] * 3
+    assert continued['probe']['run_id'] == state['probe']['run_id']
+    assert observed == [state['probe']['run_id']] * 3
     fresh = initial_probe_state(("app/page",))
-    assert fresh[PROBE_RUN_ID] != state[PROBE_RUN_ID]
-    assert agent.invoke(fresh, config)[PROBE_RUN_ID] == fresh[PROBE_RUN_ID]
+    assert fresh['probe']['run_id'] != state['probe']['run_id']
+    assert agent.invoke(fresh, config)['probe']['run_id'] == fresh['probe']['run_id']
     other = {"configurable": {"thread_id": "other-thread"}}
     other_state = initial_probe_state(("app/page",))
-    assert agent.invoke(other_state, other)[PROBE_RUN_ID] == other_state[PROBE_RUN_ID]
-    assert agent.get_state(config).values[PROBE_RUN_ID] == fresh[PROBE_RUN_ID]
+    assert agent.invoke(other_state, other)['probe']['run_id'] == other_state['probe']['run_id']
+    assert agent.get_state(config).values['probe']['run_id'] == fresh['probe']['run_id']

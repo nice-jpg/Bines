@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass, replace
 import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from middleware.device_context_compression import (
+
+from src.strategy.general.context.compression import (
     MANUAL_PLACEHOLDER_CONTEXT_KIND,
     DeviceContextCompressionMiddleware,
     compact_device_messages,
 )
-from middleware.probe_state import COLLECTION_VISIT_SUMMARIES
 
 
 def user(content: str) -> dict:
@@ -522,7 +522,7 @@ def test_middleware_reads_collection_summaries_from_graph_state() -> None:
     ]
     state = {
         "messages": messages,
-        COLLECTION_VISIT_SUMMARIES: {
+        'collection_visit_summaries': {
             "merchant-1": {
                 "page_path": "meituan/美食/商家",
                 "merchant_profile": {"name": "炒面"},

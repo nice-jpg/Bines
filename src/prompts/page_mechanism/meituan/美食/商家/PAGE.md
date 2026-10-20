@@ -1,3 +1,7 @@
+---
+page_strategy: merchant
+---
+
 # Meituan `美食` Merchant Page
 
 ## Canonical Manual Path
@@ -44,3 +48,10 @@ The collector saves this profile from the initial top-of-page evidence. It is no
   ]
 }
 ```
+
+<!-- collection-contract:begin -->
+## Collection Requirements
+```json
+{"primary_key": ["name", "price"], "required_fields": ["name", "price"]}
+```
+<!-- collection-contract:end -->
