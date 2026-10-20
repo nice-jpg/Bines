@@ -1,154 +1,37 @@
 from __future__ import annotations
 
+from src.conductor.state import read_conductor_state
 import importlib
 import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import langgraph.checkpoint.memory  # noqa: F401 - preload real dependencies before local stubs.
-import src.agent_runtime._stability  # noqa: F401
+
+import src.agent_runtime.engine  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import nTrace
-import agent as _agent_dependency_preload  # noqa: E402,F401
-import collector as _collector_dependency_preload  # noqa: E402,F401
+import src.collector.core as _collector_dependency_preload  # noqa: E402,F401
+import src.conductor.engine as _agent_dependency_preload  # noqa: E402,F401
 
 
 class AgentMiddlewareWiringTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._original_modules = {
-            name: sys.modules.get(name)
-            for name in (
-                "agent",
-                "src",
-                "langchain",
-                "langchain.agents",
-                "langchain.agents.middleware",
-                "langchain.agents.middleware.summarization",
-                "langchain.agents.middleware.types",
-                "langchain_core",
-                "langchain_core.language_models",
-                "langchain_core.language_models.chat_models",
-                "langchain_core.messages",
-                "langchain_core.tools",
-            )
-        }
-
-    def tearDown(self) -> None:
-        for name, module in self._original_modules.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
-
     def test_build_agent_registers_request_compression_without_summarization(self) -> None:
         captured = {}
-
-        langchain = types.ModuleType("langchain")
-        langchain_agents = types.ModuleType("langchain.agents")
-        langchain_agents_middleware = types.ModuleType("langchain.agents.middleware")
-        langchain_agents_middleware_summarization = types.ModuleType("langchain.agents.middleware.summarization")
-        langchain_agents_middleware_types = types.ModuleType("langchain.agents.middleware.types")
-        langchain_core = types.ModuleType("langchain_core")
-        langchain_core_language_models = types.ModuleType("langchain_core.language_models")
-        langchain_core_chat_models = types.ModuleType("langchain_core.language_models.chat_models")
-        langchain_core_messages = types.ModuleType("langchain_core.messages")
-        langchain_core_tools = types.ModuleType("langchain_core.tools")
-
-        class AgentMiddleware:
-            pass
-
-        class BaseChatModel:
-            pass
-
-        class BaseMessage:
-            pass
-
-        class AIMessage(BaseMessage):
-            pass
-
-        class ToolMessage(BaseMessage):
-            pass
-
-        class StructuredTool:
-            @classmethod
-            def from_function(cls, **kwargs):
-                instance = cls()
-                instance.name = kwargs["name"]
-                instance.description = kwargs["description"]
-                instance.func = kwargs["func"]
-                instance.metadata = kwargs.get("metadata")
-                return instance
-
-        class BaseTool:
-            pass
-
-        class SummarizationMiddleware(AgentMiddleware):
-            def __init__(self, model):
-                self.model = model
-
-        class TodoListMiddleware(AgentMiddleware):
-            pass
-
-        class HumanInTheLoopMiddleware(AgentMiddleware):
-            def __init__(self, interrupt_on=None, description_prefix=""):
-                self.interrupt_on = interrupt_on or {}
-                self.description_prefix = description_prefix
-
-        class InterruptOnConfig(dict):
-            def __init__(self, **kwargs):
-                super().__init__(**kwargs)
 
         def create_agent(**kwargs):
             captured.update(kwargs)
             return types.SimpleNamespace()
 
-        langchain_agents.create_agent = create_agent
-        langchain_agents_middleware.HumanInTheLoopMiddleware = HumanInTheLoopMiddleware
-        langchain_agents_middleware.InterruptOnConfig = InterruptOnConfig
-        langchain_agents_middleware.TodoListMiddleware = TodoListMiddleware
-        langchain_agents_middleware_summarization.SummarizationMiddleware = SummarizationMiddleware
-        langchain_agents_middleware_types.AgentMiddleware = AgentMiddleware
-        langchain_core_chat_models.BaseChatModel = BaseChatModel
-        langchain_core_messages.AIMessage = AIMessage
-        langchain_core_messages.BaseMessage = BaseMessage
-        langchain_core_messages.ToolMessage = ToolMessage
-        langchain_core_tools.StructuredTool = StructuredTool
-        langchain_core_tools.BaseTool = BaseTool
+        replacement = patch("langchain.agents.create_agent", create_agent)
+        replacement.start()
+        self.addCleanup(replacement.stop)
 
-        sys.modules["langchain"] = langchain
-        sys.modules["langchain.agents"] = langchain_agents
-        sys.modules["langchain.agents.middleware"] = langchain_agents_middleware
-        sys.modules["langchain.agents.middleware.summarization"] = langchain_agents_middleware_summarization
-        sys.modules["langchain.agents.middleware.types"] = langchain_agents_middleware_types
-        sys.modules["langchain_core"] = langchain_core
-        sys.modules["langchain_core.language_models"] = langchain_core_language_models
-        sys.modules["langchain_core.language_models.chat_models"] = langchain_core_chat_models
-        sys.modules["langchain_core.messages"] = langchain_core_messages
-        sys.modules["langchain_core.tools"] = langchain_core_tools
-        sys.modules["src"] = types.ModuleType("src")
-        sys.modules.pop("agent", None)
-
-        agent = importlib.import_module("agent")
-        collect_calls = []
-        operation_policy = importlib.import_module("tools.operation_policy")
-        notice_service = object()
-
-        def collect_conductor_tools(**kwargs):
-            collect_calls.append(kwargs)
-            return [
-                types.SimpleNamespace(
-                    name="notify_user",
-                    metadata={
-                        operation_policy.OPERATION_NOTICE_SERVICE_METADATA_KEY: notice_service,
-                    },
-                )
-            ]
-
-        agent.collect_conductor_tools = collect_conductor_tools
-
-        agent.build_agent(model="model", tools=[])
+        agent = importlib.import_module("src.conductor.engine")
+        agent.ConductorEngine(model="model", gateway_id="test")
 
         middleware_names = [type(middleware).__name__ for middleware in captured["middleware"]]
         self.assertEqual(
@@ -156,40 +39,32 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
             [
                 "HostTraceMiddleware",
                 "ModelRetryMiddleware",
-                "CommunicationMiddleware",
-                "ProbeControlMiddleware",
-                "CollectionPersistenceMiddleware",
+                "ConversationInputMiddleware",
+                "ProbeLifecycleMiddleware",
+                "StrategyDispatchMiddleware",
                 "ToolExecutionPolicyMiddleware",
-                "ConductorContextMiddleware",
-                "CaptchaHumanInTheLoopMiddleware",
                 "ToolErrorMiddleware",
                 "ToolTraceMiddleware",
                 "LLMTraceMiddleware",
             ],
         )
-        hitl = captured["middleware"][7]
+        dispatcher = captured["middleware"][4]
+        general = dispatcher._resolve_strategy(read_conductor_state({"messages": []}))
+        hitl = general.captcha
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
         self.assertIn("is_done", [tool.name for tool in captured["tools"]])
         self.assertIn("authorize_probe_completion", [tool.name for tool in captured["tools"]])
         self.assertNotIn("notify_user", [tool.name for tool in captured["tools"]])
-        self.assertTrue(any(call.get("model") == "model" for call in collect_calls))
-        tool_runtime = collect_calls[0]
-        self.assertIs(tool_runtime["collector_manager"].mechanism, tool_runtime["mechanism"])
-        self.assertIs(tool_runtime["collector_manager"].event_hub, tool_runtime["event_hub"])
-        control = captured["middleware"][3]
-        self.assertIs(control.mechanism, tool_runtime["mechanism"])
-        persistence = captured["middleware"][4]
-        self.assertIs(persistence.service.mechanism, tool_runtime["mechanism"])
-        conductor_context = captured["middleware"][6]
-        self.assertIs(conductor_context.mechanism, tool_runtime["mechanism"])
+        self.assertIs(general.controller.mechanism, general.context.mechanism)
+        self.assertIn("confirm_page", [tool.name for tool in captured["tools"]])
         execution_policy = captured["middleware"][5]
-        self.assertIs(execution_policy._notice.service, notice_service)
+        self.assertEqual(type(execution_policy._notice.service).__name__, "OperationNoticeTool")
 
-    def test_captcha_hitl_middleware_factory_is_exported_from_middleware_package(self) -> None:
+    def test_captcha_hitl_middleware_factory_is_available_in_execution_module(self) -> None:
         self.test_build_agent_registers_request_compression_without_summarization()
-        middleware = importlib.import_module("src.middleware")
+        middleware = importlib.import_module("src.strategy.general.captcha")
 
         hitl = middleware.create_captcha_human_in_the_loop_middleware()
 
@@ -200,7 +75,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
     def test_captcha_middleware_starts_authentication_tool_once_before_interrupt(self) -> None:
         self.test_build_agent_registers_request_compression_without_summarization()
-        middleware = importlib.import_module("src.middleware")
+        middleware = importlib.import_module("src.strategy.general.captcha")
 
         calls = []
 
@@ -213,7 +88,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
 
         hitl = middleware.create_captcha_human_in_the_loop_middleware([FakeTool()])
         hitl._should_interrupt = lambda tool_call, config, state, runtime: True
-        captcha_module = importlib.import_module("src.middleware.captcha_human_in_loop")
+        captcha_module = importlib.import_module("src.strategy.general.captcha")
         state = {
             "messages": [
                 captcha_module.AIMessage(content=""),

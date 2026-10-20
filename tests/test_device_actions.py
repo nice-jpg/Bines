@@ -10,10 +10,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from device.adapter import AndroidDevice, CommandResult
-from device.translator import (
+from src.device.types.results import DeviceError
+from src.device.commands.executor import AndroidCommandExecutor as AndroidDevice
+from src.device.types.results import CommandResult
+from src.device.services.operations import DeviceOperationService
+from src.device.services.page.bridge import PageBridge
+from src.device.services.gestures import GestureReplay, GESTURES
+from src.device.services.translator import (
     build_replay_packet,
-    check_actions,
     group_events_by_syn_report,
     normalize_events_to_origin,
     parse_action_log,
@@ -34,8 +38,10 @@ class RecordingRunner:
 class DeviceActionTests(unittest.TestCase):
     def test_pull_file_uses_adb_transfer_not_text_stdout(self):
         runner = RecordingRunner()
-        device = AndroidDevice(serial="test", runner=runner)
-        assert device.pull_file("/sdcard/screen.png", "/tmp/screen.png") == "/tmp/screen.png"
+        device = AndroidDevice()
+        device.serial = "test"
+        device.runner = runner
+        assert device.pull_file("/sdcard/screen.png", "/tmp/screen.png").ok
         assert runner.calls == [["adb", "-s", "test", "pull", "/sdcard/screen.png", "/tmp/screen.png"]]
 
     def test_parse_getevent_line_supports_symbolic_pathless_and_signed_hex(self) -> None:
@@ -125,11 +131,12 @@ class DeviceActionTests(unittest.TestCase):
                 ("adb", "shell", "ls", "-1", "/sdcard/Documents/actions/"): "touch\nact\n",
             }
         )
-        device = AndroidDevice(runner=runner)
+        device = AndroidDevice()
+        device.runner = runner
 
-        self.assertEqual(device.get_supported_actions(), ["touch", "act"])
+        self.assertEqual(device.list_files("/sdcard/Documents/actions/").stdout.splitlines(), ["touch", "act"])
         device.push_file("/tmp/touch", "/sdcard/Documents/actions/")
-        device.act("touch", (7, -2))
+        device.replay("/sdcard/Documents/actions/touch", 7, -2)
 
         self.assertIn(["adb", "shell", "mkdir", "-p", "/sdcard/Documents/actions/"], runner.calls)
         self.assertIn(["adb", "push", "/tmp/touch", "/sdcard/Documents/actions/touch"], runner.calls)
@@ -146,9 +153,10 @@ class DeviceActionTests(unittest.TestCase):
 
     def test_android_device_screenshot_captures_remote_png_path(self) -> None:
         runner = RecordingRunner()
-        device = AndroidDevice(runner=runner)
+        device = AndroidDevice()
+        device.runner = runner
 
-        self.assertEqual(device.screenshot(), "/sdcard/window.png")
+        self.assertTrue(device.capture_screen("/sdcard/window.png").ok)
         self.assertIn(["adb", "shell", "screencap", "-p", "/sdcard/window.png"], runner.calls)
 
     def test_android_device_dump_ui_disables_animations_before_uiautomator_dump(self) -> None:
@@ -160,9 +168,10 @@ class DeviceActionTests(unittest.TestCase):
                 ),
             }
         )
-        device = AndroidDevice(runner=runner)
+        device = AndroidDevice()
+        device.runner = runner
 
-        self.assertEqual(device.dump_ui(), "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n<hierarchy rotation=\"0\"></hierarchy>")
+        self.assertEqual(PageBridge(device)._dump_xml(), "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\n<hierarchy rotation=\"0\"></hierarchy>")
         self.assertEqual(
             runner.calls[:4],
             [
@@ -175,9 +184,10 @@ class DeviceActionTests(unittest.TestCase):
 
     def test_android_device_run_package_uses_launcher_monkey_command(self) -> None:
         runner = RecordingRunner()
-        device = AndroidDevice(runner=runner)
+        device = AndroidDevice()
+        device.runner = runner
 
-        device.run_package("com.sankuai.meituan")
+        device.start_package("com.sankuai.meituan")
 
         self.assertIn(
             [
@@ -194,19 +204,21 @@ class DeviceActionTests(unittest.TestCase):
         )
 
     def test_android_device_run_package_returns_error_for_empty_package_name(self) -> None:
-        device = AndroidDevice(runner=RecordingRunner())
+        device = AndroidDevice()
+        device.runner = RecordingRunner()
 
-        result = device.run_package("  ")
+        result = DeviceOperationService().run_package("  ")
 
-        self.assertEqual(result["ok"], False)
-        self.assertEqual(result["error_type"], "validation_error")
-        self.assertIn("package_name must not be empty", result["message"])
+        self.assertIsInstance(result, DeviceError)
+        self.assertEqual(result.error_type, "validation_error")
+        self.assertIn("package_name must not be empty", result.message)
 
     def test_android_device_close_package_uses_force_stop_command(self) -> None:
         runner = RecordingRunner()
-        device = AndroidDevice(runner=runner)
+        device = AndroidDevice()
+        device.runner = runner
 
-        device.close_package("com.sankuai.meituan")
+        device.stop_package("com.sankuai.meituan")
 
         self.assertIn(
             ["adb", "shell", "am", "force-stop", "com.sankuai.meituan"],
@@ -214,13 +226,14 @@ class DeviceActionTests(unittest.TestCase):
         )
 
     def test_android_device_close_package_returns_error_for_empty_package_name(self) -> None:
-        device = AndroidDevice(runner=RecordingRunner())
+        device = AndroidDevice()
+        device.runner = RecordingRunner()
 
-        result = device.close_package("  ")
+        result = DeviceOperationService().close_package("  ")
 
-        self.assertEqual(result["ok"], False)
-        self.assertEqual(result["error_type"], "validation_error")
-        self.assertIn("package_name must not be empty", result["message"])
+        self.assertIsInstance(result, DeviceError)
+        self.assertEqual(result.error_type, "validation_error")
+        self.assertIn("package_name must not be empty", result.message)
 
     def test_default_runner_returns_error_result_for_adb_error_output(self) -> None:
         completed = subprocess.CompletedProcess(
@@ -231,12 +244,12 @@ class DeviceActionTests(unittest.TestCase):
         )
         device = AndroidDevice()
 
-        with patch("device.adapter.subprocess.run", return_value=completed):
-            result = device.shell(["some-command"])
+        with patch("src.device.commands.executor.subprocess.run", return_value=completed):
+            result = device.dump_hierarchy().error
 
-        self.assertEqual(result["ok"], False)
-        self.assertEqual(result["error_type"], "command_error")
-        self.assertIn("ERROR could not get idle state.", result["message"])
+        self.assertIsInstance(result, DeviceError)
+        self.assertEqual(result.error_type, "command_error")
+        self.assertIn("ERROR could not get idle state.", result.message)
 
     def test_default_runner_returns_error_result_for_stderr_error_output(self) -> None:
         completed = subprocess.CompletedProcess(
@@ -247,12 +260,12 @@ class DeviceActionTests(unittest.TestCase):
         )
         device = AndroidDevice()
 
-        with patch("device.adapter.subprocess.run", return_value=completed):
-            result = device.shell(["some-command"])
+        with patch("src.device.commands.executor.subprocess.run", return_value=completed):
+            result = device.dump_hierarchy().error
 
-        self.assertEqual(result["ok"], False)
-        self.assertEqual(result["error_type"], "command_error")
-        self.assertIn("Permission denied", result["message"])
+        self.assertIsInstance(result, DeviceError)
+        self.assertEqual(result.error_type, "command_error")
+        self.assertIn("Permission denied", result.message)
 
     def test_default_runner_preserves_successful_output_containing_error_word_inside_text(self) -> None:
         completed = subprocess.CompletedProcess(
@@ -263,33 +276,60 @@ class DeviceActionTests(unittest.TestCase):
         )
         device = AndroidDevice()
 
-        with patch("device.adapter.subprocess.run", return_value=completed):
-            self.assertEqual(device.shell(["some-command"]), "last_error_count=0\n")
+        with patch("src.device.commands.executor.subprocess.run", return_value=completed):
+            self.assertEqual(device.dump_hierarchy().stdout, "last_error_count=0\n")
 
-    def test_check_actions_translates_missing_local_actions(self) -> None:
-        class FakeDevice:
-            def __init__(self) -> None:
-                self.added: list[tuple[str, str]] = []
+    def test_deployment_uploads_real_missing_files_including_back(self):
+        uploads = []
+        present = {name for spec in GESTURES.values() for name in spec.recordings} - {"swipe_back"}
+        def runner(args):
+            if "push" in args:
+                uploads.append((Path(args[-2]).name, Path(args[-2]).read_bytes()))
+            return CommandResult(args, 0, "\n".join(present) if "ls" in args else "", "")
+        device = AndroidDevice()
+        device.runner = runner
+        gestures = GestureReplay(device)
+        assert gestures.ensure_available() is None
+        assert [name for name, _ in uploads] == ["swipe_back"]
+        assert uploads[0][1].startswith(b"PIAR1\0\0\0")
+        assert gestures.ensure_available() is None
+        assert len(uploads) == 1
 
-            def get_supported_actions(self, device_dir: str = "/sdcard/Documents/actions/") -> list[str]:
-                return ["already"]
+    def test_failed_upload_is_not_cached(self):
+        calls = []
+        def runner(args):
+            calls.append(args)
+            return CommandResult(args, 1 if "push" in args else 0, "", "upload failed" if "push" in args else "")
+        device = AndroidDevice()
+        device.runner = runner
+        gestures = GestureReplay(device)
+        assert isinstance(gestures.ensure_available(), DeviceError)
+        assert isinstance(gestures.ensure_available(), DeviceError)
+        assert sum("push" in args for args in calls) == 2
 
-            def add_action(self, local_path: str, device_dir: str = "/sdcard/Documents/actions/") -> str:
-                self.added.append((Path(local_path).name, device_dir))
-                return f"{device_dir.rstrip('/')}/{Path(local_path).name}"
+    def test_custom_runner_errors_and_exceptions_are_normalized(self):
+        device = AndroidDevice()
+        device.runner = lambda args: CommandResult(args, 0, "", "Permission denied")
+        assert device.dump_hierarchy().error.error_type == "command_error"
+        def broken(args):
+            raise OSError("missing adb")
+        device.runner = broken
+        result = device.dump_hierarchy()
+        assert result.returncode is None and result.error is not None
 
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            local_dir = Path(tmp_dir)
-            (local_dir / "already").write_text("[ 1.000000] EV_SYN SYN_REPORT 00000000\n", encoding="utf-8")
-            (local_dir / "missing").write_text("[ 1.000000] EV_SYN SYN_REPORT 00000000\n", encoding="utf-8")
-
-            device = FakeDevice()
-            translated = check_actions(device, local_dir=str(local_dir))
-
-        self.assertEqual(translated, ["missing"])
-        self.assertEqual(len(device.added), 1)
-        self.assertEqual(device.added[0][0], "missing")
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_randomization_is_confined_to_common_gestures(self):
+        device = AndroidDevice()
+        calls = []
+        present = "\n".join(name for spec in GESTURES.values() for name in spec.recordings)
+        def runner(args):
+            calls.append(args)
+            return CommandResult(args, 0, present if "ls" in args else "", "")
+        device.runner = runner
+        gestures = GestureReplay(device)
+        with patch("src.device.services.gestures.random.choice", return_value="tap_2") as choice, patch("src.device.services.gestures.random.randint", side_effect=[-2, 2]) as jitter:
+            assert gestures.replay("tap", 100, 200) == ""
+            assert calls[-1][-1].endswith("/tap_2 98 202")
+            assert gestures.replay("swipe_back", 0, 2000) == ""
+            assert calls[-1][-1].endswith("/swipe_back 0 2000")
+            assert choice.call_count == 1
+            assert jitter.call_args_list == [unittest.mock.call(-2, 2), unittest.mock.call(-2, 2)]

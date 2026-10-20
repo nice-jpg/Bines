@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Protocol, runtime_checkable
 
-from src.serialization.validation import is_string_mapping
+from src.common.utils.validation import is_string_mapping
 
 EXTERNAL_OPERATION_POLICY_METADATA_KEY: Final[str] = "bines_external_operation_policy"
 

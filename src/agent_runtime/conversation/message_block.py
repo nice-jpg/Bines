@@ -7,3 +7,4 @@ from dataclasses import dataclass
 class MessageBlock:
     block_id: str
     text: str
+    source_texts: tuple[str, ...]

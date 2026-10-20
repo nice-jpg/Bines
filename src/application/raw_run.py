@@ -20,9 +20,10 @@ from src.application.model import build_model, close_model
 from src.application.trace import trace_client
 from src.channel.console import ConsoleChannel
 from src.common.paths import WORKSPACE_ROOT
+from src.common.utils.validation import is_string_mapping, is_value_sequence
 from src.conductor.engine import ConductorEngine
+from src.conductor.state import ConductorState
 from src.configuration.manager import ConfigurationManager
-from src.serialization.validation import is_string_mapping, is_value_sequence
 from src.tools.workbooks.excel import ExcelReadValue
 from src.tools.workbooks.paths import COLLECTION_WORKBOOK_NAME
 
@@ -92,7 +93,7 @@ def run() -> None:
             gateway_id=gateway_id,
             session_id="main",
         )
-        coordinator: AgentCoordinator = AgentCoordinator(engine)
+        coordinator: AgentCoordinator[ConductorState] = AgentCoordinator(engine)
         try:
             print(coordinator.run())
         finally:

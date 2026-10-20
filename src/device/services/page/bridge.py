@@ -9,12 +9,12 @@ from xml.etree.ElementTree import ParseError
 
 from Reco.model_interface import TOOLS, PageSession
 from src.common.event_log import WorkspaceEventLogger
+from src.common.utils.json import JsonObject, JsonValue, json_value
 from src.device.commands.executor import DEFAULT_UI_DUMP_PATH, AndroidCommandExecutor
 from src.device.services.page.change_hint import change_hint, root_change_ratio
 from src.device.services.page.view import freeze_page, restore_page
 from src.device.types.page import PageArtifact, PageSnapshot
 from src.device.types.results import CommandResult, DeviceError
-from src.serialization.json import JsonObject, JsonValue, json_value
 
 type PageOperationResult = tuple[JsonValue, PageArtifact | None]
 

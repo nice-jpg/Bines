@@ -2,8 +2,10 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
+import logging
 from uuid import uuid4
 
+from langchain.agents.middleware.types import AgentState
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
@@ -13,22 +15,27 @@ from langgraph.errors import GraphBubbleUp, GraphRecursionError
 from langgraph.types import Command, Interrupt, StateSnapshot
 
 from nTrace import NTrace, createNTraceHostMiddleware, createNTraceLLMMiddleware, createNTraceToolMiddleware
+from nTrace.trace import TraceBinding
 from src.agent_messages.text import latest_message_text
 from src.agent_messages.types import GraphInput, InputMessage
 from src.agent_runtime.conversation import ConversationSession, MessageBlock
 from src.agent_runtime.messaging.messages import MessageStreamClosed
 from src.application.trace import trace_client
-from src.serialization.json import JsonValue
-from src.serialization.validation import is_string_mapping
+from src.common.utils.json import JsonValue
+from src.common.utils.validation import is_string_mapping
 
 from .middleware.communication import ConversationInputMiddleware, read_pending_input
 from .middleware.model_retry import create_model_retry_middleware, is_retryable_model_transport_error
 from .middleware.tool_error import ToolErrorMiddleware
+from .strategy.middleware import StrategyDispatchMiddleware
+from .strategy.registration import StrategyRegistration
+from .strategy.registry import StrategyRegistry
 from .types.execution import (
     EngineLifecycle,
     EngineResult,
     EngineStatus,
     ExecutionState,
+    ExecutionSource,
     InterruptKind,
     YieldReason,
 )
@@ -36,7 +43,7 @@ from .types.framework import RuntimeGraph, RuntimeMiddleware
 from .types.interrupts import extract_interrupts, interrupt_kind, interrupt_output
 
 
-class AgentEngine(ABC):
+class AgentEngine[StateT: AgentState = AgentState](ABC):
     """Own business execution and the lifetime, but not the logic, of a session."""
 
     def __init__(
@@ -69,11 +76,30 @@ class AgentEngine(ABC):
         prompt: str = self._system_prompt()
         name: str = self._name()
         trace: NTrace = NTrace(agent_name=name, system_prompt=prompt, client=trace_client())
+        registrations: Sequence[StrategyRegistration[StateT]] = self._strategy_registrations()
+        strategy_layers: list[RuntimeMiddleware] = []
+        if registrations:
+            registry: StrategyRegistry[StateT] = StrategyRegistry()
+            for registration in registrations:
+                registry.register(registration)
+            schema: type = self._strategy_state_schema()
+            registry.validate_schema(schema)
+            strategy_layers.append(
+                StrategyDispatchMiddleware(
+                    state_schema=schema, registry=registry, select_strategy=self._select_strategy
+                )
+            )
+        business_layers: list[RuntimeMiddleware] = list(self._create_middlewares())
+        if strategy_layers:
+            position: int = self._strategy_middleware_position()
+            if not 0 <= position <= len(business_layers):
+                raise ValueError("Strategy middleware position is outside the business chain")
+            business_layers[position:position] = strategy_layers
         layers: list[RuntimeMiddleware] = [
             createNTraceHostMiddleware(trace),
             create_model_retry_middleware(),
             ConversationInputMiddleware(self._conversation),
-            *self._create_middlewares(),
+            *business_layers,
             ToolErrorMiddleware(),
             createNTraceToolMiddleware(trace),
             createNTraceLLMMiddleware(trace),
@@ -115,8 +141,24 @@ class AgentEngine(ABC):
     def _create_middlewares(self) -> Sequence[RuntimeMiddleware]:
         return ()
 
+    def _strategy_middleware_position(self) -> int:
+        """Insert dispatch before business middleware unless a subclass specifies nesting."""
+        return 0
+
+    def _strategy_registrations(self) -> Sequence[StrategyRegistration[StateT]]:
+        return ()
+
+    def _strategy_state_schema(self) -> type:
+        return AgentState
+
+    def _select_strategy(self, state: StateT) -> str:
+        raise NotImplementedError("Engines with registered strategies must select a strategy")
+
     def _create_initial_messages(self) -> Sequence[InputMessage]:
-        """Build startup input lazily on the first run; empty means wait for a conversation."""
+        """Build an internal startup assignment; empty means wait for user input.
+
+        A user-role message here is not a user-initiated trace boundary.
+        """
         return ()
 
     def run_turn(self) -> EngineResult:
@@ -138,7 +180,7 @@ class AgentEngine(ABC):
         if self._execution.status is None:
             initial: list[InputMessage] = list(self._create_initial_messages())
             if initial:
-                return self._execute(self._input_state(self._prepare_messages(initial)), new_turn=True)
+                return self._execute(self._input_state(self._prepare_messages(initial)), source=ExecutionSource.INITIAL_TASK)
         try:
             block: MessageBlock | None = self._conversation.read_input(wait=True)
         except MessageStreamClosed:
@@ -148,7 +190,7 @@ class AgentEngine(ABC):
         messages: list[InputMessage] = self._prepare_messages(
             [HumanMessage(content=block.text, id=block.block_id)]
         )
-        return self._execute(self._input_state(messages), new_turn=True)
+        return self._execute(self._input_state(messages), source=ExecutionSource.USER_TASK)
 
     def continue_turn(self) -> EngineResult:
         if (
@@ -158,8 +200,8 @@ class AgentEngine(ABC):
             raise RuntimeError("No continuation is pending")
         if self._execution.continuation_reason == "new_input":
             messages: list[InputMessage] = list(read_pending_input(self._conversation, self._state))
-            return self._execute({"messages": messages}, new_turn=False)
-        return self._execute({"messages": [self._continuation_message()]}, new_turn=False)
+            return self._execute({"messages": messages}, source=ExecutionSource.CONTINUATION)
+        return self._execute({"messages": [self._continuation_message()]}, source=ExecutionSource.CONTINUATION)
 
     def resume_turn(self) -> EngineResult:
         kind: InterruptKind | None = self._execution.interrupt_kind
@@ -176,7 +218,7 @@ class AgentEngine(ABC):
         command: Command[str] | None = None
         if kind not in {InterruptKind.MODEL_TRANSPORT, InterruptKind.RECURSION, InterruptKind.EXECUTION}:
             command = Command(resume=self._resume_payload(kind, self._execution.resume_input))
-        return self._execute(command, new_turn=False)
+        return self._execute(command, source=ExecutionSource.RESUME)
 
     def close(self) -> None:
         if self._lifecycle == EngineLifecycle.CLOSED:
@@ -195,12 +237,22 @@ class AgentEngine(ABC):
         self._execution.status = EngineStatus.STOPPED
         return EngineResult(EngineStatus.STOPPED, "Runtime is shutting down.")
 
-    def _execute(self, input: GraphInput | Command[str] | None, *, new_turn: bool) -> EngineResult:
+    def _execute(self, input: GraphInput | Command[str] | None, *, source: ExecutionSource) -> EngineResult:
         config: RunnableConfig = {
             "recursion_limit": self._max_iterations,
             "configurable": {**self._conversation.route, "thread_id": self._checkpoint_id},
         }
-        self._trace.update(session_id=self._checkpoint_id, user_input_boundary=new_turn)
+        continuing: bool = source in {ExecutionSource.CONTINUATION, ExecutionSource.RESUME}
+        binding: TraceBinding | None = self._trace.current_binding
+        missing_binding: bool = continuing and (binding is None or binding.session_id != self._checkpoint_id)
+        if missing_binding:
+            # Never let a recovery with lost identity attach to an unrelated active agent.
+            logging.getLogger(__name__).warning("Trace binding missing during %s; starting an isolated recovery trace", source)
+        self._trace.update(
+            session_id=self._checkpoint_id,
+            resume=continuing,
+            user_input_boundary=source == ExecutionSource.USER_TASK or missing_binding,
+        )
         try:
             raw: object = self.agent.invoke(input, config=config, durability="exit")  # pyright: ignore[reportUnknownMemberType]
             if not is_string_mapping(raw):

@@ -8,7 +8,7 @@ from typing import Annotated, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints
 
-from src.serialization.validation import is_string_mapping
+from src.common.utils.validation import is_string_mapping
 
 DANGEROUS_TOOL_POLICY_METADATA_KEY: Final[str] = "bines_dangerous_tool_policy"
 type NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]

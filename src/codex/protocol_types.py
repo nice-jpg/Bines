@@ -5,7 +5,7 @@ from typing import NotRequired
 from pydantic import TypeAdapter
 from typing_extensions import TypedDict
 
-from src.serialization.json import JsonValue
+from src.common.utils.json import JsonValue
 
 
 class ResponseText(TypedDict, total=False):

@@ -7,13 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tools.common import (
-    CaptchaAuthenticationTool,
-    ManualTool,
-    OperationNoticeTool,
-    ThinkingTool,
-    create_common_tools,
-)
+from src.tools.captcha.tools import CaptchaAuthenticationTool, create_captcha_tools
+from src.tools.notifications.service import OperationNoticeTool
+from src.tools.reasoning.tools import ThinkingTool, create_thinking_tool
+
 
 
 class FakeLogger:
@@ -38,9 +35,32 @@ class FakeShadowService:
 
 
 class CommonToolTests(unittest.TestCase):
+    def _notice_tool(self, *, logger, max_entries=30, notifier=None):
+        from unittest.mock import patch
+        with patch("src.tools.notifications.service.OPERATION_LOG_CAPACITY", max_entries):
+            tool = OperationNoticeTool(notifier=notifier)
+        tool.logger = logger
+        return tool
+
+
+    def _captcha_tool(self, *, service_module=None, **kwargs):
+        from unittest.mock import patch
+        if service_module is not None:
+            start = patch("nScreen.shadow_root.start_shadow_service", service_module.start_shadow_service)
+            stop = patch("nScreen.shadow_root.stop_shadow_service", service_module.stop_shadow_service)
+            start.start()
+            stop.start()
+            self.addCleanup(start.stop)
+            self.addCleanup(stop.stop)
+        logger = kwargs.pop("logger", None)
+        tool = CaptchaAuthenticationTool(**kwargs)
+        if logger is not None:
+            tool.logger = logger
+        return tool
+
     def test_notify_user_returns_operation_log_and_persists_notice(self) -> None:
         logger = FakeLogger()
-        result = OperationNoticeTool(logger=logger).notify_user(
+        result = self._notice_tool(logger=logger).notify_user(
             operation="swipe up on (200, 1200) to load more shops",
             current_path="meituan/外卖",
             reason="current list screen has no unprocessed visible shops",
@@ -56,7 +76,7 @@ class CommonToolTests(unittest.TestCase):
 
     def test_notify_user_calls_optional_notifier_without_changing_result(self) -> None:
         delivered = []
-        result = OperationNoticeTool(
+        result = self._notice_tool(
             logger=FakeLogger(),
             notifier=delivered.append,
         ).notify_user(
@@ -69,11 +89,11 @@ class CommonToolTests(unittest.TestCase):
 
         self.assertIn("<operation_log>", result)
         self.assertEqual(len(delivered), 1)
-        self.assertIn("Operation: tap '美食' on (320, 620) to load a subpage", delivered[0])
+        self.assertIn("Preparing operation: tap '美食' on (320, 620) to load a subpage", delivered[0])
         self.assertIn("Next path: meituan/美食", delivered[0])
 
     def test_notify_user_records_expected_next_page_context(self) -> None:
-        result = OperationNoticeTool(logger=FakeLogger()).notify_user(
+        result = self._notice_tool(logger=FakeLogger()).notify_user(
             operation="tap '美食' on (320, 620) to load a subpage",
             current_path="meituan",
             reason="open configured secondary page",
@@ -85,7 +105,7 @@ class CommonToolTests(unittest.TestCase):
         self.assertIn('next_path="meituan/美食"', result)
 
     def test_notify_user_keeps_recent_log_tail(self) -> None:
-        tool = OperationNoticeTool(logger=FakeLogger(), max_entries=2)
+        tool = self._notice_tool(logger=FakeLogger(), max_entries=2)
 
         tool.notify_user("first operation", "meituan")
         tool.notify_user("second operation", "meituan")
@@ -98,7 +118,7 @@ class CommonToolTests(unittest.TestCase):
 
     def test_notify_user_handles_empty_operation_without_raising(self) -> None:
         self.assertEqual(
-            OperationNoticeTool(logger=FakeLogger()).notify_user("  ", "meituan"),
+            self._notice_tool(logger=FakeLogger()).notify_user("  ", "meituan"),
             "No operation notice was recorded because the operation input was empty.",
         )
 
@@ -113,7 +133,7 @@ class CommonToolTests(unittest.TestCase):
         delivered = []
         service = FakeShadowService()
 
-        result = CaptchaAuthenticationTool(
+        result = self._captcha_tool(
             logger=logger,
             notifier=delivered.append,
             service_module=service,
@@ -135,7 +155,7 @@ class CommonToolTests(unittest.TestCase):
         self.assertIn("http://139.224.44.6:9080", delivered[0])
 
     def test_authenticate_captcha_handles_empty_inputs_without_raising(self) -> None:
-        result = CaptchaAuthenticationTool(
+        result = self._captcha_tool(
             logger=FakeLogger(),
             service_module=FakeShadowService(),
         ).authenticate_captcha("", "", "")
@@ -147,7 +167,7 @@ class CommonToolTests(unittest.TestCase):
         delivered = []
         service = FakeShadowService()
 
-        result = CaptchaAuthenticationTool(
+        result = self._captcha_tool(
             logger=logger,
             notifier=delivered.append,
             service_module=service,
@@ -165,7 +185,7 @@ class CommonToolTests(unittest.TestCase):
         logger = FakeLogger()
         service = FakeShadowService()
 
-        result = CaptchaAuthenticationTool(logger=logger, service_module=service).stop_authentication_session()
+        result = self._captcha_tool(logger=logger, service_module=service).stop_authentication_session()
 
         self.assertEqual(service.calls, ["stop"])
         self.assertIn('operation="stop"', result)
@@ -175,7 +195,7 @@ class CommonToolTests(unittest.TestCase):
         logger = FakeLogger()
         service = FakeShadowService()
 
-        result = CaptchaAuthenticationTool(logger=logger, service_module=service).captcha_authenticated(
+        result = self._captcha_tool(logger=logger, service_module=service).captcha_authenticated(
             current_path="meituan/外卖",
             evidence="user replied done",
         )
@@ -187,125 +207,17 @@ class CommonToolTests(unittest.TestCase):
         self.assertEqual(logger.records[1][0], "shadow_service_stop")
 
     def test_create_common_tools_registers_think_tool(self) -> None:
-        tools = create_common_tools()
+        tools = [*create_captcha_tools(CaptchaAuthenticationTool()), create_thinking_tool()]
 
         self.assertEqual(
             [tool.name for tool in tools],
             [
-                "notify_user",
                 "authenticate_captcha",
                 "captcha_authenticated",
                 "think",
             ],
         )
-        self.assertIn("task start, merchant probe start, or probe completion", tools[0].description)
-        self.assertIn("Ordinary device operations must not produce notifications", tools[0].description)
-        self.assertIn("human captcha authentication", tools[1].description)
-        self.assertIn("captcha has been completed", tools[2].description)
-        self.assertIn("complex tool outputs", tools[3].description)
-        self.assertIn("does not fetch new information", tools[3].description)
-
-    def test_query_manual_returns_only_current_page_doc_for_operation_path(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            for relative_path, content in {
-                "meituan/PAGE.md": "Home manual",
-                "meituan/外卖/PAGE.md": "Waimai manual",
-                "meituan/外卖/商家/PAGE.md": "Merchant manual",
-                "meituan/美食/PAGE.md": "Food manual",
-            }.items():
-                path = root / relative_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
-
-            result = ManualTool(root).query_manual("com.sankuai.meituan/外卖/商家")
-
-        self.assertIn('canonical_path="meituan/外卖/商家"', result)
-        self.assertNotIn('path="meituan/PAGE.md"', result)
-        self.assertNotIn("Home manual", result)
-        self.assertNotIn('path="meituan/外卖/PAGE.md"', result)
-        self.assertNotIn("Waimai manual", result)
-        self.assertIn('path="meituan/外卖/商家/PAGE.md"', result)
-        self.assertIn("Merchant manual", result)
-        self.assertNotIn("Food manual", result)
-
-    def test_query_manual_returns_only_app_doc_for_app_name(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            path = root / "meituan" / "PAGE.md"
-            path.parent.mkdir(parents=True)
-            path.write_text("Home manual", encoding="utf-8")
-
-            result = ManualTool(root).query_manual("美团")
-
-        self.assertIn('canonical_path="meituan"', result)
-        self.assertIn('path="meituan/PAGE.md"', result)
-        self.assertIn("Home manual", result)
-
-    def test_query_manual_reports_missing_docs_without_raising(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            result = ManualTool(tmp_dir).query_manual("meituan/酒店")
-
-        self.assertIn("<manual_error>", result)
-        self.assertIn("<attempted_path>meituan/酒店</attempted_path>", result)
-        self.assertIn("No manual found for the canonical path.", result)
-
-    def test_query_manual_does_not_map_home_keyword(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            for relative_path, content in {
-                "meituan/PAGE.md": "Home manual",
-                "meituan/外卖/PAGE.md": "Waimai manual",
-                "meituan/美食/PAGE.md": "Food manual",
-            }.items():
-                path = root / relative_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
-
-            result = ManualTool(root).query_manual("美团/首页")
-
-        self.assertIn("<manual_error>", result)
-        self.assertIn("<input_path>美团/首页</input_path>", result)
-        self.assertIn("<attempted_path>meituan/首页</attempted_path>", result)
-        self.assertIn("<path>meituan</path>", result)
-        self.assertIn("<path>meituan/美食</path>", result)
-
-    def test_query_manual_does_not_map_concrete_merchant_name(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            for relative_path, content in {
-                "meituan/美食/PAGE.md": "Food manual",
-                "meituan/美食/商家/PAGE.md": "Food merchant manual",
-            }.items():
-                path = root / relative_path
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content, encoding="utf-8")
-
-            result = ManualTool(root).query_manual("美团/美食/老乡鸡")
-
-        self.assertIn("<manual_error>", result)
-        self.assertIn("<attempted_path>meituan/美食/老乡鸡</attempted_path>", result)
-        self.assertIn("<available_child_paths>", result)
-        self.assertIn("<path>meituan/美食/商家</path>", result)
-
-    def test_query_manual_returns_error_for_path_escape_attempts(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            root = Path(tmp_dir)
-            path = root / "meituan" / "PAGE.md"
-            path.parent.mkdir(parents=True)
-            path.write_text("Home manual", encoding="utf-8")
-
-            parent_result = ManualTool(root).query_manual("../meituan")
-            folded_parent_result = ManualTool(root).query_manual("meituan/../secret")
-            absolute_result = ManualTool(root).query_manual("/meituan")
-
-        self.assertIn("<manual_error>", parent_result)
-        self.assertIn("must not contain '..'", parent_result)
-        self.assertIn("<manual_error>", folded_parent_result)
-        self.assertIn("must not contain '..'", folded_parent_result)
-        self.assertIn("<manual_error>", absolute_result)
-        self.assertIn("must be relative", absolute_result)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertIn("human captcha authentication", tools[0].description)
+        self.assertIn("captcha has been completed", tools[1].description)
+        self.assertIn("complex tool outputs", tools[2].description)
+        self.assertIn("does not fetch new information", tools[2].description)

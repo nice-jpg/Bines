@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from langchain_core.tools import StructuredTool
 
-from src.subagents.manager import SubagentManager
 from src.tools.shared.factory import create_tool
+from src.tools.subagents.manager import SubagentManager
 
 
 def create_subagent_tools(manager: SubagentManager) -> list[StructuredTool]:

@@ -1,0 +1,13 @@
+{
+  "include": [
+    "src"
+  ],
+  "exclude": [
+    "src/channel/lark-samples-main",
+    "src/prompts/page_mechanism",
+    "**/__pycache__"
+  ],
+  "typeCheckingMode": "strict",
+  "pythonVersion": "3.14",
+  "stubPath": "typings"
+}

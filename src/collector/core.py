@@ -3,55 +3,60 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from typing import Any, Sequence
 from uuid import uuid4
-
-from src.agent_runtime import create_runtime
+from xml.sax.saxutils import escape
 
 from langchain.tools import ToolRuntime
+from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
-from .middleware import CollectorModelMiddleware
 
-try:
-    from src.collector.toolbox import CollectorToolbox
-    from src.collector.history import CollectorHistory
-    from src.page_mechanism import CollectorTrainingRegistry, PageMechanism
-    from src.prompts import COLLECTOR_PROMPT
-    from src.tools.event_hub import EventHub
-    from src.tools.operation_policy import (
-        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
-        ExternalOperationPolicy,
-    )
-except ModuleNotFoundError:  # Supports running tests with src on sys.path.
-    from collector.toolbox import CollectorToolbox
-    from collector.history import CollectorHistory
-    from page_mechanism import CollectorTrainingRegistry, PageMechanism
-    from prompts import COLLECTOR_PROMPT
-    from tools.event_hub import EventHub
-    from tools.operation_policy import (
-        EXTERNAL_OPERATION_POLICY_METADATA_KEY,
-        ExternalOperationPolicy,
-    )
+from src.agent_runtime.types.execution import EngineResult, EngineStatus
+from src.collector.history import CollectorHistory
+from src.collector.toolbox import CollectorToolbox
+from src.collector.training import CollectorTrainingRegistry
+from src.collector.types import (
+    CollectorPreparationResult,
+    NormalSwipeProfile,
+    RestorationResult,
+    TrainingResult,
+)
+from src.common.utils.json import JsonObject, JsonValue, load_json
+from src.conductor.state import ConductorState, current_visit
+from src.device import DeviceOperationService
+from src.page.collection_contract import CollectionContract
+from src.page.mechanism import PageMechanism
+from src.strategy.general.declarations import requires_collection
+from src.strategy.general.state import PageVisit
+from src.strategy.merchant.state import is_merchant_visit
+from src.tools.notifications.policy import (
+    EXTERNAL_OPERATION_POLICY_METADATA_KEY,
+    ExternalOperationPolicy,
+)
+from src.tools.shared.factory import create_tool
+
+from .engine import CollectorEngine
 
 
-class CollectorManager:
+class CollectorTrainingCoordinator:
     """Run an isolated collector agent for one page mechanism."""
 
     def __init__(
         self,
         *,
-        model: Any,
+        model: str | BaseChatModel,
         mechanism: PageMechanism | None = None,
-        event_hub: EventHub | None = None,
-        max_iterations: int = 1000,
+        event_hub: DeviceOperationService | None = None,
+        gateway_id: str,
     ) -> None:
-        self.model = model
-        self.mechanism = mechanism or PageMechanism()
-        self.event_hub = event_hub or EventHub()
-        self.training_registry = CollectorTrainingRegistry()
-        self.history = CollectorHistory()
-        self.max_iterations = max(1, int(max_iterations))
+        self._gateway_id: str = gateway_id
+        self.model: str | BaseChatModel = model
+        self.mechanism: PageMechanism = mechanism if mechanism is not None else PageMechanism()
+        self.event_hub: DeviceOperationService = (
+            event_hub if event_hub is not None else DeviceOperationService()
+        )
+        self.training_registry: CollectorTrainingRegistry = CollectorTrainingRegistry()
+        self.history: CollectorHistory = CollectorHistory()
+        self.max_iterations: int = 1000
 
     def prepare_collector(
         self,
@@ -59,15 +64,15 @@ class CollectorManager:
         page_description: str,
         merchant_schema: str,
         collection_schema: str,
-        runtime: ToolRuntime[Any],
+        runtime: ToolRuntime[None, ConductorState],
     ) -> str:
         """Delegate run.agent.py preparation to an isolated collector."""
 
-        runtime_state = runtime.state
-        current_path = str(runtime_state.get("page_context_path") or "")
-        visit_id = str(runtime_state.get("page_visit_id") or "")
-        run_id = str(runtime_state.get("probe_run_id") or "")
-        canonical_path = self.mechanism.validate_page_manual(page_path)
+        runtime_state: ConductorState = runtime.state
+        current_path: str = current_visit(runtime_state).get("path", "")
+        visit_id: str = current_visit(runtime_state).get("visit_id", "")
+        run_id: str = runtime_state["probe"].get("run_id", "")
+        canonical_path: str = self.mechanism.validate_page_manual(page_path)
         if canonical_path != current_path:
             raise ValueError(
                 f"prepare_collector page_path {canonical_path!r} does not match current page {current_path!r}."
@@ -79,69 +84,95 @@ class CollectorManager:
         self.training_registry.register_visit(visit_id, canonical_path)
         self.training_registry.mark_untrained(visit_id, canonical_path)
 
-        parsed_collection_schema = _require_json_object(collection_schema, "collection_schema")
-        toolbox = CollectorToolbox(
+        parsed_collection_schema: JsonObject = _require_json_object(collection_schema, "collection_schema")
+        visit: PageVisit | None = runtime_state["general"].get("visit")
+        toolbox: CollectorToolbox = CollectorToolbox(
             mechanism=self.mechanism,
             event_hub=self.event_hub,
             page_path=canonical_path,
             merchant_schema=merchant_schema,
             collection_schema=parsed_collection_schema,
-            requires_merchant_profile=self.mechanism.page_policy(canonical_path).role == "merchant",
+            requires_merchant_profile=(
+                is_merchant_visit(visit)
+                if visit is not None
+                else requires_collection(self.mechanism, canonical_path)
+            ),
             history=self.history,
             page_visit_id=visit_id,
             run_id=run_id,
         )
-        agent = self._build_agent(toolbox)
-        message = "\n".join(
+        message: str = "\n".join(
             [
                 "<collector_assignment>",
-                f"<page_path>{_escape_text(canonical_path)}</page_path>",
-                f"<page_visit_id>{_escape_text(visit_id)}</page_visit_id>",
-                f"<page_description>{_escape_text(page_description)}</page_description>",
-                f"<merchant_schema>{_escape_text(merchant_schema)}</merchant_schema>",
-                f"<collection_schema>{_escape_text(collection_schema)}</collection_schema>",
+                f"<page_path>{escape(canonical_path)}</page_path>",
+                f"<page_visit_id>{escape(visit_id)}</page_visit_id>",
+                f"<page_description>{escape(page_description)}</page_description>",
+                f"<merchant_schema>{escape(merchant_schema)}</merchant_schema>",
+                f"<collection_schema>{escape(collection_schema)}</collection_schema>",
                 "<workflow>Follow the visual-validation workflow in your system prompt. Read or create COLLECT.md, annotate regions, test run(view), save independent screenshot baselines, and regress every saved case for this page in the current probe run only. Restore the live page after all cases pass.</workflow>",
                 "</collector_assignment>",
             ]
         )
-        state: Any = {"messages": []}
+        agent: CollectorEngine = CollectorEngine(
+            model=self.model,
+            toolbox=toolbox,
+            assignment=message,
+            session_id=f"collector:{visit_id}",
+            max_iterations=self.max_iterations,
+            gateway_id=self._gateway_id,
+        )
         invoke_error: Exception | None = None
+        collector_message: str = ""
         try:
-            state = agent.invoke(
-                {"messages": [{"role": "user", "content": message}]},
-                config={"recursion_limit": self.max_iterations, "configurable": {"thread_id": f"collector:{visit_id}"}},
-                context=runtime.context,
-            )
-        except Exception as exc:  # noqa: BLE001 - tool results should be structured.
+            outcome: EngineResult = agent.run_turn()
+            while outcome.status == EngineStatus.CONTINUE_REQUIRED:
+                outcome = agent.continue_turn()
+            collector_message = outcome.output
+            if outcome.status != EngineStatus.COMPLETED:
+                raise RuntimeError(outcome.output)
+        except Exception as exc:
             invoke_error = exc
         finally:
-            restoration = toolbox.restore_to_top()
+            agent.close()
+            restoration: RestorationResult = toolbox.restore_to_top()
 
-        collector_message = _latest_text(state)
-        verification = toolbox.training_result()
-        merchant_profile = toolbox.merchant_profile()
-        trained = bool(invoke_error is None and verification["ready"] is True and restoration["restored"] is True)
+        verification: TrainingResult = toolbox.training_result()
+        merchant_profile: JsonObject = toolbox.merchant_profile()
+        trained: bool = bool(
+            invoke_error is None and verification["ready"] is True and restoration["restored"] is True
+        )
         if trained:
             try:
                 toolbox.persist_history()
             except Exception as exc:
                 invoke_error = exc
                 trained = False
-        registry_args = {
-            "merchant_profile": merchant_profile,
-            "script_fingerprint": verification["script_fingerprint"],
-            "restoration": restoration,
-        }
         if trained:
-            self.training_registry.mark_trained(visit_id, canonical_path,
-                contract_fingerprint=self.mechanism.collection_contract(canonical_path).fingerprint, **registry_args)
-            profile = verification["normal_swipe_profile"]
+            contract: CollectionContract | None = self.mechanism.collection_contract(canonical_path)
+            if contract is None:
+                raise ValueError("Validated collector requires a collection contract")
+            self.training_registry.mark_trained(
+                visit_id,
+                canonical_path,
+                contract_fingerprint=contract.fingerprint,
+                merchant_profile=merchant_profile,
+                script_fingerprint=verification["script_fingerprint"],
+                restoration=restoration,
+            )
+            profile: NormalSwipeProfile | None = verification["normal_swipe_profile"]
             if profile is not None:
                 self.training_registry.set_swipe_threshold(
-                    visit_id, profile["change_threshold"], profile["sample_count"])
+                    visit_id, profile["change_threshold"], profile["sample_count"]
+                )
         else:
-            self.training_registry.mark_untrained(visit_id, canonical_path, **registry_args)
-        result = {
+            self.training_registry.mark_untrained(
+                visit_id,
+                canonical_path,
+                merchant_profile=merchant_profile,
+                script_fingerprint=verification["script_fingerprint"],
+                restoration=restoration,
+            )
+        result: CollectorPreparationResult = {
             "ok": invoke_error is None,
             "page_path": canonical_path,
             "page_visit_id": visit_id,
@@ -153,21 +184,14 @@ class CollectorManager:
             "normal_swipe_profile": verification["normal_swipe_profile"],
         }
         if invoke_error is not None:
-            result.update(
-                {"error_type": type(invoke_error).__name__, "error": str(invoke_error)}
-            )
+            result.update({"error_type": type(invoke_error).__name__, "error": str(invoke_error)})
         return json.dumps(result, ensure_ascii=False, sort_keys=True)
-
-    def _build_agent(self, toolbox: CollectorToolbox) -> Any:
-        return create_runtime(name="collector", model=self.model, tools=toolbox.create_tools(),
-                              system_prompt=COLLECTOR_PROMPT,
-                              middleware=[CollectorModelMiddleware()])
 
 
 def create_collector_tools(
     *,
     mechanism: PageMechanism,
-    event_hub: EventHub,
+    event_hub: DeviceOperationService,
     page_path: str,
     merchant_schema: str = "{}",
     collection_schema: str = "{}",
@@ -184,9 +208,9 @@ def create_collector_tools(
     ).create_tools()
 
 
-def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredTool]:
+def create_prepare_collector_tool(manager: CollectorTrainingCoordinator) -> list[StructuredTool]:
     return [
-        StructuredTool.from_function(
+        create_tool(
             func=manager.prepare_collector,
             name="prepare_collector",
             description=(
@@ -203,27 +227,8 @@ def create_prepare_collector_tool(manager: CollectorManager) -> list[StructuredT
     ]
 
 
-def _latest_text(state: Mapping[str, Any]) -> str:
-    messages: Sequence[Any] = state.get("messages") or []
-    if not messages:
-        return ""
-    latest = messages[-1]
-    content = latest.get("content") if isinstance(latest, Mapping) else latest.content
-    return content if isinstance(content, str) else str(content or "")
-
-
-def _escape_text(value: Any) -> str:
-    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _coerce_json(value: Any) -> Any:
-    if isinstance(value, str):
-        return json.loads(value)
-    return value
-
-
-def _require_json_object(value: Any, field_name: str) -> dict[str, Any]:
-    parsed = _coerce_json(value)
+def _require_json_object(value: str, field_name: str) -> JsonObject:
+    parsed: JsonValue = load_json(value)
     if not isinstance(parsed, dict):
         raise ValueError(f"{field_name} must be a JSON object.")
     return parsed

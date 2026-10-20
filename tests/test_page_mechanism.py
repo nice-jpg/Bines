@@ -8,9 +8,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-import page_mechanism as page_mechanism_module
+import src.page.mechanism as page_mechanism_module
 from codex_apply_patch import __version__ as codex_apply_patch_version
-from page_mechanism import CollectorTrainingRegistry, PageMechanism, eval_collection
+from src.collector.training import CollectorTrainingRegistry
+from page_helpers import page_mechanism
+from src.page.mechanism import PageMechanism
+from src.collector.evaluation import eval_collection
 
 
 def test_query_page_and_task_docs_are_separate(tmp_path: Path) -> None:
@@ -19,7 +22,7 @@ def test_query_page_and_task_docs_are_separate(tmp_path: Path) -> None:
     (page_dir / "PAGE.md").write_text("page structure", encoding="utf-8")
     (page_dir / "task.md").write_text("task flow", encoding="utf-8")
 
-    mechanism = PageMechanism(tmp_path)
+    mechanism = page_mechanism(tmp_path)
 
     page = mechanism.query_page_doc("com.sankuai.meituan/外卖")
     task = mechanism.query_task_doc("meituan/外卖")
@@ -33,7 +36,7 @@ def test_query_page_and_task_docs_are_separate(tmp_path: Path) -> None:
 def test_run_agent_py_is_page_scoped_and_rejects_path_escape(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
-    mechanism = PageMechanism(tmp_path)
+    mechanism = page_mechanism(tmp_path)
 
     result = mechanism.write_run_agent_py("meituan", "def run(xml: str):\n    return {'items': []}\n")
     rejected = mechanism.write_run_agent_py("../secret", "bad")
@@ -90,7 +93,7 @@ def test_apply_run_agent_py_patch_updates_multiple_chunks_atomically(
 +    return {'items': [xml], 'source': PREFIX}
 *** End Patch"""
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
+    result = json.loads(page_mechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["ok"] is True
     assert result["applied"] is True
@@ -134,7 +137,7 @@ def test_apply_run_agent_py_patch_rejects_operations_outside_single_run_agent_py
     original = "def run(xml):\n    return {'items': []}\n"
     run_path.write_text(original, encoding="utf-8")
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
+    result = json.loads(page_mechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["ok"] is False
     assert result["applied"] is False
@@ -148,7 +151,7 @@ def test_apply_run_agent_py_patch_rejects_invalid_format_conflict_and_invalid_py
     run_path = page_dir / "run.agent.py"
     original = "def run(xml):\n    return {'items': []}\n"
     run_path.write_text(original, encoding="utf-8")
-    mechanism = PageMechanism(tmp_path)
+    mechanism = page_mechanism(tmp_path)
 
     malformed = json.loads(mechanism.apply_run_agent_py_patch("meituan", "not a patch"))
     conflict = json.loads(
@@ -201,7 +204,7 @@ def test_apply_run_agent_py_patch_rejects_invalid_engine_result_without_writing(
         "-def run(xml):\n+def run(xml: str):\n*** End Patch"
     )
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
+    result = json.loads(page_mechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["error_type"] == "PatchResultError"
     assert run_path.read_text(encoding="utf-8") == original
@@ -226,7 +229,7 @@ def test_apply_run_agent_py_patch_commit_failure_preserves_file_and_removes_temp
         "-def run(xml):\n+def run(xml: str):\n*** End Patch"
     )
 
-    result = json.loads(PageMechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
+    result = json.loads(page_mechanism(tmp_path).apply_run_agent_py_patch("meituan", patch))
 
     assert result["error_type"] == "PatchCommitError"
     assert run_path.read_text(encoding="utf-8") == original
@@ -234,8 +237,8 @@ def test_apply_run_agent_py_patch_commit_failure_preserves_file_and_removes_temp
 
 
 def _view(text):
-    from src.tools.page_bridge import PageBridge
-    from src.page_view import ReadOnlyPageView
+    from src.device.services.page.bridge import PageBridge
+    from src.device.services.page.view import ReadOnlyPageView
     bridge = PageBridge(lambda: f'<hierarchy><node text="{text}" class="android.widget.Button" bounds="[0,200][1000,1800]"/></hierarchy>')
     content, _ = bridge.refresh()
     bridge.query("update_aaid", {"id": content["regions"][0]["id"], "value": "1"})
@@ -250,7 +253,7 @@ def test_sniff_run_uses_current_view_and_persists_latest_json_state(tmp_path: Pa
         "    return {'items': [{'name': view.page_read(view.select_aaid(1)['id'])['entries'][0]['value']}]}\n",
         encoding="utf-8",
     )
-    mechanism = PageMechanism(tmp_path)
+    mechanism = page_mechanism(tmp_path)
 
     (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
     first = json.loads(mechanism.sniff_run("meituan", _view("one")))
@@ -268,7 +271,7 @@ def test_run_agent_py_exception_returns_structured_repair_signal(tmp_path: Path)
     (page_dir / "run.agent.py").write_text("def run(view):\n    raise ValueError('bad parse')\n", encoding="utf-8")
     (page_dir / "COLLECT.md").write_text('{"required_aliases":["1"]}\nProduct region.')
 
-    result = json.loads(PageMechanism(tmp_path).sniff_run("meituan", _view("cup")))
+    result = json.loads(page_mechanism(tmp_path).sniff_run("meituan", _view("cup")))
 
     assert result["ok"] is False
     assert result["error_type"] == "ValueError"
@@ -295,7 +298,7 @@ def test_validate_page_manual_requires_both_documents(tmp_path: Path) -> None:
     page_dir = tmp_path / "meituan"
     page_dir.mkdir()
     (page_dir / "PAGE.md").write_text("page", encoding="utf-8")
-    mechanism = PageMechanism(tmp_path)
+    mechanism = page_mechanism(tmp_path)
 
     with pytest.raises(FileNotFoundError, match="task.md"):
         mechanism.validate_page_manual("meituan")
@@ -305,23 +308,20 @@ def test_validate_page_manual_requires_both_documents(tmp_path: Path) -> None:
 
 
 def test_strict_document_queries_raise_for_invalid_page(tmp_path: Path) -> None:
-    mechanism = PageMechanism(tmp_path)
+    mechanism = page_mechanism(tmp_path)
 
     with pytest.raises(FileNotFoundError, match="PAGE.md"):
         mechanism.query_page_doc("meituan/missing")
 
 
 def test_merchant_policy_is_structured_and_not_inferred_from_path_suffix(tmp_path: Path) -> None:
-    mechanism = PageMechanism(tmp_path)
-
-    policy = mechanism.page_policy("meituan/外卖/美食/商家")
-    unknown = mechanism.page_policy("another/商家")
-
-    assert policy.role == "merchant"
-    assert policy.requires_collector is True
-    assert policy.max_product_entry_taps == 1
-    assert unknown.role == "page"
-    assert unknown.requires_collector is False
+    from page_strategy_helpers import mechanism as create_pages
+    mechanism = create_pages(tmp_path)
+    from src.strategy.general.declarations import read_page_strategy, requires_collection
+    assert read_page_strategy(mechanism, "meituan/外卖/美食/商家") == "merchant"
+    assert requires_collection(mechanism, "meituan/外卖/美食/商家")
+    with pytest.raises(FileNotFoundError):
+        read_page_strategy(mechanism, "another/商家")
 
 
 def test_training_registry_isolates_same_path_by_visit_id() -> None:
@@ -331,7 +331,7 @@ def test_training_registry_isolates_same_path_by_visit_id() -> None:
         "meituan/美食/商家",
         merchant_profile={"name": "商家A"},
         script_fingerprint="script-a",
-        restoration={"restored": True},
+        restoration={"restored": True, "strategy": "reset_tap", "tap_attempted": True},
     )
 
     assert registry.is_trained("visit-a", "meituan/美食/商家") is True
@@ -339,4 +339,4 @@ def test_training_registry_isolates_same_path_by_visit_id() -> None:
     record = registry.record_for("visit-a")
     assert record is not None
     assert record.merchant_profile == {"name": "商家A"}
-    assert record.restoration == {"restored": True}
+    assert record.restoration == {"restored": True, "strategy": "reset_tap", "tap_attempted": True}

@@ -4,8 +4,8 @@ from collections.abc import Mapping
 
 from langchain_core.messages import BaseMessage
 
-from src.serialization.json import JsonValue, json_value
-from src.serialization.validation import is_string_mapping, is_value_sequence
+from src.common.utils.json import JsonValue, json_value
+from src.common.utils.validation import is_string_mapping, is_value_sequence
 
 
 def message_content(message: BaseMessage) -> object:

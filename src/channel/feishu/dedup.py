@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Final
 
 from src.common.paths import WORKSPACE_ROOT
-from src.serialization.json import JsonValue, load_json
+from src.common.utils.json import JsonValue, load_json
 
 WORKSPACE_DEDUP_PATH: Final[Path] = WORKSPACE_ROOT / "logs" / "feishu_processed_messages.jsonl"
 

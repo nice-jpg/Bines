@@ -1,5 +1,6 @@
 """Shared collection execution, admission and progress, independent of tool middleware."""
 
+import hashlib
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -8,25 +9,23 @@ from pathlib import Path
 from typing import Final
 
 from src.collector.training import CollectorTrainingRecord, CollectorTrainingRegistry
-from src.conductor.probe_state import (
-    COLLECTION_CONSECUTIVE_EMPTY_SWIPES,
-    COLLECTION_INITIALIZED,
-    COLLECTION_LAST_SWIPE,
-    COLLECTION_LATEST_NEW_COUNT,
-    COLLECTION_PAGE_VISIT_ID,
-    COLLECTION_VISIT_SUMMARIES,
-    MERCHANT_COLLECTION_DONE,
-    PROBE_COMPLETED_MERCHANTS,
+from src.common.utils.json import JsonObject, JsonValue
+from src.conductor.state import (
     CollectionVisitSummary,
+    ConductorFields,
+    ConductorUpdate,
+    collection_completion_update,
+    combine_updates,
+    current_visit,
     merchant_identity,
 )
-from src.conductor.state import ConductorFields
 from src.device import DeviceOperationService, PageSnapshot, ReadOnlyPageView
 from src.page.collection_contract import CollectionContract
 from src.page.mechanism import PageMechanism
-from src.page.script_types import ScriptResult, ScriptSuccess
-from src.page.state import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-from src.serialization.json import JsonObject, JsonValue
+from src.page.script_types import ScriptResult, ScriptSourceResult, ScriptSuccess
+from src.strategy.general.declarations import requires_collection
+from src.strategy.general.state import PageVisit
+from src.strategy.merchant.state import is_merchant_visit
 from src.tools.collection.audit import sample_collection
 from src.tools.collection.types import CompletionPayload, IncompleteRow
 from src.tools.workbooks.excel import CollectionWorkbookSink
@@ -45,7 +44,7 @@ class StepStatus(StrEnum):
 @dataclass(frozen=True)
 class CollectionStepResult:
     status: StepStatus
-    update: ConductorFields
+    update: ConductorUpdate
     new_count: int = 0
     error: str = ""
 
@@ -53,7 +52,7 @@ class CollectionStepResult:
 @dataclass(frozen=True)
 class CompletionResult:
     payload: CompletionPayload
-    update: ConductorFields
+    update: ConductorUpdate
 
     @property
     def done(self) -> bool:
@@ -73,37 +72,70 @@ class CollectionService:
         self.workbook_sink: CollectionWorkbookSink | None = workbook_sink
         self.event_hub: DeviceOperationService | None = event_hub
 
+    def _is_structured(self, state: ConductorFields) -> bool:
+        visit: PageVisit | None = state["general"].get("visit")
+        return (
+            is_merchant_visit(visit)
+            if visit is not None
+            else requires_collection(self.mechanism, current_visit(state).get("path", ""))
+        )
+
+    def training_error(self, state: ConductorFields) -> str:
+        if state["general"].get("pending") is not None:
+            return "page_confirmation_required"
+        path: str = current_visit(state).get("path", "")
+        visit_id: str = current_visit(state).get("visit_id", "")
+        record: CollectorTrainingRecord | None = self.training_registry.record_for(visit_id)
+        if not path or record is None or not self.training_registry.is_trained(visit_id, path):
+            return "collector_not_trained"
+        try:
+            contract: CollectionContract | None = self.mechanism.collection_contract(path)
+            if contract is None or contract.fingerprint != record.contract_fingerprint:
+                return "collection_contract_requires_training"
+            script: ScriptSourceResult = self.mechanism.read_run_agent_py_snapshot(path)
+            if (
+                script["ok"] is False
+                or hashlib.sha256(script["content"].encode()).hexdigest() != record.script_fingerprint
+            ):
+                return "collection_script_requires_training"
+        except (ValueError, FileNotFoundError):
+            return "collection_contract_requires_training"
+        return ""
+
+    def training_version(self, state: ConductorFields) -> str:
+        record: CollectorTrainingRecord | None = self.training_registry.record_for(
+            current_visit(state).get("visit_id", "")
+        )
+        return f"{record.script_fingerprint}:{record.contract_fingerprint}" if record else ""
+
     def completion(self, state: ConductorFields) -> CompletionResult:
-        current_path: str = state.get(PAGE_CONTEXT_PATH, "")
-        visit_id: str = state.get(PAGE_VISIT_ID, "")
+        current_path: str = current_visit(state).get("path", "")
+        visit_id: str = current_visit(state).get("visit_id", "")
         error_type: str = ""
         if not current_path:
             error_type = "missing_page_context"
         elif not visit_id:
             error_type = "missing_page_visit_id"
-        elif not self.mechanism.is_merchant_page(current_path):
+        elif not self._is_structured(state):
             error_type = "is_done_not_available"
         elif not self.training_registry.is_trained(visit_id, current_path):
             error_type = "collector_not_trained"
         else:
-            try:
-                contract: CollectionContract | None = self.mechanism.collection_contract(current_path)
-                record: CollectorTrainingRecord | None = self.training_registry.record_for(visit_id)
-                if (
-                    contract is None
-                    or record is None
-                    or (record.contract_fingerprint and record.contract_fingerprint != contract.fingerprint)
-                ):
-                    error_type = "collection_contract_requires_training"
-            except (ValueError, FileNotFoundError):
-                error_type = "collection_contract_requires_training"
+            error_type = self.training_error(state)
 
         initialized: bool = (
-            state.get(COLLECTION_INITIALIZED) is True and state.get(COLLECTION_PAGE_VISIT_ID, "") == visit_id
+            state["merchant"].get("evidence", {}).get("initialized") is True
+            and state["merchant"].get("visit_id", "") == visit_id
         )
-        latest_new_count: int = max(0, int(state.get(COLLECTION_LATEST_NEW_COUNT, 0))) if initialized else 0
+        latest_new_count: int = (
+            max(0, int(state["merchant"].get("evidence", {}).get("latest_new_count", 0)))
+            if initialized
+            else 0
+        )
         consecutive_empty_swipes: int = (
-            max(0, int(state.get(COLLECTION_CONSECUTIVE_EMPTY_SWIPES, 0))) if initialized else 0
+            max(0, int(state["merchant"].get("evidence", {}).get("consecutive_empty_swipes", 0)))
+            if initialized
+            else 0
         )
         done: bool = bool(not error_type and initialized and consecutive_empty_swipes >= 3)
         payload: CompletionPayload = {
@@ -117,15 +149,17 @@ class CollectionService:
         }
         if error_type:
             payload["error_type"] = error_type
-        update: ConductorFields = {MERCHANT_COLLECTION_DONE: done} if not error_type else {}
+        update: ConductorUpdate = collection_completion_update(state, done)
+        if error_type:
+            update.setdefault("merchant", {}).setdefault("evidence", {})["consecutive_empty_swipes"] = 0
         if done:
-            record = self.training_registry.record_for(visit_id)
+            record: CollectorTrainingRecord | None = self.training_registry.record_for(visit_id)
             raw_name: JsonValue = record.merchant_profile.get("name") if record is not None else None
             name: str = merchant_identity(raw_name) if isinstance(raw_name, str) else ""
             if name:
-                completed: dict[str, tuple[str, ...]] = dict(state.get(PROBE_COMPLETED_MERCHANTS) or {})
+                completed: dict[str, tuple[str, ...]] = dict(state["probe"].get("completed_merchants") or {})
                 completed[current_path] = tuple(dict.fromkeys((*completed.get(current_path, ()), name)))
-                update[PROBE_COMPLETED_MERCHANTS] = completed
+                update.setdefault("probe", {})["completed_merchants"] = completed
         return CompletionResult(payload, update)
 
     def collect(
@@ -135,8 +169,13 @@ class CollectionService:
         tool_name: str,
         arguments: Mapping[str, JsonValue],
     ) -> CollectionStepResult:
-        current_path: str = state.get(PAGE_CONTEXT_PATH, "")
-        visit_id: str = state.get(PAGE_VISIT_ID, "")
+        current_path: str = current_visit(state).get("path", "")
+        visit_id: str = current_visit(state).get("visit_id", "")
+        validity: str = self.training_error(state)
+        if validity:
+            return self._collection_failed(
+                current_path, visit_id, state, {"ok": False, "error_type": validity}
+            )
         contract: CollectionContract | None = None
         collection: ScriptResult
         try:
@@ -189,7 +228,7 @@ class CollectionService:
                     "result": {**collection["result"], "items": accepted},
                 }
         persistence: PersistenceResult = (
-            self._persist(tool_name, current_path, visit_id, admitted)
+            self._persist(tool_name, current_path, visit_id, admitted, state)
             if collection["ok"]
             else {"ok": False, "skipped": True}
         )
@@ -208,20 +247,27 @@ class CollectionService:
                 record.script_fingerprint if record else "",
             )
         if collection["ok"] is False:
-            return self._collection_failed(current_path, visit_id, collection)
+            return self._collection_failed(current_path, visit_id, state, collection)
         if persistence.get("ok") is not True:
-            return self._collection_failed(current_path, visit_id, persistence)
-        progress_update: ConductorFields = self._progress_update(
+            return self._collection_failed(current_path, visit_id, state, persistence)
+        progress_update: ConductorUpdate = self._progress_update(
             tool_name,
             current_path,
             visit_id,
             persistence,
             state,
+            arguments,
         )
         if tool_name in ITEM_APPEND_TOOLS:
-            progress_update[COLLECTION_LAST_SWIPE] = "swipe_down" if tool_name == "swipe_down" else "swipe_up"
+            progress_update.setdefault("merchant", {}).setdefault("evidence", {})["last_swipe"] = (
+                "swipe_down" if tool_name == "swipe_down" else "swipe_up"
+            )
         if incomplete:
-            progress_update.update({COLLECTION_CONSECUTIVE_EMPTY_SWIPES: 0, MERCHANT_COLLECTION_DONE: False})
+            progress_update = combine_updates(
+                progress_update,
+                {"merchant": {"evidence": {"consecutive_empty_swipes": 0}}},
+                collection_completion_update(state, False),
+            )
         skipped: bool = persistence.get("skipped") is True
         return CollectionStepResult(
             status=StepStatus.FAILED
@@ -233,15 +279,19 @@ class CollectionService:
         )
 
     def _collection_failed(
-        self, current_path: str, visit_id: str, failure: ScriptResult | PersistenceResult
+        self,
+        current_path: str,
+        visit_id: str,
+        state: ConductorFields,
+        failure: ScriptResult | PersistenceResult,
     ) -> CollectionStepResult:
         logger.warning("Silent collection failed for %s (%s): %s", current_path, visit_id, failure)
         return CollectionStepResult(
             StepStatus.FAILED,
-            {
-                COLLECTION_CONSECUTIVE_EMPTY_SWIPES: 0,
-                MERCHANT_COLLECTION_DONE: False,
-            },
+            combine_updates(
+                {"merchant": {"evidence": {"consecutive_empty_swipes": 0}}},
+                collection_completion_update(state, False),
+            ),
             error=failure.get("error_type") or failure.get("reason") or "collection_failed",
         )
 
@@ -252,7 +302,8 @@ class CollectionService:
         visit_id: str,
         persistence: PersistenceResult,
         state: ConductorFields,
-    ) -> ConductorFields:
+        arguments: Mapping[str, JsonValue],
+    ) -> ConductorUpdate:
         if tool_name not in ITEM_APPEND_TOOLS:
             return {}
         if persistence.get("ok") is not True or persistence.get("skipped") is True:
@@ -260,10 +311,15 @@ class CollectionService:
         appended_items: int | None = persistence.get("appended_items")
         if isinstance(appended_items, bool) or not isinstance(appended_items, int):
             return {}
-        same_visit: bool = state.get(COLLECTION_PAGE_VISIT_ID, "") == visit_id
+        direction: str = "swipe_down" if tool_name == "swipe_down" else "swipe_up"
+        traversal: str = f"{direction}:{arguments.get('x')}:{arguments.get('y')}"
+        same_visit: bool = (
+            state["merchant"].get("visit_id", "") == visit_id
+            and state["merchant"].get("evidence", {}).get("traversal", traversal) == traversal
+        )
         previous_empty_swipes: int = (
-            max(0, int(state.get(COLLECTION_CONSECUTIVE_EMPTY_SWIPES, 0)))
-            if same_visit and state.get(COLLECTION_INITIALIZED) is True
+            max(0, int(state["merchant"].get("evidence", {}).get("consecutive_empty_swipes", 0)))
+            if same_visit and state["merchant"].get("evidence", {}).get("initialized") is True
             else 0
         )
         new_count: int = max(0, appended_items)
@@ -285,16 +341,23 @@ class CollectionService:
                 _non_negative_int(previous_summary["collected_items"]) if previous_summary is not None else 0
             )
             + new_count,
-            "is_leaf": self.mechanism.is_merchant_page(current_path),
+            "is_leaf": self._is_structured(state),
         }
-        return {
-            COLLECTION_INITIALIZED: True,
-            COLLECTION_LATEST_NEW_COUNT: new_count,
-            COLLECTION_CONSECUTIVE_EMPTY_SWIPES: consecutive_empty_swipes,
-            COLLECTION_PAGE_VISIT_ID: visit_id,
-            MERCHANT_COLLECTION_DONE: False,
-            COLLECTION_VISIT_SUMMARIES: summaries,
-        }
+        return combine_updates(
+            {
+                "merchant": {
+                    "evidence": {
+                        "traversal": traversal,
+                        "initialized": True,
+                        "latest_new_count": new_count,
+                        "consecutive_empty_swipes": consecutive_empty_swipes,
+                    },
+                    "visit_id": visit_id,
+                },
+                "probe": {"visit_summaries": summaries},
+            },
+            collection_completion_update(state, False),
+        )
 
     def _persist(
         self,
@@ -302,10 +365,11 @@ class CollectionService:
         current_path: str,
         visit_id: str,
         collection: ScriptResult | None,
+        state: ConductorFields,
     ) -> PersistenceResult:
         if self.workbook_sink is None:
             return {"ok": True, "skipped": True, "reason": "persistence_disabled"}
-        if not self.mechanism.is_merchant_page(current_path):
+        if not self._is_structured(state):
             return {"ok": True, "skipped": True, "reason": "not_merchant_page"}
         if not self.training_registry.is_trained(visit_id, current_path):
             return {"ok": True, "skipped": True, "reason": "collector_not_trained"}
@@ -324,15 +388,17 @@ class CollectionService:
             return {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
 
     def initialize(self, state: ConductorFields) -> CollectionStepResult:
-        current_path: str = state.get(PAGE_CONTEXT_PATH, "")
-        visit_id: str = state.get(PAGE_VISIT_ID, "")
+        if state["general"].get("pending") is not None:
+            return CollectionStepResult(StepStatus.FAILED, {}, error="page_confirmation_required")
+        current_path: str = current_visit(state).get("path", "")
+        visit_id: str = current_visit(state).get("visit_id", "")
         if self.workbook_sink is None:
             persistence: PersistenceResult = {
                 "ok": True,
                 "skipped": True,
                 "reason": "persistence_disabled",
             }
-        elif self.mechanism.page_policy(current_path).role != "merchant":
+        elif not self._is_structured(state):
             persistence = {"ok": True, "skipped": True, "reason": "not_merchant_page"}
         elif not self.training_registry.is_trained(visit_id, current_path):
             persistence = {"ok": True, "skipped": True, "reason": "collector_not_trained"}
@@ -353,7 +419,7 @@ class CollectionService:
             except Exception as exc:  # noqa: BLE001 - persistence must not fail the collector tool.
                 persistence = {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
         if persistence.get("ok") is not True:
-            return self._collection_failed(current_path, visit_id, persistence)
+            return self._collection_failed(current_path, visit_id, state, persistence)
         record = self.training_registry.record_for(visit_id)
         if (
             record is None
@@ -371,9 +437,16 @@ class CollectionService:
             "collected_items": _non_negative_int(previous_summary["collected_items"])
             if previous_summary is not None
             else 0,
-            "is_leaf": self.mechanism.is_merchant_page(current_path),
+            "is_leaf": self._is_structured(state),
         }
-        return CollectionStepResult(StepStatus.SUCCESS, {COLLECTION_VISIT_SUMMARIES: summaries})
+        raw_name: JsonValue = record.merchant_profile.get("name")
+        return CollectionStepResult(
+            StepStatus.SUCCESS,
+            {"probe": {
+                "visit_summaries": summaries,
+                "current_merchant": merchant_identity(raw_name) if isinstance(raw_name, str) else "",
+            }},
+        )
 
 
 def _merge_merchant_profile(
@@ -391,7 +464,7 @@ def _merge_merchant_profile(
 
 def _collection_summaries(state: ConductorFields) -> dict[str, CollectionVisitSummary]:
     return {
-        visit_id: summary.copy() for visit_id, summary in state.get(COLLECTION_VISIT_SUMMARIES, {}).items()
+        visit_id: summary.copy() for visit_id, summary in state["probe"].get("visit_summaries", {}).items()
     }
 
 

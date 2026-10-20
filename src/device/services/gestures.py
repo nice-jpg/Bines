@@ -62,6 +62,7 @@ class GestureReplay:
         if error is not None:
             return error
         target: ReplayTarget = self._select(spec, x, y)
+        print(f"Replaying {name} at ({target.x}, {target.y}) using {target.path}")
         result: CommandResult = self.executor.replay(target.path, target.x, target.y)
         return result.error if result.error is not None else result.stdout
 

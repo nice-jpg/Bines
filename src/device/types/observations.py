@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from src.common.utils.json import JsonValue
 from src.device.types.page import PageSnapshot
-from src.serialization.json import JsonValue
 
 
 class CollectionSwipe(StrEnum):

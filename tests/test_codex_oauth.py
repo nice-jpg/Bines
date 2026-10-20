@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from websockets.protocol import State
 import json
 import sys
 import tempfile
@@ -14,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from src.codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
 from src.codex import codex_oauth
-from src.agent_runtime._model_retry import (
+from src.agent_runtime.middleware.model_retry import (
     create_model_retry_middleware,
     is_retryable_model_transport_error,
 )
@@ -37,7 +38,8 @@ class CodexOAuthModelTests(unittest.TestCase):
     def test_credentials_accept_known_shapes_and_reject_non_object_auth(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             auth_path = Path(directory) / "auth.json"
-            provider = CodexOAuthTokenProvider(auth_path)
+            with patch("src.codex.codex_oauth._codex_setting", side_effect=lambda name: str(auth_path) if name == "auth_json" else None):
+                provider = CodexOAuthTokenProvider()
             for data, expected in [
                 ({"tokens": {"access_token": "test-token", "account_id": "test-account"}}, ("test-token", "test-account")),
                 ({"tokens": None, "OPENAI_API_KEY": "test-key"}, ("test-key", "")),
@@ -861,7 +863,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return ws
 
         try:
-            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 first = model.invoke([HumanMessage(content="first")])
                 second = model.invoke([HumanMessage(content="second")])
 
@@ -889,7 +891,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return ws
 
         try:
-            with patch("codex.codex_oauth.websockets.connect", side_effect=connect):
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
                 first = model.invoke([HumanMessage(content="first question")])
                 second = model.invoke(
                     [
@@ -931,7 +933,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return next(sockets)
 
         try:
-            with patch("codex.codex_oauth.websockets.connect", side_effect=connect):
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
                 first = model.invoke([HumanMessage(content="first question")])
                 model._connected_at = time.monotonic() - 2800
                 model.invoke(
@@ -969,7 +971,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return next(sockets)
 
         try:
-            with patch("codex.codex_oauth.websockets.connect", side_effect=connect):
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
                 first = model.invoke([HumanMessage(content="first question")])
                 first_ws._send_error = ConnectionError("socket dropped before send")
                 model.invoke(
@@ -1007,7 +1009,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             await model.aclose()
             return results[0], results[1]
 
-        with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+        with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
             first, second = asyncio.run(scenario())
 
         self.assertEqual(first.content, "first")
@@ -1025,7 +1027,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return failed_ws if provider.calls == 1 else working_ws
 
         try:
-            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 message = model.invoke([HumanMessage(content="retry")])
 
             self.assertEqual(message.content, "recovered")
@@ -1045,7 +1047,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return failed_ws
 
         try:
-            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 with self.assertRaisesRegex(ConnectionError, "read failed"):
                     model.invoke([HumanMessage(content="do not replay")])
 
@@ -1076,7 +1078,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         middleware = create_model_retry_middleware()
         try:
             with (
-                patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect,
+                patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect,
                 patch("langchain.agents.middleware.model_retry.time.sleep"),
             ):
                 message = middleware.wrap_model_call(
@@ -1161,7 +1163,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return ws
 
         try:
-            with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 model.invoke([HumanMessage(content="first")])
 
             connect_kwargs = mocked_connect.call_args.kwargs
@@ -1185,7 +1187,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         async def connect(*args, **kwargs):
             return next(sockets)
 
-        with patch("codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+        with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
             first = model.invoke([HumanMessage(content="first")])
             # The socket is younger than its hard lease, but too old to fit a
             # complete wait_seconds response window.
@@ -1229,11 +1231,6 @@ class FakeTokenProvider(CodexOAuthTokenProvider):
         return f"token-{self.calls}", "account"
 
 
-class FakeConnectionState:
-    def __init__(self, name: str = "OPEN") -> None:
-        self.name = name
-
-
 class PersistentFakeWebSocket:
     def __init__(
         self,
@@ -1248,7 +1245,7 @@ class PersistentFakeWebSocket:
         self._block_first_response = block_first_response
         self._response_number = 0
         self.sent: list[str] = []
-        self.state = FakeConnectionState()
+        self.state = State.OPEN
         self.closed = False
         self.first_recv_started = threading.Event()
         self.release_first_response = threading.Event()
@@ -1283,7 +1280,7 @@ class PersistentFakeWebSocket:
 
     async def close(self) -> None:
         self.closed = True
-        self.state.name = "CLOSED"
+        self.state = State.CLOSED
 
 
 def completed_events(

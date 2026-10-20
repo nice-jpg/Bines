@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+from src.conductor.state import read_conductor_state, merge_fields
+from src.conductor.state import collection_completed
+from page_strategy_helpers import new_visit
+
 import asyncio
 import hashlib
 import json
 from threading import RLock
 
 import pytest
+from communication_helpers import QueueContext
 from langchain.tools import ToolRuntime
-
-from src.agent_runtime.communication import RuntimeCommunication
-from src.collection.continuous import ContinuousCollection
-from src.tools.event_hub import CollectionSwipe, SwipeObservation
-from src.probe_state import (
-    COLLECTION_CONSECUTIVE_EMPTY_SWIPES, COLLECTION_LATEST_NEW_COUNT,
-    COLLECTION_VISIT_SUMMARIES, MERCHANT_COLLECTION_DONE, PROBE_COMPLETED_MERCHANTS,
-)
 from test_collection_persistence_middleware import _middleware, _tool_message
+
+from src.agent_runtime.middleware.communication import ConversationInputMiddleware, read_pending_input
+
+from src.device.types.observations import CollectionSwipe, SwipeObservation
+from src.tools.collection.continuous import ContinuousCollection
 
 
 class ScriptedHub:
@@ -45,8 +47,9 @@ def setup_loop(tmp_path, observations):
                          contract_fingerprint=service.mechanism.collection_contract(path).fingerprint)
     registry.set_swipe_threshold(visit, 0.55, 2)
     hub = ScriptedHub(observations)
-    loop = ContinuousCollection(service, hub)
-    state = {"page_context_path": path, "page_visit_id": visit, "messages": []}
+    loop = ContinuousCollection(service, hub, lambda _: None)
+    state = read_conductor_state({"page_context_path": path, "page_visit_id": visit, "messages": [], "page_visit": new_visit("merchant")})
+    state["merchant"].update(phase="ready", training_version=service.training_version(state))
     runtime = ToolRuntime(state=state, context=None, config={}, stream_writer=lambda _: None,
                           tool_call_id="loop", store=None)
     return loop, runtime, hub, workbook
@@ -62,11 +65,10 @@ def test_long_swipes_complete_with_one_message_and_shared_state(tmp_path):
     assert payload(result)["status"] == "completed"
     assert payload(result)["appended_items"] == 1
     assert len(result.update["messages"]) == 1
-    assert result.update[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 3
-    assert result.update[MERCHANT_COLLECTION_DONE]
-    assert result.update["page_collection_started"]
-    assert result.update[COLLECTION_VISIT_SUMMARIES]["visit-a"]["collected_items"] == 1
-    assert result.update[PROBE_COMPLETED_MERCHANTS][runtime.state["page_context_path"]] == ("Merchant",)
+    assert result.update['merchant']['evidence']['consecutive_empty_swipes'] == 3
+    assert collection_completed(result.update)
+    assert result.update['probe']['visit_summaries']["visit-a"]["collected_items"] == 1
+    assert result.update['probe']['completed_merchants'][runtime.state['general']['visit']['path']] == ("Merchant",)
     assert all(action == CollectionSwipe.LONG for action, _, _ in hub.calls)
     assert workbook.exists()
     runtime.state.update(result.update)
@@ -87,7 +89,7 @@ def test_partial_rows_short_swipe_until_complete_then_return_to_long(tmp_path, m
         {"name": "bowl", "price": "20"},
     ])
     monkeypatch.setattr(loop.service.mechanism, "run_page_script",
-                        lambda *args: {"ok": True, "result": {"items": [next(outputs)]}})
+                        lambda *args: {"ok": True, "canonical_path": args[0], "result": {"items": [next(outputs)]}})
     result = loop.collect_continuously(500, 1200, .55, runtime)
     assert payload(result)["status"] == "completed"
     assert payload(result)["appended_items"] == 2
@@ -104,7 +106,7 @@ def test_abnormal_change_never_runs_script(tmp_path, monkeypatch, ratio):
     result = loop.collect_continuously(500, 1200, .55, runtime)
     assert payload(result)["status"] == "attention_required"
     assert len(hub.calls) == 1
-    assert result.update[COLLECTION_CONSECUTIVE_EMPTY_SWIPES] == 0
+    assert result.update['merchant']['evidence']['consecutive_empty_swipes'] == 0
     if ratio == .56:
         assert "page_hint" not in payload(result)
 
@@ -121,15 +123,15 @@ def test_invalid_training_or_parameters_never_move(tmp_path, problem):
     if problem == "threshold":
         threshold = .56
     elif problem == "visit":
-        runtime.state["page_visit_id"] = "different-visit"
+        runtime.state.setdefault('general', {}).setdefault('visit', {})['visit_id'] = "different-visit"
     elif problem == "script":
-        loop.service.mechanism.write_run_agent_py(runtime.state["page_context_path"], "def run(view):\n return {}\n")
+        loop.service.mechanism.write_run_agent_py(runtime.state['general']['visit']['path'], "def run(view):\n return {}\n")
     elif problem == "missing_profile":
         record = loop.service.training_registry.record_for("visit-a")
         loop.service.training_registry.mark_trained("visit-a", record.page_path)
     else:
-        from src.collection_contract import CollectionContract
-        loop.service.mechanism.save_collection_contract(runtime.state["page_context_path"],
+        from src.page.collection_contract import CollectionContract
+        loop.service.mechanism.save_collection_contract(runtime.state['general']['visit']['path'],
             CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["name"]}))
     result = loop.collect_continuously(500, 1200, threshold, runtime)
     assert payload(result)["status"] == "attention_required"
@@ -139,8 +141,8 @@ def test_invalid_training_or_parameters_never_move(tmp_path, problem):
 @pytest.mark.parametrize("close", [False, True])
 def test_input_and_shutdown_yield_after_step_without_consuming_message(tmp_path, close):
     loop, runtime, hub, _ = setup_loop(tmp_path, [observation()])
-    channel = RuntimeCommunication(lambda _: True)
-    runtime.context = channel._root
+    channel = QueueContext(lambda _: True)
+    loop._yield_reason = channel.engine._tool_yield_reason
     hub.on_swipe = channel.close if close else lambda: channel.receive("change the task")
     result = loop.collect_continuously(500, 1200, .55, runtime)
     assert payload(result)["status"] == "yielded"
@@ -148,13 +150,13 @@ def test_input_and_shutdown_yield_after_step_without_consuming_message(tmp_path,
     assert len(hub.calls) == 1
     if not close:
         assert channel.pending
-        assert len(channel._root.pending([])) == 1
+        assert len(read_pending_input(channel.engine.conversation, {})) == 1
 
 
 def test_pending_input_before_first_swipe_never_moves(tmp_path):
     loop, runtime, hub, _ = setup_loop(tmp_path, [])
-    channel = RuntimeCommunication(lambda _: True)
-    runtime.context = channel._root
+    channel = QueueContext(lambda _: True)
+    loop._yield_reason = channel.engine._tool_yield_reason
     channel.receive("stop collecting")
     result = loop.collect_continuously(500, 1200, .55, runtime)
     assert payload(result)["status"] == "yielded"
@@ -175,8 +177,8 @@ def test_persistence_failure_returns_prior_progress(tmp_path, monkeypatch):
     result = loop.collect_continuously(500, 1200, .55, runtime)
     assert payload(result)["status"] == "attention_required"
     assert payload(result)["appended_items"] == 1
-    assert result.update[COLLECTION_LATEST_NEW_COUNT] == 1
-    assert not result.update[MERCHANT_COLLECTION_DONE]
+    assert result.update['merchant']['evidence']['latest_new_count'] == 1
+    assert not collection_completed(result.update)
     assert len(hub.calls) == 2
 
 
@@ -187,7 +189,7 @@ def test_invalid_script_output_does_not_become_empty_collection(tmp_path, monkey
     result = loop.collect_continuously(500, 1200, .55, runtime)
     assert payload(result)["status"] == "attention_required"
     assert payload(result)["appended_items"] == 0
-    assert not result.update[MERCHANT_COLLECTION_DONE]
+    assert not collection_completed(result.update)
     assert len(hub.calls) == 1
 
 
@@ -200,12 +202,16 @@ def test_tool_schema_and_async_execution(tmp_path):
 
 
 def test_real_agent_tool_loop_commits_state_without_double_collection(tmp_path):
+    from engine_helpers import ScriptedEngine
     from langchain_core.messages import AIMessage, HumanMessage
     from langchain_core.tools import StructuredTool
-    from src.agent_runtime import create_runtime
-    from src.middleware.probe_control import ProbeControlMiddleware
-    from src.middleware.collection_persistence import CollectionPersistenceMiddleware
     from test_runtime_communication import Model
+
+    from src.strategy.merchant.persistence import CollectionPersistenceMiddleware
+    from page_strategy_helpers import strategies
+    from src.agent_runtime.strategy.middleware import StrategyDispatchMiddleware
+    from src.conductor.state import ConductorState, read_conductor_state
+    from page_strategy_helpers import new_visit
     loop, tool_runtime, hub, _ = setup_loop(tmp_path, [observation()] * 4)
     extra_calls = []
     def swipe_up() -> str:
@@ -216,15 +222,23 @@ def test_real_agent_tool_loop_commits_state_without_double_collection(tmp_path):
         {"name": "collect_continuously", "args": {"x": 500, "y": 1200, "change_threshold": .55}, "id": "collect"},
         {"name": "swipe_up", "args": {}, "id": "extra"},
     ]), AIMessage(content="done")])
-    agent = create_runtime(name="test", model=model, tools=[loop.create_tool(), StructuredTool.from_function(swipe_up)],
+    general, office = strategies(loop.service)
+
+    tool_runtime.state["merchant"].update(phase="ready", training_version=loop.service.training_version(tool_runtime.state))
+    from src.agent_runtime.strategy.registry import StrategyRegistry
+    from src.agent_runtime.strategy.registration import StrategyRegistration
+    from src.strategy.merchant.state import MerchantState, initial_merchant_state
+    registry = StrategyRegistry()
+    registry.register(StrategyRegistration("merchant", office, MerchantState, initial_merchant_state))
+    registry.validate_schema(ConductorState)
+    agent = ScriptedEngine(name="test", model=model, tools=[loop.create_tool(), StructuredTool.from_function(swipe_up)],
         system_prompt="base", middleware=[
-            ProbeControlMiddleware(mechanism=loop.service.mechanism, training_registry=loop.service.training_registry),
-            CollectionPersistenceMiddleware(loop.service)])
-    state = agent.invoke({**tool_runtime.state, "page_context_active": True, "page_context_app_root": "meituan",
-                          "messages": [HumanMessage(content="collect")]})
-    assert state[MERCHANT_COLLECTION_DONE], "\n".join(str(m.content) for m in state["messages"])
-    assert state[COLLECTION_VISIT_SUMMARIES]["visit-a"]["collected_items"] == 1
-    assert state["page_collection_started"]
+            StrategyDispatchMiddleware(state_schema=ConductorState,registry=registry,select_strategy=lambda _: "merchant")])
+    state = agent.agent.invoke(read_conductor_state({**tool_runtime.state, "general": {**tool_runtime.state["general"], "active": True, "app_root": "meituan"},
+                          "messages": [HumanMessage(content="collect")]}), config={"configurable": {"thread_id": "collection-test"}}, durability="exit")
+    assert state["merchant"]["phase"] == "completed", "\n".join(str(m.content) for m in state["messages"])
+    assert state['probe']['visit_summaries']["visit-a"]["collected_items"] == 1
+    assert "merchant_collection_done" not in state
     assert len(hub.calls) == 4 and not extra_calls
     assert len(model.seen) == 2
 

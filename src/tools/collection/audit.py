@@ -8,10 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from src.common.utils.json import JsonValue
 from src.device import PageSnapshot
 from src.page.collection_contract import CollectionContract, CollectionContractData
 from src.page.script_types import ScriptResult
-from src.serialization.json import JsonValue
 from src.tools.collection.types import AdmissionAudit
 from src.tools.device.screenshots import ScreenshotSource, capture_png
 

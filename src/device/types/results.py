@@ -3,7 +3,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
-from src.serialization.json import JsonObject, json_object
+from src.common.utils.json import JsonObject, json_object
 
 
 @dataclass(frozen=True)

@@ -23,9 +23,9 @@ from openpyxl.worksheet.formula import ArrayFormula, DataTableFormula
 from openpyxl.worksheet.worksheet import Worksheet
 
 from src.common.paths import WORKSPACE_ROOT
+from src.common.utils.json import JsonObject, JsonScalar, JsonValue, load_json
 from src.page.collection_contract import CollectionContract
 from src.page.script_types import ScriptResult
-from src.serialization.json import JsonObject, JsonScalar, JsonValue, load_json
 from src.tools.workbooks.paths import COLLECTION_WORKBOOK_NAME
 from src.tools.workbooks.types import PersistenceResult
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from src.common.paths import WORKSPACE_ROOT
-from src.serialization.json import JsonObject, JsonValue
+from src.common.utils.json import JsonObject, JsonValue
 
 
 class EventRecord(TypedDict):

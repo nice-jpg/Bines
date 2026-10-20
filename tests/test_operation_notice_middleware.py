@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+from page_strategy_helpers import new_visit
+
+from page_strategy_helpers import page_controller
+
+from src.conductor.state import read_conductor_state, merge_fields
+
 import asyncio
 import sys
 from pathlib import Path
@@ -10,11 +16,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 
-from middleware.operation_notice import OperationNoticeMiddleware
-from middleware.page_context import PAGE_CONTEXT_ACTIVE, PAGE_CONTEXT_PATH, PageContextMiddleware
-from tools.operation_policy import (
+from src.middleware.execution.operation_notice import OperationNoticeMiddleware
+from src.strategy.general.visits import PageVisitController
+
+from src.tools.notifications.policy import (
     EXTERNAL_OPERATION_POLICY_METADATA_KEY,
-    OPERATION_NOTICE_SERVICE_METADATA_KEY,
     ExternalOperationPolicy,
 )
 
@@ -47,15 +53,14 @@ def _tool(name: str, metadata: dict) -> StructuredTool:
 
 def _middleware() -> tuple[OperationNoticeMiddleware, FakeNoticeService]:
     service = FakeNoticeService()
-    carrier = _tool("notice_service", {OPERATION_NOTICE_SERVICE_METADATA_KEY: service})
-    return OperationNoticeMiddleware([carrier]), service
+    return OperationNoticeMiddleware(service=service), service
 
 
 def _request(tool: StructuredTool, *, state: dict | None = None, args: dict | None = None):
     return SimpleNamespace(
         tool=tool,
         tool_call={"name": tool.name, "id": "call-1", "args": args or {}},
-        state=state or {PAGE_CONTEXT_PATH: "meituan"},
+        state=state or read_conductor_state({'page_context_path': "meituan", "page_visit": new_visit("merchant" if "meituan".endswith("/商家") else "general"), "page_visit_id": "test-visit"}),
         runtime=SimpleNamespace(config={"configurable": {"thread_id": "thread-1"}}),
     )
 
@@ -114,17 +119,18 @@ def test_dangerous_justification_supplies_notice_reason() -> None:
 
 def test_page_guard_rejection_does_not_emit_notice() -> None:
     notice_middleware, service = _middleware()
-    page_middleware = PageContextMiddleware()
+    from src.page.mechanism import PageMechanism
+    page_middleware = page_controller(PageMechanism())
     tool = _tool(
         "page_view",
         {EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy("Read the current page.")},
     )
     request = _request(
         tool,
-        state={PAGE_CONTEXT_ACTIVE: True, PAGE_CONTEXT_PATH: ""},
+        state=read_conductor_state({"general": {"active": True, "visit": None}}),
     )
 
-    result = page_middleware.wrap_tool_call(
+    result = page_middleware.execute_operation(
         request,
         lambda inner_request: notice_middleware.wrap_tool_call(
             inner_request,

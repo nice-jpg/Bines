@@ -15,6 +15,7 @@ from src.application.model import build_model, close_model
 from src.application.trace import trace_client
 from src.channel.feishu import FeishuChannel, load_feishu_config
 from src.conductor.engine import ConductorEngine
+from src.conductor.state import ConductorState
 from src.configuration.manager import ConfigurationManager
 
 
@@ -34,7 +35,7 @@ def main() -> None:
     manager: GatewayManager = GatewayManager.instance()
     gateway_id: str = manager.create(channel)
     model: BaseChatModel | None = None
-    worker: AgentWorker | None = None
+    worker: AgentWorker[ConductorState] | None = None
     engine: ConductorEngine | None = None
     started: bool = False
     try:

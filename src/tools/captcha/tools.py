@@ -7,11 +7,11 @@ from typing import Final, TypedDict
 from langchain_core.tools import StructuredTool
 
 from src.common.event_log import WorkspaceEventLogger
+from src.common.utils.json import json_object
+from src.common.utils.xml import escape_attr as _escape_attr
+from src.common.utils.xml import escape_text as _escape_text
 from src.device import DeviceOperationService, ShadowServiceStatus
-from src.serialization.json import json_object
 from src.tools.shared.factory import create_tool
-from src.tools.shared.xml import escape_attr as _escape_attr
-from src.tools.shared.xml import escape_text as _escape_text
 
 SHADOW_AUTH_URL: Final[str] = "http://139.224.44.6:9080"
 

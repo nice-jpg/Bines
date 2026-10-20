@@ -6,8 +6,8 @@ from langchain_core.messages import AnyMessage
 from pydantic import TypeAdapter
 from typing_extensions import TypedDict
 
-from src.serialization.json import JsonObject, JsonValue
-from src.serialization.validation import is_string_mapping, is_value_sequence
+from src.common.utils.json import JsonObject, JsonValue
+from src.common.utils.validation import is_string_mapping, is_value_sequence
 
 type InputMessage = AnyMessage | dict[str, Any]
 

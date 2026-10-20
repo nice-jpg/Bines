@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from src.serialization.json import JsonValue
+from src.common.utils.json import JsonValue
 
 
 class EngineStatus(StrEnum):
@@ -13,6 +13,13 @@ class EngineStatus(StrEnum):
     RESUME_READY = "resume_ready"
     INTERRUPTED = "interrupted"
     STOPPED = "stopped"
+
+
+class ExecutionSource(StrEnum):
+    USER_TASK = "user_task"
+    INITIAL_TASK = "initial_task"
+    CONTINUATION = "continuation"
+    RESUME = "resume"
 
 
 class InterruptKind(StrEnum):

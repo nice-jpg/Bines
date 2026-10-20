@@ -15,12 +15,20 @@ from langgraph.types import Command
 
 from src.agent_runtime.types.execution import YieldReason
 from src.collector.training import CollectorTrainingRecord
-from src.conductor.probe_state import COLLECTION_CONSECUTIVE_EMPTY_SWIPES, MERCHANT_COLLECTION_DONE
-from src.conductor.state import ConductorFields, ConductorState, read_conductor_fields
+from src.common.utils.json import JsonObject, JsonValue
+from src.conductor.state import (
+    ConductorFields,
+    ConductorState,
+    ConductorUpdate,
+    collection_completion_update,
+    combine_updates,
+    complete_update,
+    current_visit,
+    merge_fields,
+    read_conductor_fields,
+)
 from src.device import CollectionSwipe, DeviceOperationService, SwipeObservation
 from src.page.script_types import ScriptSourceResult
-from src.page.state import PAGE_COLLECTION_STARTED, PAGE_VISIT_ID
-from src.serialization.json import JsonObject, JsonValue
 from src.tools.shared.factory import create_tool
 
 from .service import CollectionService, CollectionStepResult, CompletionResult, StepStatus
@@ -34,7 +42,7 @@ class StopStatus(StrEnum):
 
 @dataclass
 class LoopProgress:
-    update: ConductorFields = field(default_factory=lambda: {})
+    update: ConductorUpdate = field(default_factory=lambda: {})
     swipes: int = 0
     added: int = 0
     ratio: float | None = None
@@ -83,14 +91,13 @@ class ContinuousCollection:
                         return self._finish(runtime, progress, StopStatus.YIELDED, reason)
                     completion: CompletionResult = self.service.completion(state)
                     if completion.done:
-                        progress.update.update(completion.update)
+                        progress.update = combine_updates(progress.update, completion.update)
                         return self._finish(runtime, progress, StopStatus.COMPLETED, "collection_complete")
                     reason = self._validate(state, change_threshold)
                     if reason:
                         return self._finish(runtime, progress, StopStatus.ATTENTION, reason)
                     observation: SwipeObservation = self.event_hub.collection_swipe(action, x, y)
                     progress.swipes += 1
-                    progress.update[PAGE_COLLECTION_STARTED] = True
                     progress.hint = observation.hint
                     progress.ratio = (
                         observation.change_ratio
@@ -113,8 +120,8 @@ class ContinuousCollection:
                     step: CollectionStepResult = self.service.collect(
                         state, observation.snapshot, action.value, {"x": x, "y": y}
                     )
-                    state.update(step.update)
-                    progress.update.update(step.update)
+                    state = merge_fields(state, step.update)
+                    progress.update = combine_updates(progress.update, step.update)
                     progress.added += step.new_count
                     if step.status == StepStatus.FAILED:
                         return self._finish(runtime, progress, StopStatus.ATTENTION, step.error)
@@ -133,7 +140,7 @@ class ContinuousCollection:
         if not completion.payload["ok"]:
             return completion.payload.get("error_type", "collection_not_ready")
         record: CollectorTrainingRecord | None = self.service.training_registry.record_for(
-            state.get(PAGE_VISIT_ID, "")
+            current_visit(state).get("visit_id", "")
         )
         if record is None or record.change_threshold is None:
             return "normal_swipe_training_required"
@@ -158,7 +165,13 @@ class ContinuousCollection:
         reason: str,
     ) -> Command[str]:
         if status == StopStatus.ATTENTION and progress.swipes:
-            progress.update.update({COLLECTION_CONSECUTIVE_EMPTY_SWIPES: 0, MERCHANT_COLLECTION_DONE: False})
+            progress.update = combine_updates(
+                progress.update,
+                {"merchant": {"evidence": {"consecutive_empty_swipes": 0}}},
+                collection_completion_update(
+                    merge_fields(read_conductor_fields(runtime.state), progress.update), False
+                ),
+            )
         payload: JsonObject = {
             "status": status.value,
             "reason": reason,
@@ -173,4 +186,9 @@ class ContinuousCollection:
             tool_call_id=runtime.tool_call_id,
             name="collect_continuously",
         )
-        return Command(update={**progress.update, "messages": [message]})
+        return Command(
+            update={
+                **complete_update(read_conductor_fields(runtime.state), progress.update),
+                "messages": [message],
+            }
+        )

@@ -11,7 +11,7 @@ from langgraph.graph.state import CompiledStateGraph  # pyright: ignore[reportMi
 from typing_extensions import TypedDict
 
 from src.agent_messages.types import GraphInput
-from src.serialization.json import JsonObject
+from src.common.utils.json import JsonObject
 
 # LangChain combines distinct state/context schemas dynamically. Its invariant
 # generics cannot describe that heterogeneous sequence with a common state type.

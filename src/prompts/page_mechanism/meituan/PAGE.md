@@ -1,3 +1,7 @@
+---
+page_strategy: general
+---
+
 # Meituan Home Page
 
 ## Overview

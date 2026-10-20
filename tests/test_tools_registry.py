@@ -6,13 +6,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tools import collect_conductor_tools, collect_tools
-from tools.operation_effect import (
+from tests.tool_helpers import conductor_tools
+from src.tools.subagents.tools import create_subagent_tools
+from src.tools.device.effect import (
     NAVIGATION_PAGE_CHANGE_POLICY,
     OPERATION_EFFECT_POLICY_METADATA_KEY,
     SCROLL_PAGE_CHANGE_POLICY,
 )
-from tools.operation_policy import EXTERNAL_OPERATION_POLICY_METADATA_KEY
+from src.tools.notifications.policy import EXTERNAL_OPERATION_POLICY_METADATA_KEY
 
 
 class FakeSubagentManager:
@@ -28,13 +29,13 @@ class FakeSubagentManager:
 
 class ToolsRegistryTests(unittest.TestCase):
     def test_collect_tools_includes_thinking_tool(self) -> None:
-        tool_names = [tool.name for tool in collect_tools()]
+        tool_names = [tool.name for tool in conductor_tools()]
 
         self.assertNotIn("spawn_subagent", tool_names)
         self.assertNotIn("call_subagent", tool_names)
         self.assertNotIn("kill_subagent", tool_names)
         self.assertNotIn("query_manual", tool_names)
-        self.assertIn("notify_user", tool_names)
+        self.assertNotIn("notify_user", tool_names)
         self.assertNotIn("start_shadow_service", tool_names)
         self.assertNotIn("stop_shadow_service", tool_names)
         self.assertIn("authenticate_captcha", tool_names)
@@ -58,7 +59,6 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertNotIn("write_excel_sheet", tool_names)
         self.assertNotIn("append_excel_rows", tool_names)
         self.assertNotIn("update_excel_cell", tool_names)
-        self.assertLess(tool_names.index("notify_user"), tool_names.index("tap_in_page"))
         self.assertLess(tool_names.index("authenticate_captcha"), tool_names.index("tap_in_page"))
         self.assertLess(tool_names.index("captcha_authenticated"), tool_names.index("tap_in_page"))
         self.assertLess(tool_names.index("think"), tool_names.index("tap_in_page"))
@@ -66,7 +66,7 @@ class ToolsRegistryTests(unittest.TestCase):
         schemas = {
             tool.name: tool.tool_call_schema if isinstance(tool.tool_call_schema, dict)
             else tool.tool_call_schema.model_json_schema()
-            for tool in collect_conductor_tools()
+            for tool in conductor_tools()
         }
         for tool_name in ("run_package", "close_package"):
             schema = schemas[tool_name]
@@ -92,18 +92,17 @@ class ToolsRegistryTests(unittest.TestCase):
     def test_collect_tools_can_include_subagent_tools_for_main_agent(self) -> None:
         tool_names = [
             tool.name
-            for tool in collect_tools(include_subagents=True, subagent_manager=FakeSubagentManager())
+            for tool in create_subagent_tools(FakeSubagentManager())
         ]
 
         self.assertIn("spawn_subagent", tool_names)
         self.assertIn("call_subagent", tool_names)
         self.assertIn("kill_subagent", tool_names)
-        self.assertIn("query_manual", tool_names)
+        self.assertNotIn("query_manual", tool_names)
         self.assertNotIn("swipe_to_random", tool_names)
-        self.assertGreater(tool_names.index("spawn_subagent"), tool_names.index("append_excel_rows"))
 
     def test_operation_effect_policies_are_typed_and_narrowly_exposed(self) -> None:
-        tools = {tool.name: tool for tool in collect_conductor_tools()}
+        tools = {tool.name: tool for tool in conductor_tools()}
 
         self.assertIs(
             tools["navigate_to"].metadata[OPERATION_EFFECT_POLICY_METADATA_KEY],
@@ -118,7 +117,7 @@ class ToolsRegistryTests(unittest.TestCase):
             self.assertNotIn(OPERATION_EFFECT_POLICY_METADATA_KEY, tools[name].metadata or {})
 
     def test_notifications_are_limited_to_probe_lifecycle_milestones(self) -> None:
-        tools = {tool.name: tool for tool in collect_conductor_tools()}
+        tools = {tool.name: tool for tool in conductor_tools()}
 
         for name in ("run_package", "prepare_collector", "close_package"):
             self.assertIn(EXTERNAL_OPERATION_POLICY_METADATA_KEY, tools[name].metadata or {})

@@ -5,8 +5,8 @@ from collections.abc import Callable
 from typing import Final
 
 from src.common.event_log import WorkspaceEventLogger
-from src.tools.shared.xml import escape_attr as _escape_attr
-from src.tools.shared.xml import escape_text as _escape_text
+from src.common.utils.xml import escape_attr as _escape_attr
+from src.common.utils.xml import escape_text as _escape_text
 
 OPERATION_LOG_CAPACITY: Final[int] = 30
 
@@ -61,7 +61,7 @@ class OperationNoticeTool:
     def _notify(self, entry: dict[str, str]) -> None:
         if self.notifier is None:
             return
-        lines: list[str] = [f"Operation: {entry['operation']}"]
+        lines: list[str] = [f"Preparing operation: {entry['operation']}"]
         if entry["current_path"]:
             lines.append(f"Current path: {entry['current_path']}")
         if entry["reason"]:

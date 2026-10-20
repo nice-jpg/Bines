@@ -148,4 +148,6 @@ class ConversationSession:
             label = label.replace("\n", " ").replace("\r", " ")
             text: str = message.text.replace("\r\n", "\n").replace("\r", "\n")
             lines.append(f"{label}: {text.replace(chr(10), chr(10) + '    ')}")
-        return MessageBlock(f"conversation:{uuid4().hex}", "\n".join(lines))
+        return MessageBlock(
+            f"conversation:{uuid4().hex}", "\n".join(lines), tuple(message.text for message in messages)
+        )

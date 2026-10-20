@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from src.configuration.loader import load_configuration
+from src.configuration.manager import ConfigurationManager
+from src.configuration.errors import ConfigurationError
+
+import ast
 import json
 import os
 import tempfile
-import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -12,25 +17,34 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from channel.feishu.config import FeishuConfig, load_feishu_config
-from channel.feishu.dedup import MessageDeduplicator
-from channel.feishu.messages import IncomingMessage, MessageTarget, parse_message_event
-from channel.feishu.receiver import FeishuChannelRuntime
+from src.channel.feishu.config import FeishuConfig, load_feishu_config
+from src.channel.feishu.dedup import MessageDeduplicator
+from src.channel.feishu.channel import FeishuChannel
+from lark_oapi.channel.types import InboundMessage, Conversation, Identity, TextContent
 
 
-class FakeMessenger:
-    def __init__(self) -> None:
-        self.sent: list[tuple[str, str]] = []
-        self.replies: list[tuple[str, str]] = []
-
-    def send_text(self, chat_id: str, text: str) -> None:
-        self.sent.append((chat_id, text))
-
-    def reply_text(self, message_id: str, text: str) -> None:
-        self.replies.append((message_id, text))
+@contextmanager
+def configured_environment(env_path):
+    with patch("src.configuration.loader.WORKSPACE_ROOT", env_path.parent):
+        # Alias examples use different filenames; the service always reads .env.
+        if env_path.name != ".env":
+            (env_path.parent / ".env").write_text(env_path.read_text())
+        snapshot = load_configuration()
+    with patch.object(ConfigurationManager.instance(), "_snapshot", snapshot):
+        yield
 
 
 class FeishuChannelTests(unittest.TestCase):
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path_patch = patch(
+            "src.channel.feishu.dedup.WORKSPACE_DEDUP_PATH",
+            Path(directory.name) / "processed.jsonl",
+        )
+        path_patch.start()
+        self.addCleanup(path_patch.stop)
+
     def test_config_loads_feishu_env_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             env_path = Path(tmp_dir) / ".env"
@@ -39,7 +53,8 @@ class FeishuChannelTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {}, clear=True):
-                config = load_feishu_config(env_path)
+                with configured_environment(env_path):
+                    config = load_feishu_config()
 
         self.assertEqual(config.app_id, "cli_test")
         self.assertEqual(config.app_secret, "secret_test")
@@ -53,9 +68,11 @@ class FeishuChannelTests(unittest.TestCase):
             app_env.write_text("APP_ID=cli_app\nAPP_SECRET=secret_app\n", encoding="utf-8")
 
             with patch.dict(os.environ, {}, clear=True):
-                lark_config = load_feishu_config(lark_env)
+                with configured_environment(lark_env):
+                    lark_config = load_feishu_config()
             with patch.dict(os.environ, {}, clear=True):
-                app_config = load_feishu_config(app_env)
+                with configured_environment(app_env):
+                    app_config = load_feishu_config()
 
         self.assertEqual(lark_config.app_id, "cli_lark")
         self.assertEqual(lark_config.app_secret, "secret_lark")
@@ -67,100 +84,54 @@ class FeishuChannelTests(unittest.TestCase):
             env_path = Path(tmp_dir) / ".env"
             env_path.write_text("", encoding="utf-8")
             with patch.dict(os.environ, {}, clear=True):
-                with self.assertRaisesRegex(RuntimeError, "Missing required Feishu setting"):
-                    load_feishu_config(env_path)
-
-    def test_parse_text_message_event_preserves_metadata_and_mentions(self) -> None:
-        mentions = [{"key": "@_user_1", "id": {"open_id": "mentioned_open"}, "name": "user1"}]
-        data = _event_data(content='{"text":"hello @user1"}', mentions=mentions)
-
-        parsed = parse_message_event(data)
-
-        self.assertTrue(parsed.ok)
-        self.assertIsNotNone(parsed.incoming)
-        incoming = parsed.incoming
-        self.assertEqual(incoming.text, "hello @user1")
-        self.assertEqual(incoming.chat_id, "chat_1")
-        self.assertEqual(incoming.message_id, "msg_1")
-        self.assertEqual(incoming.root_id, "root_1")
-        self.assertEqual(incoming.parent_id, "parent_1")
-        self.assertEqual(incoming.create_time, "1710000000000")
-        self.assertEqual(incoming.update_time, "1710000001000")
-        self.assertEqual(incoming.sender_open_id, "open_1")
-        self.assertEqual(incoming.sender_union_id, "union_1")
-        self.assertEqual(incoming.sender_user_id, "user_1")
-        self.assertEqual(incoming.mentions, mentions)
-        self.assertIs(incoming.raw_message, data.event.message)
-
-    def test_parse_unsupported_and_malformed_messages_keep_message_identity(self) -> None:
-        unsupported = parse_message_event(_event_data(message_type="image"))
-        malformed = parse_message_event(_event_data(content="{bad-json"))
-
-        self.assertFalse(unsupported.ok)
-        self.assertIsNotNone(unsupported.incoming)
-        self.assertEqual(unsupported.incoming.message_id, "msg_1")
-        self.assertEqual(unsupported.incoming.message_type, "image")
-        self.assertIn("Unsupported message type", unsupported.error_text or "")
-        self.assertFalse(malformed.ok)
-        self.assertIsNotNone(malformed.incoming)
-        self.assertEqual(malformed.incoming.chat_id, "chat_1")
-        self.assertIn("Failed to parse", malformed.error_text or "")
+                with self.assertRaises(ConfigurationError):
+                    with configured_environment(env_path):
+                        load_feishu_config()
 
     def test_message_deduplicator_filters_repeated_ids_and_enforces_lru(self) -> None:
-        dedup = MessageDeduplicator(capacity=2, persistence_path=None)
+        with patch("src.channel.feishu.dedup.MESSAGE_CACHE_CAPACITY", 2):
+            dedup = MessageDeduplicator()
 
-        self.assertTrue(dedup.should_process("msg_1"))
-        self.assertFalse(dedup.should_process("msg_1"))
-        self.assertTrue(dedup.should_process("msg_2"))
-        self.assertTrue(dedup.should_process("msg_3"))
-        self.assertTrue(dedup.should_process("msg_1"))
+        self.assertTrue(admit(dedup, "msg_1"))
+        self.assertFalse(admit(dedup, "msg_1"))
+        self.assertTrue(admit(dedup, "msg_2"))
+        self.assertTrue(admit(dedup, "msg_3"))
+        self.assertTrue(admit(dedup, "msg_1"))
 
     def test_message_deduplicator_restores_persisted_ids(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = Path(tmp_dir) / "processed.jsonl"
             path.write_text(json.dumps({"message_id": "msg_1", "chat_id": "chat_1"}) + "\n", encoding="utf-8")
 
-            dedup = MessageDeduplicator(capacity=10, persistence_path=path)
+            with patch("src.channel.feishu.dedup.WORKSPACE_DEDUP_PATH", path):
+                dedup = MessageDeduplicator()
 
-            self.assertFalse(dedup.should_process("msg_1", chat_id="chat_1"))
-            self.assertTrue(dedup.should_process("msg_2", chat_id="chat_1"))
+            self.assertFalse(admit(dedup, "msg_1"))
+            self.assertTrue(admit(dedup, "msg_2"))
 
-    def test_channel_runtime_deduplicates_before_callback(self) -> None:
+    def test_channel_marks_dedup_only_after_gateway_acceptance(self) -> None:
         received = []
-        errors = []
-        runtime = FeishuChannelRuntime(
-            FeishuConfig("app", "secret"),
-            messenger=FakeMessenger(),
-            deduplicator=MessageDeduplicator(persistence_path=None),
-            on_parse_error=lambda parsed, _data: errors.append(parsed),
+        channel = FeishuChannel(FeishuConfig("app", "secret"), "feishu")
+        channel.bind_message_listener(lambda message: False)
+        message = InboundMessage(
+            id="msg-1", create_time=0, conversation=Conversation("chat", "p2p"),
+            sender=Identity("person"), content=TextContent(text="hello"), content_text="hello",
         )
-        runtime._on_message = received.append
+        with self.assertRaisesRegex(RuntimeError, "not accepted"):
+            channel._receive(message)
+        channel.bind_message_listener(lambda message: received.append(message) or True)
+        channel._receive(message)
+        channel._receive(message)
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].sender_id, "person")
+        message.id = "msg-2"
+        message.conversation.chat_type = "group"
+        channel._receive(message)
+        self.assertEqual(received[-1].conversation_id, "chat")
 
-        runtime._handle_message(_event_data())
-        runtime._handle_message(_event_data())
-        runtime._handle_message(_event_data(message_type="image", message_id="msg_2"))
-
-        self.assertEqual([message.message_id for message in received], ["msg_1"])
-        self.assertEqual([error.incoming.message_id for error in errors if error.incoming], ["msg_2"])
-
-    def test_channel_runtime_sends_to_p2p_or_replies_to_group(self) -> None:
-        messenger = FakeMessenger()
-        runtime = FeishuChannelRuntime(
-            FeishuConfig("app", "secret"),
-            messenger=messenger,
-            deduplicator=MessageDeduplicator(persistence_path=None),
-        )
-
-        runtime.send_text(MessageTarget("chat_1", "msg_1", "p2p"), "p2p output")
-        runtime.send_text(MessageTarget("chat_2", "msg_2", "group"), "group output")
-        runtime.build_notifier(MessageTarget("chat_3", "msg_3", "group"))("notice")
-
-        self.assertEqual(messenger.sent, [("chat_1", "p2p output"), ("chat_3", "notice")])
-        self.assertEqual(messenger.replies, [("msg_2", "group output")])
-
-    def test_transport_modules_do_not_depend_on_agent_runtime(self) -> None:
+    def test_transport_modules_only_depend_on_runtime_message_contracts(self) -> None:
         feishu_dir = Path(__file__).resolve().parents[1] / "src" / "channel" / "feishu"
-        forbidden = ("src.agent", "src.model", "src.tools", "src.prompts")
+        forbidden = ("src.conductor.engine", "src.application.model", "src.tools", "src.prompts")
         transport_files = [
             path
             for path in feishu_dir.glob("*.py")
@@ -168,58 +139,90 @@ class FeishuChannelTests(unittest.TestCase):
 
         for path in transport_files:
             with self.subTest(path=path.name):
-                content = path.read_text(encoding="utf-8")
-                self.assertFalse(any(item in content for item in forbidden))
+                tree = ast.parse(path.read_text(encoding="utf-8"))
+                modules = [
+                    module
+                    for node in ast.walk(tree)
+                    for module in (
+                        [node.module or ""] if isinstance(node, ast.ImportFrom)
+                        else [alias.name for alias in node.names] if isinstance(node, ast.Import)
+                        else []
+                    )
+                ]
+                for module in modules:
+                    self.assertFalse(any(module == item or module.startswith(item + ".") for item in forbidden))
+                    if module == "src.agent_runtime" or module.startswith("src.agent_runtime."):
+                        self.assertEqual(module, "src.agent_runtime.messaging.messages")
 
 
-def _incoming(chat_type: str = "p2p") -> IncomingMessage:
-    return IncomingMessage(
-        message_id="msg_1",
-        root_id="root_1",
-        parent_id="parent_1",
-        chat_id="chat_1",
-        chat_type=chat_type,
-        message_type="text",
-        create_time="1710000000000",
-        update_time="1710000001000",
-        sender_open_id="open_1",
-        sender_union_id="union_1",
-        sender_user_id="user_1",
-        text="collect & shops",
-        mentions=[{"id": {"open_id": "mentioned_open"}, "name": "user1"}],
-    )
+def admit(dedup, identity):
+    if dedup.contains(identity):
+        return False
+    dedup.mark_processed(identity, "chat_1")
+    return True
 
 
-def _event_data(
-    message_type: str = "text",
-    content: str = '{"text":"hello"}',
-    mentions=None,
-    message_id: str = "msg_1",
-):
-    return types.SimpleNamespace(
-        event=types.SimpleNamespace(
-            sender=types.SimpleNamespace(
-                sender_id=types.SimpleNamespace(
-                    open_id="open_1",
-                    union_id="union_1",
-                    user_id="user_1",
-                )
-            ),
-            message=types.SimpleNamespace(
-                message_id=message_id,
-                root_id="root_1",
-                parent_id="parent_1",
-                message_type=message_type,
-                content=content,
-                mentions=mentions or [],
-                chat_id="chat_1",
-                chat_type="p2p",
-                create_time="1710000000000",
-                update_time="1710000001000",
-            ),
-        )
-    )
+def test_sdk_delivery_uses_channel_worker_and_drains_before_disconnect(monkeypatch):
+    import threading
+    import time
+    from lark_oapi.channel.types import SendResult
+    from src.channel.feishu import channel as adapter
+    from src.agent_runtime.messaging.messages import OutgoingMessage
+
+    events = []
+    ready = threading.Event()
+
+    class SDK:
+        def __init__(self, **kwargs):
+            assert kwargs["safety"].dedup.enabled is False
+            # Zero would silently drop every timestamped message in this SDK.
+            assert kwargs["safety"].stale_message_window_ms > time.time() * 1000
+            assert kwargs["policy"].require_mention is False
+
+        def on(self, name, handler):
+            assert name == "message"
+
+        async def start_background(self, *, timeout):
+            ready.set()
+
+        async def send(self, to, message, opts):
+            events.append((to, message.text, opts.get("reply_to"), threading.current_thread().name))
+            if message.text == "failed":
+                raise OSError("transient failure")
+            return SendResult(success=True, message_id="sent")
+
+        async def disconnect(self):
+            events.append("disconnected")
+
+    monkeypatch.setattr(adapter, "FeishuSDK", SDK)
+    channel = FeishuChannel(FeishuConfig("app", "secret"), "feishu")
+    channel.bind_message_listener(lambda _: True)
+    channel.start()
+    assert ready.wait(3)
+    channel.send_message(OutgoingMessage("feishu", "chat", "first"))
+    channel.send_message(OutgoingMessage("feishu", "chat", "failed"))
+    channel.send_message(OutgoingMessage("feishu", "chat", "last"))
+    channel.close()
+    assert events == [
+        ("chat", "first", None, "channel-feishu"),
+        ("chat", "failed", None, "channel-feishu"),
+        ("chat", "last", None, "channel-feishu"),
+        "disconnected",
+    ]
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_inbound_preserves_sender_and_readable_mentions(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.channel.feishu.dedup.WORKSPACE_DEDUP_PATH", tmp_path / "messages.jsonl")
+    from lark_oapi.channel.types import Mention
+    received = []
+    channel = FeishuChannel(FeishuConfig("app", "secret"), "feishu")
+    channel.bind_message_listener(lambda message: received.append(message) or True)
+    channel._receive(InboundMessage(
+        id="sender-mention", create_time=0, conversation=Conversation("group", "group"),
+        sender=Identity("person-id", display_name="A"),
+        mentions=[Mention(key="@_user_1", name="robot")],
+        content=TextContent(text="@_user_1 检查目录\n继续保留正文"),
+    ))
+    assert received[0].sender_id == "person-id"
+    assert received[0].sender_name == "A"
+    assert received[0].text == "@robot 检查目录\n继续保留正文"

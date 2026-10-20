@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from page_strategy_helpers import new_visit
+
+from src.conductor.state import read_conductor_state, merge_fields
+
 import asyncio
+import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
-import sys
 
 from langchain.agents import create_agent
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -13,13 +17,11 @@ from pydantic import Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from middleware.page_context import (
-    PAGE_CONTEXT_ACTIVE,
-    PAGE_CONTEXT_PATH,
-    PAGE_VISIT_ID,
-)
-from middleware.page_manual import PageManualMiddleware
-from page_mechanism import PageMechanism
+from page_helpers import page_mechanism
+
+from src.strategy.general.context.manual import PageManualMiddleware
+from src.page.mechanism import PageMechanism
+
 
 
 @dataclass
@@ -42,16 +44,16 @@ def _mechanism(tmp_path: Path) -> PageMechanism:
         directory.mkdir(parents=True)
         (directory / "PAGE.md").write_text(page, encoding="utf-8")
         (directory / "task.md").write_text(task, encoding="utf-8")
-    return PageMechanism(root)
+    return page_mechanism(root)
 
 
 def _state(*, path: str = "meituan/外卖", visit_id: str = "visit-1", messages=None, overlay=False) -> dict:
-    return {
-        PAGE_CONTEXT_ACTIVE: True,
-        PAGE_CONTEXT_PATH: path,
-        PAGE_VISIT_ID: visit_id,
+    return read_conductor_state({
+        'page_context_active': True,
+        'page_context_path': path,
+        'page_visit_id': visit_id,
         "messages": list(messages or []),
-    }
+     "page_visit": new_visit("merchant" if path.endswith("/商家") else "general")})
 
 
 def _manual_from(update: dict) -> SystemMessage:

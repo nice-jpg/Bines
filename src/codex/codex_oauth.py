@@ -59,11 +59,11 @@ from src.codex.protocol_types import (
     read_response_event,
     read_response_usage,
 )
+from src.common.utils.json import JsonObject, JsonValue, json_object, json_value, load_json
+from src.common.utils.validation import is_string_mapping
 from src.configuration.errors import ConfigurationError, ConfigurationKeyError
 from src.configuration.manager import ConfigurationManager
 from src.configuration.types import ConfigValue
-from src.serialization.json import JsonObject, JsonValue, json_object, json_value, load_json
-from src.serialization.validation import is_string_mapping
 
 DEFAULT_CODEX_WS_URL: Final[str] = "wss://chatgpt.com/backend-api/codex/responses"
 

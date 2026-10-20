@@ -6,8 +6,8 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from Reco.model_interface import PageSession
+from src.common.utils.json import JsonObject, JsonValue, json_object
 from src.device.types.page import PageSnapshot
-from src.serialization.json import JsonObject, JsonValue, json_object
 
 
 class MissingPageAlias(ValueError):

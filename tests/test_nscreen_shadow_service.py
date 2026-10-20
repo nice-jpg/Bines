@@ -126,7 +126,7 @@ class ShadowServiceTests(unittest.TestCase):
         return ShadowConfig(**values)
 
     def _agent_jar(self) -> str:
-        path = Path(self.tmp_dir.name) / "agent.jar"
+        path = Path(self.tmp_dir.name) / "src.agent.jar"
         path.write_bytes(b"jar")
         return str(path)
 

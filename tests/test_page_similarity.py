@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from tools.page_similarity import PageSimilarityError, PageSimilarityEvaluator
+from src.device.services.page.similarity import PageSimilarityError, PageSimilarityEvaluator
 
 
 def _xml(*labels: str) -> str:

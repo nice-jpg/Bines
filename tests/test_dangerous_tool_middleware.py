@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from page_strategy_helpers import new_visit
+
+from src.conductor.state import read_conductor_state, merge_fields
+
 import asyncio
 import json
 import sys
@@ -10,9 +14,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import ToolMessage
 
-from middleware.dangerous_tool import DangerousToolMiddleware
-from middleware.page_context import PAGE_CONTEXT_PATH, PAGE_VISIT_ID
-from tools.safety import (
+from src.middleware.execution.dangerous_tool import DangerousToolMiddleware
+
+from src.tools.shared.safety import (
     DANGEROUS_TOOL_POLICY_METADATA_KEY,
     DangerousToolPolicy,
 )
@@ -54,10 +58,10 @@ def _request(
     return SimpleNamespace(
         tool_call={"id": "call-1", "name": tool_name, "args": args},
         tool=SimpleNamespace(name=tool_name, metadata=metadata),
-        state={
-            PAGE_CONTEXT_PATH: "meituan/外卖",
-            PAGE_VISIT_ID: "visit-1",
-        },
+        state=read_conductor_state({
+            'page_context_path': "meituan/外卖",
+            'page_visit_id': "visit-1",
+         "page_visit": new_visit("merchant" if "meituan/外卖".endswith("/商家") else "general")}),
     )
 
 

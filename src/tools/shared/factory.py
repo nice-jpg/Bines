@@ -5,7 +5,7 @@ from typing import Literal
 
 from langchain_core.tools import BaseTool, StructuredTool
 
-from src.serialization.json import JsonObject
+from src.common.utils.json import JsonObject
 
 
 def create_tool[**P, R, M](

@@ -1,239 +1,161 @@
-from __future__ import annotations
+"""Engine ownership, public API and thread lifecycle."""
 
-import importlib
-import sys
-import types
-import unittest
-from pathlib import Path
-
-import langgraph.checkpoint.memory  # Keep real LangGraph dependencies loaded before local LangChain stubs.
-import langgraph.errors
-import langgraph.types
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-import nTrace
-import agent as _agent_dependency_preload  # noqa: E402,F401
-import collector as _collector_dependency_preload  # noqa: E402,F401
-import src.agent_runtime._stability  # Load framework types before test-only module stubs.
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import Mock
+import inspect
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+from src.agent_runtime.engine import AgentEngine
+from src.agent_runtime.coordinator import AgentCoordinator
+from src.agent_runtime.worker import AgentWorker
+from src.agent_runtime.types.execution import EngineResult, EngineStatus
+from src.conductor.engine import ConductorEngine
+from src.application.gateway_manager import GatewayManager
+from src.agent_runtime.messaging.messages import IncomingMessage
+from engine_helpers import ScriptedEngine, Model
 
 
-class AgentRuntimeTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self._original_modules = {
-            name: sys.modules.get(name)
-            for name in (
-                "agent",
-                "langchain",
-                "langchain.agents",
-                "langchain.agents.middleware",
-                "langchain.agents.middleware.summarization",
-                "langchain.agents.middleware.types",
-                "langchain_core",
-                "langchain_core.language_models",
-                "langchain_core.language_models.chat_models",
-                "langchain_core.messages",
-                "langchain_core.tools",
-            )
-        }
+def test_engine_owns_session_and_keeps_one_conversation(monkeypatch):
+    from gateway_helpers import GatewayHandle, RecordingChannel
+    channel = RecordingChannel()
+    gateway = GatewayHandle(channel)
+    model = Model(replies=[AIMessage(content="answer")])
+    engine = ScriptedEngine(model=model, gateway_id=gateway.gateway_id)
+    for text in ["first", "second"]:
+        channel.receive("one", text)
+        assert engine.run_turn().output == "answer"
+    channel.receive("two", "other")
+    assert engine.conversation.read_input(wait=False) is None
+    assert engine.conversation.route["conversation_id"] == "one"
+    assert len(model.seen) == 2
+    other = ScriptedEngine(model=model, gateway_id=gateway.gateway_id)
+    assert engine.conversation is not other.conversation
+    engine.close()
+    with pytest.raises(Exception, match="closed"):
+        engine.conversation.read_input(wait=False)
+    assert gateway.receive_messages(wait=False) == []
 
-    def tearDown(self) -> None:
-        for name, module in self._original_modules.items():
-            if module is None:
-                sys.modules.pop(name, None)
-            else:
-                sys.modules[name] = module
 
-    def test_agent_runtime_reuses_one_agent_for_multiple_turns(self) -> None:
-        captured = {"create_count": 0, "invocations": []}
-        self._install_langchain_stubs(captured)
-        sys.modules.pop("agent", None)
-        agent = importlib.import_module("agent")
-        agent.collect_tools = lambda **_kwargs: []
+def test_engine_exposes_only_execution_methods():
+    methods = {
+        name for name, value in AgentEngine.__dict__.items() if callable(value) and not name.startswith("_")
+    }
+    assert methods == {"run_turn", "continue_turn", "resume_turn", "close", "send_message"}
+    for method in methods - {"send_message"}:
+        assert list(inspect.signature(getattr(AgentEngine, method)).parameters) == ["self"]
 
-        runtime = agent.build_agent(model="model", tools=[])
-        first = runtime.run_turn([{"role": "user", "content": "hello"}])
-        second = runtime.run_turn([{"role": "user", "content": "again"}])
 
-        self.assertEqual(captured["create_count"], 1)
-        self.assertEqual(first.output, "agent output")
-        self.assertEqual(second.output, "agent output")
-        self.assertEqual(len(captured["invocations"]), 2)
-        self.assertNotIn("<environment_context>", str(captured["invocations"][0]))
-        self.assertNotIn("<config_context>", str(captured["invocations"][0]))
+def test_engine_has_no_thread_ownership_or_execution_lock():
+    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]))
+    assert "_owner" not in vars(engine)
+    assert "_lock" not in vars(engine)
 
-    def test_run_agent_loop_compatibility_wrapper_returns_result(self) -> None:
-        captured = {"create_count": 0, "invocations": []}
-        self._install_langchain_stubs(captured)
-        sys.modules.pop("agent", None)
-        agent = importlib.import_module("agent")
-        agent.collect_tools = lambda **_kwargs: []
 
-        result = agent.run_agent_loop(
-            model="model",
-            tools=[],
-            history=[{"role": "user", "content": "hello"}],
+def test_invalid_transitions_rejected_before_graph_call():
+    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]))
+    with pytest.raises(RuntimeError, match="continuation"):
+        engine.continue_turn()
+    with pytest.raises(RuntimeError, match="interrupted"):
+        engine.resume_turn()
+
+
+def test_worker_repeats_calls_then_closes_on_same_thread():
+    import threading
+
+    calls = []
+    statuses = iter([EngineStatus.COMPLETED, EngineStatus.INTERRUPTED, EngineStatus.STOPPED])
+    coordinator = Mock()
+    from src.agent_runtime.types.execution import InterruptKind
+
+    def run():
+        calls.append(threading.get_ident())
+        status = next(statuses)
+        return EngineResult(
+            status, interrupt_kind=InterruptKind.HUMAN if status == EngineStatus.INTERRUPTED else None
         )
 
-        self.assertEqual(result.output, "agent output")
-        self.assertEqual(captured["create_count"], 1)
-
-    def _install_langchain_stubs(self, captured) -> None:
-        langchain = types.ModuleType("langchain")
-        langchain_agents = types.ModuleType("langchain.agents")
-        langchain_agents_middleware = types.ModuleType("langchain.agents.middleware")
-        langchain_agents_middleware_summarization = types.ModuleType("langchain.agents.middleware.summarization")
-        langchain_agents_middleware_types = types.ModuleType("langchain.agents.middleware.types")
-        langchain_core = types.ModuleType("langchain_core")
-        langchain_core_language_models = types.ModuleType("langchain_core.language_models")
-        langchain_core_chat_models = types.ModuleType("langchain_core.language_models.chat_models")
-        langchain_core_messages = types.ModuleType("langchain_core.messages")
-        langchain_core_tools = types.ModuleType("langchain_core.tools")
-
-        class AgentMiddleware:
-            pass
-
-        class BaseChatModel:
-            pass
-
-        class BaseMessage:
-            pass
-
-        class ToolMessage(BaseMessage):
-            pass
-
-        class StructuredTool:
-            @classmethod
-            def from_function(cls, **kwargs):
-                instance = cls()
-                instance.name = kwargs["name"]
-                instance.description = kwargs["description"]
-                instance.func = kwargs["func"]
-                return instance
-
-        class BaseTool:
-            pass
-
-        class SummarizationMiddleware(AgentMiddleware):
-            def __init__(self, model):
-                self.model = model
-
-        class TodoListMiddleware(AgentMiddleware):
-            pass
-
-        class FakeAgent:
-            def invoke(self, payload, config=None, *, durability, context=None):
-                assert durability == "exit"
-                captured.setdefault("configs", []).append(config)
-                if not isinstance(payload, dict):
-                    captured.setdefault("commands", []).append(payload)
-                    return {
-                        "messages": [
-                            {"role": "assistant", "content": "resumed output"},
-                        ]
-                    }
-                captured["invocations"].append(payload["messages"])
-                captured.setdefault("input_states", []).append(dict(payload))
-                if captured.get("interrupt_next"):
-                    captured["interrupt_next"] = False
-                    return {
-                        "__interrupt__": ["captcha user input required"],
-                        "messages": payload["messages"],
-                    }
-                return {
-                    "messages": [
-                        *payload["messages"],
-                        {"role": "assistant", "content": "agent output"},
-                    ]
-                }
-
-        def create_agent(**_kwargs):
-            captured["create_count"] += 1
-            return FakeAgent()
-
-        langchain_agents.create_agent = create_agent
-        langchain_agents_middleware.TodoListMiddleware = TodoListMiddleware
-        langchain_agents_middleware_summarization.SummarizationMiddleware = SummarizationMiddleware
-        langchain_agents_middleware_types.AgentMiddleware = AgentMiddleware
-        langchain_core_chat_models.BaseChatModel = BaseChatModel
-        langchain_core_messages.BaseMessage = BaseMessage
-        langchain_core_messages.ToolMessage = ToolMessage
-        langchain_core_tools.StructuredTool = StructuredTool
-        langchain_core_tools.BaseTool = BaseTool
-
-        sys.modules["langchain"] = langchain
-        sys.modules["langchain.agents"] = langchain_agents
-        sys.modules["langchain.agents.middleware"] = langchain_agents_middleware
-        sys.modules["langchain.agents.middleware.summarization"] = langchain_agents_middleware_summarization
-        sys.modules["langchain.agents.middleware.types"] = langchain_agents_middleware_types
-        sys.modules["langchain_core"] = langchain_core
-        sys.modules["langchain_core.language_models"] = langchain_core_language_models
-        sys.modules["langchain_core.language_models.chat_models"] = langchain_core_chat_models
-        sys.modules["langchain_core.messages"] = langchain_core_messages
-        sys.modules["langchain_core.tools"] = langchain_core_tools
-
-    def test_agent_runtime_preserves_history_per_session(self) -> None:
-        captured = {"create_count": 0, "invocations": []}
-        self._install_langchain_stubs(captured)
-        sys.modules.pop("agent", None)
-        agent = importlib.import_module("agent")
-        agent.collect_tools = lambda **_kwargs: []
-
-        runtime = agent.build_agent(model="model", tools=[])
-        runtime.run_turn([{"role": "user", "content": "first"}], session_id="s1")
-        runtime.run_turn([{"role": "user", "content": "second"}], session_id="s1")
-        runtime.run_turn([{"role": "user", "content": "other"}], session_id="s2")
-
-        self.assertEqual([message["content"] for message in captured["invocations"][1]], ["second"])
-        self.assertEqual([message["content"] for message in captured["invocations"][2]], ["other"])
-
-    def test_app_probe_context_only_uses_current_turn_not_session_history(self) -> None:
-        captured = {"create_count": 0, "invocations": []}
-        self._install_langchain_stubs(captured)
-        sys.modules.pop("agent", None)
-        agent = importlib.import_module("agent")
-        agent.collect_tools = lambda **_kwargs: []
-        agent.build_app_probe_messages = lambda: [{"role": "user", "content": "<environment_context>probe</environment_context>"}]
-
-        runtime = agent.build_agent(model="model", tools=[])
-        runtime.run_turn([{"role": "user", "content": "执行应用探测任务"}], session_id="s1")
-        runtime.run_turn([{"role": "user", "content": "普通消息"}], session_id="s1")
-
-        first_invocation = str(captured["invocations"][0])
-        second_new_tail = captured["invocations"][1][-1]["content"]
-        self.assertIn("<environment_context>probe</environment_context>", first_invocation)
-        self.assertEqual(second_new_tail, "普通消息")
-        self.assertTrue(captured["input_states"][0]["page_context_active"])
-        self.assertEqual(captured["input_states"][0]["page_context_path"], "")
-        self.assertEqual(captured["input_states"][0]["probe_status"], "running")
-        self.assertEqual(
-            captured["input_states"][0]["probe_target_leaf_paths"],
-            ("meituan/外卖/美食",),
-        )
-        self.assertNotIn("page_context_active", captured["input_states"][1])
-
-    def test_interrupted_state_marks_result_and_can_resume_same_session(self) -> None:
-        captured = {"create_count": 0, "invocations": [], "interrupt_next": True}
-        self._install_langchain_stubs(captured)
-        sys.modules.pop("agent", None)
-        agent = importlib.import_module("agent")
-        agent.collect_tools = lambda **_kwargs: []
-
-        runtime = agent.build_agent(model="model", tools=[])
-        interrupted = runtime.run_turn([{"role": "user", "content": "captcha"}], session_id="s1")
-        resumed = runtime.resume_turn(session_id="s1", user_input="验证码已完成")
-
-        self.assertTrue(interrupted.interrupted)
-        self.assertEqual(interrupted.interrupts, ["captcha user input required"])
-        self.assertFalse(resumed.interrupted)
-        self.assertEqual(resumed.output, "resumed output")
-        self.assertTrue(runtime.has_pending_interrupt("s1") is False)
-        self.assertEqual(captured["configs"][0]["configurable"]["thread_id"], "s1")
-        self.assertEqual(captured["configs"][1]["configurable"]["thread_id"], "s1")
-        self.assertEqual(
-            captured["commands"][0].resume,
-            {"decisions": [{"type": "respond", "message": "验证码已完成"}]},
-        )
+    coordinator.run.side_effect = run
+    coordinator.close.side_effect = lambda: calls.append(threading.get_ident())
+    worker = AgentWorker(coordinator)
+    worker.start()
+    assert worker.join().status == EngineStatus.STOPPED
+    assert len(set(calls)) == 1 and calls[0] != threading.get_ident()
+    with pytest.raises(RuntimeError):
+        worker.start()
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_worker_propagates_exception_after_cleanup():
+    coordinator = Mock()
+    coordinator.run.side_effect = ValueError("failed")
+    worker = AgentWorker(coordinator)
+    worker.start()
+    with pytest.raises(ValueError, match="failed"):
+        worker.join()
+    coordinator.close.assert_called_once()
+
+
+def test_probe_preparation_only_uses_current_messages(monkeypatch):
+    import src.conductor.engine as module
+
+    monkeypatch.setattr(
+        module, "build_app_probe_messages", lambda: [{"role": "user", "content": "environment"}]
+    )
+    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]))
+    assert (
+        engine._prepare_messages([{"role": "user", "content": "执行应用探测任务"}])[0]["content"]
+        == "environment"
+    )
+    assert engine._prepare_messages([{"role": "user", "content": "normal"}]) == [
+        {"role": "user", "content": "normal"}
+    ]
+    assert engine._input_state([{"role": "user", "content": "执行应用探测任务"}])['probe']['status'] == 'running'
+
+
+def test_conductor_preserves_human_and_liveness_payloads():
+    from src.agent_runtime.types.execution import InterruptKind
+
+    engine = ConductorEngine.__new__(ConductorEngine)
+    assert engine._resume_payload(InterruptKind.HUMAN, "done") == {
+        "decisions": [{"type": "respond", "message": "done"}]
+    }
+    assert engine._resume_payload(InterruptKind.LIVENESS, "continue") == {
+        "action": "continue",
+        "message": "continue",
+    }
+
+
+def test_initial_input_hook_is_lazy_and_not_repeated_after_completion():
+    class TaskEngine(ScriptedEngine):
+        def _create_initial_messages(self):
+            self.initial_calls += 1
+            return [{"role": "user", "content": self.assignment}]
+
+    model = Model(replies=[AIMessage(content="answer")])
+    engine = TaskEngine(model=model)
+    # Fields deliberately become available only after construction.
+    engine.initial_calls = 0
+    engine.assignment = "late task"
+    assert "initial_messages" not in inspect.signature(AgentEngine).parameters
+    assert "_initial" not in vars(engine)
+    assert "_input_middleware" not in vars(engine)
+    assert engine.run_turn().status == EngineStatus.COMPLETED
+    assert engine.initial_calls == 1
+    assert any(message.content == "late task" for message in model.seen[0])
+    engine.assignment = "must not be injected"
+    engine.test_channel.receive("one", "next request")
+    assert engine.run_turn().status == EngineStatus.COMPLETED
+    assert engine.initial_calls == 1
+    assert not any(message.content == "must not be injected" for message in model.seen[1])
+    engine.close()
+
+
+def test_default_initial_input_hook_uses_conversation():
+    class ConversationEngine(ScriptedEngine):
+        _create_initial_messages = AgentEngine._create_initial_messages
+
+    model = Model(replies=[AIMessage(content="answer")])
+    engine = ConversationEngine(model=model)
+    engine.test_channel.receive("one", "channel task")
+    assert engine.run_turn().status == EngineStatus.COMPLETED
+    assert any("channel task" in message.content for message in model.seen[0])
+    engine.close()

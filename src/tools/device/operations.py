@@ -6,8 +6,8 @@ from typing import Final
 
 from langchain_core.tools import StructuredTool
 
+from src.common.utils.json import JsonObject
 from src.device import DeviceError, DeviceOperationService
-from src.serialization.json import JsonObject
 from src.tools.device.effect import (
     OPERATION_EFFECT_POLICY_METADATA_KEY,
     SCROLL_PAGE_CHANGE_POLICY,

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def _raw_run():
-    return importlib.import_module("raw_run")
+    return importlib.import_module("src.application.raw_run")
 
 
 INDEX_HEADERS = [

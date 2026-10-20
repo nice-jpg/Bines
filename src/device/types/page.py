@@ -4,7 +4,7 @@ from typing import Literal, TypedDict
 
 from pydantic import TypeAdapter
 
-from src.serialization.validation import is_string_mapping
+from src.common.utils.validation import is_string_mapping
 
 
 class PageSnapshot(TypedDict):

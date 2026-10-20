@@ -1,12 +1,14 @@
 """Execution policy, independent of message reception and session selection."""
 
+from langchain.agents.middleware.types import AgentState
+
 from .engine import AgentEngine
 from .types.execution import EngineResult, EngineStatus, InterruptKind
 
 
-class AgentCoordinator:
-    def __init__(self, engine: AgentEngine) -> None:
-        self._engine: AgentEngine = engine
+class AgentCoordinator[StateT: AgentState = AgentState]:
+    def __init__(self, engine: AgentEngine[StateT]) -> None:
+        self._engine: AgentEngine[StateT] = engine
         self._closed: bool = False
 
     def run(self) -> EngineResult:

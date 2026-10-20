@@ -1,6 +1,6 @@
 # Tools 工具分类与引用关系
 
-核对日期：2026-10-16。本文梳理按功能拆分后的 `src/tools` 实现及统一装配入口。分析区分三个概念：**定义了什么工具、谁负责注册、最终哪个 Agent 能调用**。目录中存在工具工厂，并不等于所有 Agent 都能使用它。
+核对日期：2026-10-18。本文梳理按功能拆分后的 `src/tools` 实现及统一装配入口。分析区分三个概念：**定义了什么工具、谁负责注册、最终哪个 Agent 能调用**。目录中存在工具工厂，并不等于所有 Agent 都能使用它。
 
 ## 1. 目录职责
 
@@ -14,6 +14,7 @@
 | 图片内容适配 | `device/screenshots.py` | PNG 内容编码、截图错误转换；不独立注册工具 |
 | 人机交互 | `captcha/tools.py`、`reasoning/tools.py`、`communication/tools.py` | 验证码接管、think 与可选通信工具 |
 | 自动通知 | `notifications/service.py` | 生命周期通知服务，直接注入 middleware |
+| 页面到达确认 | `../strategy/tools.py` | confirm_page：绑定候选与观察引用，委托 PageVisitController 提交访问；由 ConductorEngine 注册 |
 | 页面经验维护 | `page_notes/tools.py` | 更新当前页面 PAGE.md 中的操作观察 |
 | 工作簿操作 | `workbooks/tools.py` | 包装 ExcelWorkbookService 的六项能力 |
 | 通用子代理 | `subagents/tools.py` | 包装 SubagentManager 的创建、调用、移除 |
@@ -178,7 +179,7 @@ collector 的页面、截图和 collector_* 手势具有训练/冻结语义，�
 
 ## 6. 实现依据
 
-[ConductorEngine](../src/conductor/engine.py)、[CollectorEngine](../src/collector/engine.py)、[SubagentEngine](../src/subagents/manager.py)、[AgentEngine](../src/agent_runtime/engine.py)、[工具构造边界](../src/tools/shared/factory.py)。
+[ConductorEngine](../src/conductor/engine.py)、[CollectorEngine](../src/collector/engine.py)、[SubagentEngine](../src/tools/subagents/manager.py)、[AgentEngine](../src/agent_runtime/engine.py)、[工具构造边界](../src/tools/shared/factory.py)。
 
 ## 7. 验证结果（2026-10-16）
 
@@ -202,4 +203,10 @@ collector 的页面、截图和 collector_* 手势具有训练/冻结语义，�
 
 ### 共享能力的归属修正
 
-工具的调用关系不等于所有权：子代理 Engine 和生命周期管理属于 `src/subagents/manager.py`，`tools/subagents` 只提供工具包装。页面级采集契约位于 `src/page/collection_contract.py`；页面指南和评分、collector 训练恢复、工作簿写入结果分别由 page、collector、workbooks 定义。采集执行模块只保留其完成与准入结果。通用 LangChain 消息与工具响应联合类型统一位于 `src/agent_messages`，不属于 channel 通信或某一工具。
+工具的调用关系不等于所有权：子代理 Engine 和生命周期管理属于 `src/tools/subagents/manager.py`，`tools/subagents` 同时保存管理器与工具包装。页面级采集契约位于 `src/page/collection_contract.py`；页面指南归 page，评分和训练恢复归 collector，工作簿写入结果归 workbooks。采集执行模块只保留其完成与准入结果。通用 LangChain 消息与工具响应联合类型统一位于 `src/agent_messages`，不属于 channel 通信或某一工具。
+
+## 页面策略准入
+
+工具保持固定注册，由 ConductorEngine 注入的页面策略强制校验适用性。general_operation 不接受 prepare_collector、is_done 或 collect_continuously；structured_office 在等待训练时禁止产品操作。导航成功只建立候选，page_view/screenshot 获取观察引用，confirm_page 才提交新访问。详见 [页面策略架构](page-strategy-design.md)。
+
+子代理的生命周期与执行器实现和工具工厂同属 tools/subagents（manager.py、tools.py），不再跨 src/subagents 引用。

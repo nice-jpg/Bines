@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from src.serialization.validation import is_string_mapping
+from src.common.utils.validation import is_string_mapping
 
 OPERATION_EFFECT_POLICY_METADATA_KEY: Final[str] = "bines_operation_effect_policy"
 

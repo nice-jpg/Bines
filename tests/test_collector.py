@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from page_strategy_helpers import new_visit
+
+from src.conductor.state import read_conductor_state, merge_fields
+from src.agent_runtime.types.execution import EngineResult, EngineStatus
+
 import base64
 import json
 from pathlib import Path
@@ -7,11 +12,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.collector import CollectorToolbox, CollectorHistory, CollectorManager
-from src.page_mechanism import PageMechanism, PagePolicy
-from src.tools.page_bridge import PageBridge
-from src.page_view import ReadOnlyPageView, MissingPageAlias
-from src.collection_contract import CollectionContract
+from src.collector.toolbox import CollectorToolbox
+from page_helpers import collector_history
+from src.collector.history import CollectorHistory
+from src.collector.core import CollectorTrainingCoordinator
+from page_helpers import page_mechanism
+from src.page.mechanism import PageMechanism
+from src.device.services.page.bridge import PageBridge
+from src.device.services.page.view import ReadOnlyPageView, MissingPageAlias
+from src.page.collection_contract import CollectionContract
 
 PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6WAAAAABJRU5ErkJggg==")
 GUIDE = '{"required_aliases":["1"]}\n\n# Product region\nFind the product text region by its role and position.'
@@ -29,9 +38,9 @@ class FakeHub:
         self.page_bridge = PageBridge(lambda: xml(self.text))
         self.device = SimpleNamespace(pull_file=self.pull)
 
-    def screenshot(self):
+    def capture_png(self):
         self.calls.append("screenshot")
-        return "/sdcard/screen.png"
+        return PNG
 
     def pull(self, remote, local):
         Path(local).write_bytes(PNG)
@@ -58,12 +67,14 @@ def setup(tmp_path, *, history=None, visit="a", run="probe-a"):
     for name, content in (("PAGE.md", "Merchant"), ("task.md", "Collect"), ("COLLECT.md", GUIDE), ("run.agent.py", SCRIPT)):
         if not (page / name).exists():
             (page / name).write_text(content)
-    mechanism = PageMechanism(tmp_path / "pages", page_policies={"meituan": PagePolicy(role="merchant", requires_collector=True, max_product_entry_taps=1)})
+    mechanism = page_mechanism(tmp_path / "pages")
+    manual = page / "PAGE.md"
+    manual.write_text(manual.read_text().replace("page_strategy: general", "page_strategy: merchant"))
     if mechanism.collection_contract("meituan") is None:
         mechanism.save_collection_contract("meituan", CollectionContract.from_dict({"primary_key": ["name"], "required_fields": ["name"]}))
     hub = FakeHub()
     toolbox = CollectorToolbox(mechanism=mechanism, event_hub=hub, page_path="meituan",
-        page_visit_id=visit, run_id=run, history=history or CollectorHistory(tmp_path / "history"),
+        page_visit_id=visit, run_id=run, history=history or collector_history(tmp_path / "history"),
         merchant_schema={"name": ""}, collection_schema={"items": [{"name": ""}]},
         requires_merchant_profile=True)
     toolbox._page_call("page_view", {})
@@ -123,20 +134,20 @@ def test_visual_workflow_locks_state_and_hides_output(tmp_path):
 def test_baseline_repair_preserves_evidence_and_requires_regression(tmp_path):
     t = setup(tmp_path)
     verify(t, "wrong")
-    case_id = t.active_id
-    screenshot = t.cases[case_id]["image"]
+    case_id = t.validation.active_id
+    screenshot = t.validation.cases[case_id]["image"]
     t.repair_baseline('{"items":[{"name":"cup"}]}', "The saved screenshot reads cup, not wrong.")
     assert not t.training_result()["ready"]
-    assert t.cases[case_id]["image"] == screenshot
-    assert t.cases[case_id]["baseline_revisions"][0]["baseline"]["items"][0]["name"] == "wrong"
+    assert t.validation.cases[case_id]["image"] == screenshot
+    assert t.validation.cases[case_id]["baseline_revisions"][0]["baseline"]["items"][0]["name"] == "wrong"
     reloaded = setup(tmp_path, history=t.history, visit="b")
     with pytest.raises(ValueError):
         reloaded.repair_baseline('{"items":[]}', "incorrect")
     reloaded.load_validation_case(case_id)
     reloaded.screenshot()
     reloaded.repair_baseline('{"items":[{"name":"bowl"}]}', "Reviewing the same image again reveals a transcription error.")
-    assert len(reloaded.cases[case_id]["baseline_revisions"]) == 2
-    assert len(reloaded.cases) == 1
+    assert len(reloaded.validation.cases[case_id]["baseline_revisions"]) == 2
+    assert len(reloaded.validation.cases) == 1
 
 
 def test_failed_reset_tap_can_be_retried(tmp_path):
@@ -213,8 +224,8 @@ def test_history_persists_all_visual_cases_and_reloads(tmp_path):
     assert stored["baseline"] is not None
     assert stored["snapshot"]["aliases"] == {"1": [0]}
     second = setup(tmp_path, visit="b")
-    assert len(second.historical_ids) == 2
-    key = next(iter(second.historical_ids))
+    assert len(second.validation.historical_ids) == 2
+    key = next(iter(second.validation.historical_ids))
     before = list(second.event_hub.calls)
     second.load_validation_case(key)
     second.screenshot()
@@ -232,9 +243,9 @@ def test_guide_change_requires_reannotation_of_history(tmp_path):
     t.collector_tap(1, 500)
     t.persist_history()
     second = setup(tmp_path, visit="b")
-    key = next(iter(second.historical_ids))
+    key = next(iter(second.validation.historical_ids))
     second.load_validation_case(key)
-    original = second.cases[key]["baseline"]
+    original = second.validation.cases[key]["baseline"]
     second._page_call("page_read", {})
     second.screenshot()
     second.write_collection_guide(GUIDE + "\nUse control state to distinguish nearby regions.")
@@ -243,7 +254,7 @@ def test_guide_change_requires_reannotation_of_history(tmp_path):
     mark(second)
     result = json.loads(second.sniff_run())
     assert result["eval_grades"]["cases"][key]["score"] == 100
-    assert second.cases[key]["baseline"] == original
+    assert second.validation.cases[key]["baseline"] == original
 
 
 def test_script_regression_against_history_blocks_readiness(tmp_path):
@@ -253,8 +264,8 @@ def test_script_regression_against_history_blocks_readiness(tmp_path):
     t.collector_tap(1, 500)
     t.persist_history()
     second = setup(tmp_path, visit="b")
-    key = next(iter(second.historical_ids))
-    expected = second.cases[key]["baseline"]["items"][0]["name"]
+    key = next(iter(second.validation.historical_ids))
+    expected = second.validation.cases[key]["baseline"]["items"][0]["name"]
     second.mechanism.write_run_agent_py("meituan", 'def run(view):\n    return {"items": []}\n')
     second.load_validation_case(key)
     report = json.loads(second.sniff_run())
@@ -314,15 +325,17 @@ def test_abandon_only_unscored_samples(tmp_path):
     t.capture_validation_case()
     t.screenshot()
     assert json.loads(t.abandon_validation("snapshot_mismatch"))["abandoned"]
-    assert not t.cases
+    assert not t.validation.cases
 
 
 def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkeypatch):
     t = setup(tmp_path)
     class FakeAgent:
-        def __init__(self, tools):
-            self.toolbox = next(tool for tool in tools if tool.name == "sniff_run").func.__wrapped__.__self__
-        def invoke(self, payload, config, *, context=None):
+        def __init__(self, *, toolbox, **kwargs):
+            self.toolbox = toolbox
+        def close(self):
+            pass
+        def run_turn(self):
             box = self.toolbox
             box._page_call("page_view", {})
             box.read_collection_guide()
@@ -331,15 +344,15 @@ def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkey
             train(box)
             box.return_to_live_page()
             box.collector_tap(1, 500)
-            return {"messages": [{"content": "Ready."}]}
-    monkeypatch.setattr("src.collector.core.create_runtime", lambda **kw: FakeAgent(kw["tools"]))
-    manager = CollectorManager(model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
-    manager.history = CollectorHistory(tmp_path / "history")
+            return EngineResult(EngineStatus.COMPLETED, "Ready.")
+    monkeypatch.setattr("src.collector.core.CollectorEngine", FakeAgent)
+    manager = CollectorTrainingCoordinator(gateway_id="test", model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
+    manager.history = collector_history(tmp_path / "history")
     result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
-        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state={"page_context_path":"meituan","page_visit_id":"visit","probe_run_id":"probe-a"})))
+        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({"page_context_path":"meituan","page_visit_id":"visit","probe_run_id":"probe-a", "page_visit": new_visit("merchant")}))))
     assert result["verification"]["ready"]
-    assert result["collector_message"] == "Ready."
-    assert result["trained"]
+    assert result["collector_message"] == "Ready.", result
+    assert result["trained"], result
     assert len(manager.history.load("meituan", run_id="probe-a")) == 2
 
 
@@ -372,12 +385,12 @@ def test_batch_sampling_never_runs_script_and_regression_never_moves_device(tmp_
     assert not calls
     assert len(t.history.load("meituan", run_id=t.run_id)) == 2
     before = t.event_hub.calls[:]
-    ids = set(t.cases)
+    ids = set(t.validation.cases)
     report = json.loads(t.sniff_run())
     assert report["eval_grades"]["ready"]
     assert len(calls) == 2
     assert t.event_hub.calls == before
-    assert t.active_id is None and set(t.cases) == ids
+    assert t.validation.active_id is None and set(t.validation.cases) == ids
 
 
 def test_failing_evidence_survives_restart_before_success(tmp_path):
@@ -387,7 +400,7 @@ def test_failing_evidence_survives_restart_before_success(tmp_path):
     t.screenshot()
     t.save_baseline('{"items":[{"name":"wrong"}]}')
     second = setup(tmp_path, visit="b")
-    assert len(second.historical_ids) == 1
+    assert len(second.validation.historical_ids) == 1
     assert json.loads(second.sniff_run())["eval_grades"]["score"] < 100
 
 
@@ -397,17 +410,17 @@ def test_new_run_excludes_old_failed_cases_but_keeps_archives(tmp_path):
     archived = {p: p.read_bytes() for p in (tmp_path / "history").rglob("record.json")}
     assert archived
     current = setup(tmp_path, run="new-run")
-    assert not current.cases
+    assert not current.validation.cases
     assert json.loads(current.list_validation_cases()) == []
     with pytest.raises(ValueError, match="Prepare visual cases"):
         current.sniff_run()
-    for case_id in old.cases:
+    for case_id in old.validation.cases:
         with pytest.raises(ValueError, match="Unknown case"):
             current.load_validation_case(case_id)
     result = train(current)
     assert result["eval_grades"]["ready"]
-    assert set(result["ground_truths"]) == set(current.cases)
-    assert not set(result["ground_truths"]) & old.cases.keys()
+    assert set(result["ground_truths"]) == set(current.validation.cases)
+    assert not set(result["ground_truths"]) & old.validation.cases.keys()
     assert {p: p.read_bytes() for p in archived} == archived
 
 
@@ -420,17 +433,17 @@ def test_same_run_recreated_collector_keeps_all_prepared_cases(tmp_path):
     resumed = setup(tmp_path, run="shared-run", visit="second-visit")
     report = json.loads(resumed.sniff_run())
     assert len(report["cases"]) == 2
-    assert set(report["ground_truths"]) == set(second.cases)
+    assert set(report["ground_truths"]) == set(second.validation.cases)
     assert report["eval_grades"]["score"] == 100
 
 
 def test_prepare_collector_requires_runtime_run_identity(tmp_path, monkeypatch):
     box = setup(tmp_path)
-    manager = CollectorManager(model="fake", mechanism=box.mechanism, event_hub=box.event_hub)
-    monkeypatch.setattr(manager, "_build_agent", lambda _: pytest.fail("must not launch collector"))
+    manager = CollectorTrainingCoordinator(gateway_id="test", model="fake", mechanism=box.mechanism, event_hub=box.event_hub)
+    monkeypatch.setattr("src.collector.core.CollectorEngine", lambda **_: pytest.fail("must not launch collector"))
     with pytest.raises(ValueError, match="probe_run_id"):
         manager.prepare_collector("meituan", "page", '{"name":""}', '{"items":[{"name":""}]}',
-            SimpleNamespace(state={"page_context_path": "meituan", "page_visit_id": "visit"}))
+            SimpleNamespace(state=read_conductor_state({"page_context_path": "meituan", "page_visit_id": "visit", "page_visit": new_visit("merchant")})))
 
 
 def test_contract_reuse_is_noop_and_repair_requires_evidence(tmp_path):
@@ -538,10 +551,11 @@ def test_move_records_the_same_normalized_ratio_as_the_page_hint(tmp_path, monke
 
 def test_manager_returns_and_registers_verified_swipe_threshold(tmp_path, monkeypatch):
     initial = setup(tmp_path)
-    manager = CollectorManager(model="fake", mechanism=initial.mechanism, event_hub=initial.event_hub)
-    manager.history = CollectorHistory(tmp_path / "manager-history")
+    manager = CollectorTrainingCoordinator(gateway_id="test", model="fake", mechanism=initial.mechanism, event_hub=initial.event_hub)
+    manager.history = collector_history(tmp_path / "manager-history")
 
-    def build(box):
+    def build(*, toolbox, **kwargs):
+        box = toolbox
         def invoke(*args, **kwargs):
             box._page_call("page_view", {})
             box.read_collection_guide()
@@ -558,14 +572,14 @@ def test_manager_returns_and_registers_verified_swipe_threshold(tmp_path, monkey
             box.return_to_live_page()
             box.collector_tap(500, 500)
             mark(box)
-            return {"messages": [{"content": "Ready."}]}
-        return SimpleNamespace(invoke=invoke)
+            return EngineResult(EngineStatus.COMPLETED, "Ready.")
+        return SimpleNamespace(run_turn=invoke, close=lambda: None)
 
-    monkeypatch.setattr(manager, "_build_agent", build)
+    monkeypatch.setattr("src.collector.core.CollectorEngine", build)
     result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
-        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state={
-            "page_context_path": "meituan", "page_visit_id": "visit", "probe_run_id": "probe"})))
-    assert result["trained"]
+        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({
+            "page_context_path": "meituan", "page_visit_id": "visit", "probe_run_id": "probe", "page_visit": new_visit("merchant")}))))
+    assert result["trained"], result
     profile = result["normal_swipe_profile"]
     record = manager.training_registry.record_for("visit")
     assert record.change_threshold == profile["change_threshold"]

@@ -2,13 +2,15 @@
 
 from threading import Thread
 
+from langchain.agents.middleware.types import AgentState
+
 from .coordinator import AgentCoordinator
 from .types.execution import EngineResult, EngineStatus
 
 
-class AgentWorker:
-    def __init__(self, coordinator: AgentCoordinator) -> None:
-        self._coordinator: AgentCoordinator = coordinator
+class AgentWorker[StateT: AgentState = AgentState]:
+    def __init__(self, coordinator: AgentCoordinator[StateT]) -> None:
+        self._coordinator: AgentCoordinator[StateT] = coordinator
         self._thread: Thread = Thread(target=self._run, name="agent-worker")
         self._result: EngineResult | None = None
         self._error: BaseException | None = None
