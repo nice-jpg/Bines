@@ -43,9 +43,9 @@ def test_only_successful_completion_registers_verified_merchant(tmp_path):
             assert "probe_completed_merchants" not in done.update
         _apply_state(state, done)
     path = state["general"]["visit"]["path"]
-    assert state["probe"]["completed_merchants"] == {path: ("商家A",)}
+    assert state["probe"]["completed_merchants"] == {path: ["商家A"]}
     # This is idempotent and uses the collector-confirmed profile, not a card index.
-    assert collection.is_done(runtime).update["probe"]["completed_merchants"] == {path: ("商家A",)}
+    assert collection.is_done(runtime).update["probe"]["completed_merchants"] == {path: ["商家A"]}
     state.update(merge_fields(state, reset_collection_state()))
     state["general"] = _state(path.rsplit("/", 1)[0])["general"]
     calls = []
@@ -60,7 +60,7 @@ def test_only_successful_completion_registers_verified_merchant(tmp_path):
 @pytest.mark.parametrize("asynchronous", [False, True])
 def test_revisit_is_allowed_after_reorder(tmp_path, asynchronous):
     path = "meituan/外卖/美食/商家"
-    state = _state("meituan/外卖/美食", **{"probe_completed_merchants": {path: ("Shop (East)",)}})
+    state = _state("meituan/外卖/美食", probe={"completed_merchants": {path: ["Shop (East)"]}})
     middleware = page_controller(mechanism=_mechanism(tmp_path))
     calls = []
     request = _request("navigate_to", state, x=456, y=789, next_path=path, merchant_name=" Shop  (East) \n")
@@ -82,11 +82,11 @@ def test_other_branch_unfinished_merchant_and_other_template_remain_eligible(tmp
     path = "meituan/外卖/美食/商家"
     middleware = page_controller(mechanism=_mechanism(tmp_path))
     for completed, name in (
-        ({path: ("Shop (East)",)}, "Shop (West)"),
+        ({path: ["Shop (East)"]}, "Shop (West)"),
         ({}, "Shop (East)"),
-        ({"meituan/美食/商家": ("Shop (East)",)}, "Shop (East)"),
+        ({"meituan/美食/商家": ["Shop (East)"]}, "Shop (East)"),
     ):
-        state = _state("meituan/外卖/美食", **{"probe_completed_merchants": completed})
+        state = _state("meituan/外卖/美食", probe={"completed_merchants": completed})
         result = middleware.wrap_tool_call(
             _request("navigate_to", state, x=10, y=20, next_path=path, merchant_name=name),
             lambda _: _message("navigate_to"),
@@ -113,7 +113,7 @@ def test_navigation_identity_is_optional(tmp_path):
 
 def test_new_probe_clears_completion_but_page_change_does_not():
     state = merge_fields(initial_fields(), initial_probe_state(("meituan/美食/商家",)))
-    state.setdefault("probe", {})["completed_merchants"] = {"meituan/美食/商家": ("Shop",)}
+    state.setdefault("probe", {})["completed_merchants"] = {"meituan/美食/商家": ["Shop"]}
     state.update(merge_fields(state, reset_collection_state()))
     assert state["probe"]["completed_merchants"]
     state.update(initial_probe_state(("meituan/美食/商家",)))

@@ -1,74 +1,23 @@
 {"required_aliases":["1"]}
-# Menu collection
+# Merchant menu localization
 
-This page is a Meituan food-delivery merchant detail page. From top to bottom it holds the
-merchant identity block (name, rating, delivery metadata, promotion strips), a same-page tab
-bar (点菜 / 评价 / 商家), and the ordering pane. The ordering pane is split horizontally: a
-narrow category rail on the left lists category names only, while the wide right-hand column
-is the vertical product list. Assign the required alias "1" to that right-hand product list
-container (the list whose children are the product cards), not to the category rail, the tab
-bar, the merchant header or the checkout bar.
+The page has a merchant identity and delivery header, a same-page ordering/reviews/merchant tab bar, and a menu below. The menu has a narrow left category rail and a wide right product list. Assign alias "1" to the right product-list container, not the rail, whole page, promotion carousel, or checkout bar. The appropriate-ordering reminder marks the start of the collection area; header recommendations and advertisements above it are excluded.
 
-## Structure of the annotated list
+The anchored list may include reminders, banners, category headings and repeated clickable product cards. Cards contain a left product image and a right text column with title, sales metadata and currency amounts, plus purchase controls. Banners and headings are not items. Notification/contact instructions are not food products even if styled like a card.
 
-The list container begins with the appropriate-ordering reminder (温馨提示: 请适量点餐) and
-may also contain promotional banners, in-flow category headings (推荐, 地锅区, 凉菜 ...), and
-the repeated product cards. All of these are children of the same list, so a card is
-recognised by its repeated internal layout rather than by position:
+## Fields and order
+- name: the full painted card title, including visible phrase spacing and punctuation. Join wrapped title lines within the card. Ignore stock overlays, image badges and promotional chips such as exclusive-offer labels. Never append sales text or borrow from another card.
+- current_price: selling digits and decimal form without currency symbol or promotional price labels. Preserve the visible 起 suffix.
+- original_price: the same card's crossed-out list amount without currency symbol; empty string if not shown. Split integer and decimal fragments may be exposed in paint order, so use their geometry and the card's own currency row.
+- monthly_sales: the count following 月售, preserving a visible + approximation suffix. No prefix.
+Return items in visible top-to-bottom order. Missing optional values are empty strings.
 
-- product image on the left of the card,
-- a title text node at the top of the card's text column,
-- a sales row beginning with 月售, followed by tag words (approximate volume, flavor,
-  ingredients) that are metadata, not identity,
-- one or more currency rows holding the selling amount and, when discounted, the
-  crossed-out list amount,
-- an add-to-cart control, and optional coupon/saving badges such as 已含券, 立省¥2.
+## Completeness and occlusion
+Title and selling amount must both be completely readable. Exclude cards whose title is clipped above the pane or covered by a pinned heading. A pinned heading can be a plain category label or an illustrated promotional strip; it can remain pinned even while introductory banners occupy the upper screen. Its sibling glyph/image box and padding define the occlusion band. Positive public bounds alone do not prove visibility.
 
-Category headings, banners, the reminder line and the rail labels are never items: they carry
-no title/price/add-control combination.
+Exclude a card if its selling-price glyph row is clipped by the bottom edge. If only an optional original-price row is clipped, retain the card with original_price empty. Cards clipped only after their complete title and selling price remain collectible. Do not relax completeness for boundary rows.
 
-In scrolled states the current category heading is also exposed as a sibling of the list that
-stays pinned over the pane's top edge. Its glyph box plus padding defines an occlusion band;
-a card whose title lies in that band is covered and must be treated as unreadable.
+## Lookalikes and maintenance
+The category rail is navigation, not products. In-flow category headings and promotions have no purchasable title/price combination. Savings badges (立省, 已含券), flavor and ingredient tags, purchase minimums, and advertised discounts are not product prices or names. Merchant name, rating and distance are separate merchant metadata, never menu items; use empty string for absent distance.
 
-## Requested fields
-
-- name: the complete product title of the card. Titles can wrap onto a second line; join the
-  fragments of the same card only. Never borrow words from the sales row, badges, banners or
-  neighbouring cards.
-- current_price: the selling amount of the card, digits only, no currency symbol, using the
-  decimal form actually shown (for example 20.8, 8.8, 1). Drop labels such as 到手价 / 神券价
-  and keep an attached 起 suffix only when it is painted as part of the amount.
-- original_price: the struck-through list amount of the same card, digits only. It is often
-  painted in the same text region as the selling amount (fragments may be exposed in paint
-  order rather than reading order), so reconstruct both amounts from that card's own currency
-  rows. Use an empty string when the card shows no list amount.
-- monthly_sales: the number after 月售 on the same card, digits only.
-- Preserve visible top-to-bottom item order. Use empty strings for fields that are not shown.
-
-## Readability and completeness
-
-Decide per card, from geometry inside the pane, never from neighbouring cards or from earlier
-states:
-
-- The product title and the selling amount must be readable inside the pane. A card scrolled
-  under the pinned heading or cut by the pane's upper edge has no readable title and is
-  excluded.
-- Currency rows of one role (selling amount, list amount) share a glyph-line height wherever
-  they are fully painted. A row cut by the pane's lower edge exposes a visibly shorter strip;
-  such an amount is not complete and must not be reported. When the selling row is cut, the
-  whole card is excluded; when only the list amount is cut, keep the card and leave
-  original_price empty.
-- Cards clipped after the title and selling amount (badges or the add control cut by the pane
-  edge) stay in the result.
-
-## Ambiguous lookalikes
-
-- Banners and promotional prose can advertise prices without being purchasable cards.
-- 到手价, 神券价, 一口价 are price labels; 立省¥N and 已含券 are saving badges, not amounts.
-- The monthly-sales row's tag words (约750毫升, 辣, 鸡蛋, 一件即送) are metadata.
-- Dataset categories from the left rail (推荐, 人气精选, 本店特色炒鸡, 炒菜, 烧菜, 干锅系列,
-  凉菜, 地锅区, 主食, 饮料, 汤类) are navigation, never products.
-
-Rewrite this guide only when the page layout or the requested schema changes - not for merchant
-names, product labels, node identifiers or coordinates.
+Rewrite this guide when schema or structural recognition changes, not when merchant, category or product labels change. Reannotate every saved case after a guide change. Safe swipes start inside the right product pane, away from category anchors, purchase controls and checkout. Use the same-page ordering tab's top-reset affordance to restore the page after validation.

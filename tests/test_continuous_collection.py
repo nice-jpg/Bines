@@ -68,7 +68,7 @@ def test_long_swipes_complete_with_one_message_and_shared_state(tmp_path):
     assert result.update['merchant']['evidence']['consecutive_empty_swipes'] == 3
     assert collection_completed(result.update)
     assert result.update['probe']['visit_summaries']["visit-a"]["collected_items"] == 1
-    assert result.update['probe']['completed_merchants'][runtime.state['general']['visit']['path']] == ("Merchant",)
+    assert result.update['probe']['completed_merchants'][runtime.state['general']['visit']['path']] == ["Merchant"]
     assert all(action == CollectionSwipe.LONG for action, _, _ in hub.calls)
     assert workbook.exists()
     runtime.state.update(result.update)

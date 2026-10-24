@@ -6,9 +6,9 @@ from src.conductor.state import ConductorFields
 
 def summarize_probe_progress(state: ConductorFields) -> JsonObject:
     visited: set[str] = {
-        fact["path"] for fact in state["probe"].get("visit_history", ()) if fact["event"] == "entered"
+        fact["path"] for fact in state["probe"].get("visit_history", []) if fact["event"] == "entered"
     }
-    targets: tuple[str, ...] = state["probe"].get("target_leaf_paths", ())
+    targets: list[str] = state["probe"].get("target_leaf_paths", [])
     return {
         "targets": list(targets),
         "visited": sorted(visited),

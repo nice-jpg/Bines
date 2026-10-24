@@ -30,7 +30,7 @@ def test_current_checkpoint_preserves_strategy_and_collection_evidence() -> None
     checkpoint["merchant"]["evidence"].update(
         initialized=True, latest_new_count=0, consecutive_empty_swipes=3, last_swipe="swipe_up"
     )
-    checkpoint["probe"] = {"run_id": "run", "target_leaf_paths": ("app/shop",)}
+    checkpoint["probe"] = {"run_id": "run", "target_leaf_paths": ["app/shop"]}
     restored = read_conductor_state(checkpoint)
     assert restored == checkpoint
     assert read_conductor_fields(restored) == {

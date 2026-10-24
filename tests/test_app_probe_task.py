@@ -110,7 +110,7 @@ def test_channel_probe_trigger_initializes_task_and_preserves_dialogue():
         state = execute.call_args.args[0]
         assert state["probe"]["run_id"]
         assert state["probe"]["package_name"] == "app"
-        assert state["probe"]["target_leaf_paths"] == ("app/home",)
+        assert state["probe"]["target_leaf_paths"] == ["app/home"]
         assert state["messages"][0]["content"] == "task config"
         message = state["messages"][-1]
         assert isinstance(message, HumanMessage)

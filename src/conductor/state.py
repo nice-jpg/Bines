@@ -41,9 +41,9 @@ class ProbeState(TypedDict, total=False):
     package_name: str
     current_merchant: str
     run_id: str
-    completed_merchants: dict[str, tuple[str, ...]]
-    target_leaf_paths: tuple[str, ...]
-    visit_history: tuple[VisitFact, ...]
+    completed_merchants: dict[str, list[str]]
+    target_leaf_paths: list[str]
+    visit_history: list[VisitFact]
     visit_summaries: dict[str, CollectionVisitSummary]
 
 
@@ -148,8 +148,8 @@ def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> ConductorUpdate:
             "current_merchant": "",
             "run_id": uuid4().hex,
             "completed_merchants": {},
-            "target_leaf_paths": tuple(dict.fromkeys(target_leaf_paths)),
-            "visit_history": (),
+            "target_leaf_paths": list(dict.fromkeys(target_leaf_paths)),
+            "visit_history": [],
             "visit_summaries": {},
         }
     }

@@ -39,6 +39,8 @@ before_model/after_model 按列表顺序执行；Strategy 将前序更新投影�
 路由器唯一读取固定字段 `state["active_strategy"]`，不接收选择回调、不读取页面路径或推导策略。所有启用策略的 graph schema 必须声明该字符串字段；缺失或未注册的值直接报错，不自动回退。
 Conductor 初始输入写入 general，新用户轮次沿用已有字段；精确的新探测任务重置为 general。PageVisit 在导航成功产生 pending、确认失败或关闭应用成功时，与页面状态一起原子写入 general；确认成功时原子写入目标 visit.strategy。Collector 初始输入显式写入 collector。
 `current_visit` 只供业务读取有效访问，不再是路由选择入口。状态读取只接受当前命名空间结构，不再迁移旧扁平 checkpoint 或旧生命周期字段。Engine 使用进程内 checkpoint；新任务和测试均直接构造当前 schema，不通过历史字段猜测路由。
+
+Probe 的 target_leaf_paths、visit_history 和 completed_merchants 中的商家序列统一使用 list，保证经过 checkpoint 的 msgpack 序列化后仍满足严格类型校验。任务规格可使用 tuple，但进入 graph state 时转换为 list；状态读取不负责隐式类型修复。
 Engine 采用独立运行契约，不作为父工具的 LangGraph 子图。`AgentEngine._execute` 在本 Engine 的 Runnable config 上下文中执行完整轮次（trace、invoke、异常后的 get_state 与结果验收）；首次执行、续跑和恢复共用该边界，始终使用本 Engine 持有的 saver 与根 namespace。父任务的 checkpoint/task/scratchpad 不继承，调用结束恢复父上下文；不补齐缺失业务字段或通过 `_state` 回灌历史。详见 [运行契约](../agent_runtime/README.md#独立-engine-运行契约)。
 同一工具调用不因返回的状态更新而重入另一个策略。Collector 使用独立 CollectorStrategy，未复用商家遍历流程。
 

@@ -157,8 +157,8 @@ class CollectionService:
             raw_name: JsonValue = record.merchant_profile.get("name") if record is not None else None
             name: str = merchant_identity(raw_name) if isinstance(raw_name, str) else ""
             if name:
-                completed: dict[str, tuple[str, ...]] = dict(state["probe"].get("completed_merchants") or {})
-                completed[current_path] = tuple(dict.fromkeys((*completed.get(current_path, ()), name)))
+                completed: dict[str, list[str]] = dict(state["probe"].get("completed_merchants") or {})
+                completed[current_path] = list(dict.fromkeys([*completed.get(current_path, []), name]))
                 update.setdefault("probe", {})["completed_merchants"] = completed
         return CompletionResult(payload, update)
 

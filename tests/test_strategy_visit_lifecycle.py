@@ -100,7 +100,7 @@ def test_pending_route_cleans_up_without_general_merchant_logic(asynchronous):
     router = make_router([])
     current = state("meituan/美食/商家")
     current["probe"].update(run_id="task", current_merchant="shop")
-    current["probe"]["completed_merchants"] = {"meituan/美食/商家": ("shop",)}
+    current["probe"]["completed_merchants"] = {"meituan/美食/商家": ["shop"]}
     current["active_strategy"] = "general"
     current["general"]["arrival"] = {
         "candidate_id": "new",
@@ -113,7 +113,7 @@ def test_pending_route_cleans_up_without_general_merchant_logic(asynchronous):
     assert current["merchant"] == initial_merchant_state()
     assert current["probe"]["current_merchant"] == ""
     assert current["probe"]["run_id"] == "task"
-    assert current["probe"]["completed_merchants"] == {"meituan/美食/商家": ("shop",)}
+    assert current["probe"]["completed_merchants"] == {"meituan/美食/商家": ["shop"]}
     assert route(router, current, asynchronous) is None
 
 

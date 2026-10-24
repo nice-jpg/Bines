@@ -211,7 +211,7 @@ def test_retraining_clears_current_evidence_but_retains_historical_completion(tm
     )
     current["merchant"].update(phase="completed")
     current.setdefault("probe", {})["current_merchant"] = "商家A"
-    current.setdefault("probe", {})["completed_merchants"] = {current["general"]["visit"]["path"]: ("商家A",)}
+    current.setdefault("probe", {})["completed_merchants"] = {current["general"]["visit"]["path"]: ["商家A"]}
 
     def train(r):
         _mark_trained(registry, mechanism=persistence.service.mechanism, page_visit_id="visit-current")
@@ -221,7 +221,7 @@ def test_retraining_clears_current_evidence_but_retains_historical_completion(tm
     assert result.update["merchant"]["phase"] == "ready"
     assert "visit-current" in result.update["probe"]["visit_summaries"]
     assert result.update["merchant"]["evidence"]["initialized"] is False
-    assert result.update["probe"]["completed_merchants"][current["general"]["visit"]["path"]] == ("商家A",)
+    assert result.update["probe"]["completed_merchants"][current["general"]["visit"]["path"]] == ["商家A"]
     apply(current, result)
     assert not persistence.service.completion(current).done
 
@@ -406,7 +406,7 @@ def test_inner_completion_revocation_is_not_overwritten_by_merchant_strategy(tmp
 
 def test_close_clears_visit_and_merchant_without_erasing_task_history(tmp_path):
     controller = page_controller(mechanism(tmp_path))
-    current = state("meituan/美食/商家", probe={"completed_merchants": {"meituan/美食/商家": ("Shop",)}})
+    current = state("meituan/美食/商家", probe={"completed_merchants": {"meituan/美食/商家": ["Shop"]}})
     current["probe"]["current_merchant"] = "Shop"
     result = controller.wrap_tool_call(
         request("close_package", current), lambda call: message("close_package")
@@ -416,7 +416,7 @@ def test_close_clears_visit_and_merchant_without_erasing_task_history(tmp_path):
     current.update(deactivate_merchant_visit(current))
     assert current["merchant"]["phase"] == "inactive"
     assert current["probe"]["current_merchant"] == ""
-    assert current["probe"]["completed_merchants"] == {"meituan/美食/商家": ("Shop",)}
+    assert current["probe"]["completed_merchants"] == {"meituan/美食/商家": ["Shop"]}
 
 
 def test_navigation_name_is_not_a_collection_identity_constraint(tmp_path):

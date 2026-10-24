@@ -125,7 +125,7 @@ def test_binding_and_history_do_not_change_during_navigation(tmp_path):
     confirm_candidate(page, current)
     current.update(history.before_model(current, None))
     assert [fact["event"] for fact in current["probe"]["visit_history"]] == ["entered", "exited", "entered"]
-    current["probe"]["target_leaf_paths"] = ("meituan", "meituan/外卖")
+    current["probe"]["target_leaf_paths"] = ["meituan", "meituan/外卖"]
     progress = summarize_probe_progress(current)
     assert progress["not_yet_visited"] == ["meituan/外卖"]
     assert "authorized" not in progress
@@ -178,12 +178,12 @@ def test_progress_and_manual_preserve_prior_message_prefix(tmp_path):
 
     context = PageInputMiddleware(mechanism=mechanism(tmp_path))
     current = state()
-    current["probe"].update(target_leaf_paths=("meituan",), run_id="task")
+    current["probe"].update(target_leaf_paths=["meituan"], run_id="task")
     first = context.before_model(current, None)
     current["messages"] = add_messages(current["messages"], first["messages"])
     saved = list(current["messages"])
     assert context.before_model(current, None) is None
-    current["probe"]["visit_history"] = ({"visit_id": "home", "path": "meituan", "event": "entered"},)
+    current["probe"]["visit_history"] = [{"visit_id": "home", "path": "meituan", "event": "entered"}]
     second = context.before_model(current, None)
     projected = add_messages(current["messages"], second["messages"])
     assert projected[: len(saved)] == saved
