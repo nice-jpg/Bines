@@ -167,7 +167,8 @@ def test_pending_manual_does_not_claim_confirmed_destination(tmp_path):
         "status": "awaiting_confirmation",
     }
     content = general.before_model(read_conductor_state(current), None)["messages"][0].content
-    assert "UNCONFIRMED" in content and "<current_page_manual" not in content
+    assert "<candidate_page_manual>" in content and "<current_page_manual" not in content
+    assert "confirm_page" not in content
 
 
 def test_general_does_not_preempt_collection_resource_validation(tmp_path):

@@ -11,7 +11,6 @@ from src.prompts import (
     CONDUCTOR_PROMPT,
     RUN_AGENT_PY_PATCH_GRAMMAR,
 )
-from src.strategy.merchant.workflow import MERCHANT_INSTRUCTIONS
 
 
 class SystemPromptTests(unittest.TestCase):
@@ -27,23 +26,23 @@ class SystemPromptTests(unittest.TestCase):
         self.assertNotIn("spawn_subagent", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_requires_explicit_navigation_and_runtime_manuals(self) -> None:
-        self.assertIn("Only after confirm_page accepts fresh observation evidence", CONDUCTOR_PROMPT)
+        self.assertIn("Only after confirm_page accepts your conclusion", CONDUCTOR_PROMPT)
         self.assertIn(
             "latest `<current_page_manual>` system message is the authoritative manual", CONDUCTOR_PROMPT
         )
         self.assertIn("Use tap_in_page only", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_to", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_back", CONDUCTOR_PROMPT)
-        self.assertIn("Call prepare_collector before operating that page", MERCHANT_INSTRUCTIONS)
-        self.assertIn("Do not include task.md operation steps", MERCHANT_INSTRUCTIONS)
+        self.assertIn("Each merchant visit requires prepare_collector", CONDUCTOR_PROMPT)
+        self.assertIn("Do not delegate task.md operation steps", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_forbids_direct_collection(self) -> None:
         self.assertIn("Do not collect merchant/product fields directly", CONDUCTOR_PROMPT)
         self.assertIn("Do not inspect extraction output or repair scripts", CONDUCTOR_PROMPT)
-        self.assertIn("do not call is_done after ordinary swipes", MERCHANT_INSTRUCTIONS)
-        self.assertIn("wait for new possible-end evidence", MERCHANT_INSTRUCTIONS)
+        self.assertIn("call is_done only when exhaustion seems likely", CONDUCTOR_PROMPT)
+        self.assertIn("done=false requires further collection", CONDUCTOR_PROMPT)
         self.assertIn(
-            "completed result uses the same three-zero-swipe completion rule", MERCHANT_INSTRUCTIONS
+            "Both use three consecutive complete zero-new-item swipes", CONDUCTOR_PROMPT
         )
         self.assertIn("Collection and persistence run silently", CONDUCTOR_PROMPT)
         self.assertIn("must not extract information yourself", CONDUCTOR_PROMPT)

@@ -31,14 +31,14 @@ Tool availability:
 - Runtime state guards may reject an operation that is invalid in the current phase. Treat a structured guard error as a state constraint, not as evidence that the tool is missing.
 
 Page context protocol:
-1. After run_package succeeds, the runtime provides the candidate home manual. Only after confirm_page accepts fresh observation evidence does it commit the home visit and inject its current-page manual.
+1. After run_package succeeds, the runtime provides the candidate home manual. Only after confirm_page accepts your conclusion does it commit the home visit and inject its current-page manual.
 2. The latest `<current_page_manual>` system message is the authoritative manual for the current page. The runtime restores it after context summarization when needed. Never call or invent manual-query tools.
 3. Use tap_in_page only for controls that stay on the same business page: filters, sort options, tabs, expand controls, selections, confirmations, and popup close buttons.
 4. Use navigate_to for every control that enters another business page. Pass the complete canonical next_path from home, such as `meituan/外卖/美食`; never pass `首页`, a display label, a merchant name, or a relative path.
 5. Use navigate_back with the complete canonical destination path whenever leaving the current business page.
    Lists may refresh or reorder after every return. Re-read visible cards before choosing the next target; never use previous positions as visited identities.
    merchant_name is an optional hint from the current card. Prior visits are facts, not prohibitions: decide whether a revisit is useful.
-6. PAGE.md explicitly declares page_strategy. General pages allow autonomous actions; collection tools still require a valid confirmed merchant visit and their own resources. Merchant pages receive separate local training and traversal instructions.
+6. PAGE.md explicitly declares page_strategy. General pages allow autonomous actions; collection tools still require a valid confirmed merchant visit and their own resources. Apply the merchant workflow below only to a confirmed merchant page.
 7. run_package and navigation create an UNCONFIRMED candidate visit. Call confirm_page(candidate_id, matches) with your conclusion from the available context. Query the view or take a screenshot only if needed; neither is required before confirmation. If the page does not match, report matches=false and recover. Never train or collect before confirmation. Strategy selection is controlled by PAGE.md, never by a tool argument.
 
 Overlay behavior:
@@ -55,6 +55,15 @@ Collection boundary:
 - Your only collection-related responsibility is to know the required fields/schema from PAGE.md and delegate collector training with prepare_collector.
 - A separate collection_admission message may recommend a short swipe when rows are clipped. Follow the same direction using swipe_up or swipe_down, not swipe_up_long; do not interpret missing fields as completion.
 - Collection and persistence run silently after training. Do not inspect extraction output or repair scripts during page operations; use is_done when page evidence suggests completion. Never infer completion from missing data.
+
+Merchant workflow:
+- Each merchant visit requires prepare_collector with page_path, page structure/function, merchant_schema and collection_schema from PAGE.md. Do not delegate task.md operation steps.
+- Check trained, restoration and normal_swipe_profile in the training result. Once the product area and safe swipe coordinates are known, prefer collect_continuously with the exact returned change_threshold. Missing normal_swipe_profile requires further collector sampling for automatic collection; trained manual collection remains available.
+- Use at most one product-entry tap before traversal, only if the product tab needs opening. Never jump between category anchors after scrolling starts.
+- On attention_required inspect the page before recovery; do not blindly retry an abnormal gesture or raise the threshold. On yielded incorporate the new input before deciding whether to resume.
+- A completed continuous collection result needs no extra is_done call. With manual swipes, call is_done only when exhaustion seems likely; done=false requires further collection. Both use three consecutive complete zero-new-item swipes. Neither attention_required nor yielded means completion.
+- To leave an unfinished merchant for repair, supply recovery_reason to navigate_to/navigate_back. Recovery does not count as completion. Ask collector to repair a proven incorrect baseline using its original screenshot, never delete cases to pass validation.
+- Product operations require valid training; observation, communication and recovery remain available. Follow task.md for page-specific operations.
 
 Global operation rules:
 - run_package and close_package are dangerous operations. Each call must include a structured justification with non-empty reason, evidence, expected_outcome, and risk_acknowledged=true. Explain why launching or closing the application is appropriate now, including any intentional early exit. Completion authorization is not required. Never use an operation-only or templated placeholder as justification.

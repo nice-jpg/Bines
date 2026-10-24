@@ -199,6 +199,53 @@ def test_page_manual_read_failure_does_not_block_general(tmp_path):
     assert "unavailable" in result["messages"][0].content
 
 
+def test_context_delivers_manual_without_repeating_arrival_feedback(tmp_path):
+    from langgraph.graph.message import add_messages
+
+    from src.strategy.general.context.middleware import PageInputMiddleware
+
+    page = mechanism(tmp_path)
+    controller = page_controller(page)
+    context = PageInputMiddleware(mechanism=page)
+    current = state()
+    navigation = controller.wrap_tool_call(
+        request("navigate_to", current, next_path="meituan/美食"),
+        lambda _: message("navigate_to"),
+    )
+    current.update(navigation.update)
+    pending = context.before_model(current, None)
+    assert len(pending["messages"]) == 1
+    assert "<candidate_page_manual>" in pending["messages"][0].content
+    assert "confirm_page" not in pending["messages"][0].content
+    current["messages"] = add_messages(current["messages"], pending["messages"])
+    assert context.before_model(current, None) is None
+
+    confirmation = controller.confirm_page(
+        current, current["general"]["arrival"]["candidate_id"], True, "confirm"
+    )
+    current.update({key: value for key, value in confirmation.update.items() if key != "messages"})
+    current["messages"] = add_messages(current["messages"], confirmation.update["messages"])
+    confirmed = context.before_model(current, None)
+    assert len(confirmed["messages"]) == 1
+    assert "<current_page_manual " in confirmed["messages"][0].content
+    assert not any(message.id and message.id.startswith("page_identity:") for message in confirmed["messages"])
+
+
+def test_merchant_model_hook_only_invalidates_state(tmp_path):
+    from src.strategy.merchant.workflow import MerchantWorkflowMiddleware
+    from test_collection_persistence_middleware import _middleware
+
+    persistence, _, _ = _middleware(tmp_path)
+    workflow = MerchantWorkflowMiddleware(persistence.service)
+    current = state("meituan/美食/商家")
+    assert workflow.before_model(current, None) is None
+    current["merchant"].update(phase="ready", training_version="obsolete")
+    update = workflow.before_model(current, None)
+    assert update["merchant"]["phase"] == "awaiting_training"
+    assert "messages" not in update
+    assert asyncio.run(workflow.abefore_model(current, None)) == update
+
+
 def test_collection_contract_is_not_navigation_requirement(tmp_path):
     page = mechanism(tmp_path)
     path = tmp_path / "meituan/美食/商家/PAGE.md"

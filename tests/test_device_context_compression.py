@@ -552,3 +552,36 @@ def test_async_middleware_matches_sync_projection() -> None:
     projected = asyncio.run(middleware.awrap_model_call(request, handler))
 
     assert projected.messages == compact_device_messages(messages)
+
+
+def test_documented_frame_with_system_messages() -> None:
+    """Keep the documented projection tied to the actual message algorithm."""
+    warning = SystemMessage(content="ARRIVAL", additional_kwargs={
+        "bines_context": {"kind": "operation_warning", "source_tool_call_id": "nav"}
+    })
+    candidate = SystemMessage(content="CANDIDATE")
+    advice = SystemMessage(content="ADMISSION", additional_kwargs={
+        "bines_context": {"kind": "collection_admission", "source_tool_call_id": "s1"}
+    })
+    progress = SystemMessage(content="PROGRESS")
+    messages = [
+        user("probe"), manual("app/list", "list-1", "LIST"),
+        *call_pair("p", "page_view"),
+        *call_pair("nav", "navigate_to", next_path="app/list/merchant"),
+        warning, candidate, *call_pair("confirm", "confirm_page"),
+        manual("app/list/merchant", "shop-1", "SHOP"), progress,
+        *call_pair("train", "prepare_collector"),
+        *call_pair("s1", "swipe_up"), advice,
+        *call_pair("s2", "swipe_up"),
+        *call_pair("s3", "swipe_up"),
+        *call_pair("s4", "swipe_up"),
+    ]
+    projected = compact_device_messages(messages)
+    assert len(messages) == 23
+    assert len(projected) == 13
+    assert placeholder_paths(projected) == ["app/list"]
+    assert tool_call_ids(projected) == ["train", "s2", "s3", "s4"]
+    assert warning not in projected and candidate not in projected
+    assert progress in projected and advice in projected
+    assert projected[6] == advice  # Advice survives removal of its source s1 pair.
+    assert messages[1]["content"] == "LIST"  # Projection leaves history intact.

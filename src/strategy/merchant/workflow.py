@@ -1,10 +1,8 @@
 """Strict collector-page workflow, isolated from general page operations."""
 
 from collections.abc import Awaitable, Callable
-from typing import Final
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
-from langchain_core.messages import SystemMessage
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
@@ -32,10 +30,6 @@ from src.strategy.merchant.state import (
 from src.strategy.tool_io import ToolInvocation, command_update, tool_succeeded, with_state_update
 from src.tools.collection.service import CollectionService
 
-MERCHANT_INSTRUCTIONS: Final[str] = (
-    "6. Merchant collection pages require collector training for every concrete page visit. Call prepare_collector before operating that page, with page_path, page structure/function, merchant_schema, and collection_schema from PAGE.md. Do not include task.md operation steps.\n7. After collector readiness, operate the page according to task.md.\n   Check trained, restoration and normal_swipe_profile. Once the product area is active and its safe swipe\n   coordinates are known, pass the exact returned change_threshold to collect_continuously. It performs serial\n   long swipes, short-swipes incomplete rows and returns when complete or attention is needed. It also yields\n   for incoming user input or shutdown. Do not issue per-step collection instructions while it is running.\n   A missing normal_swipe_profile requires collector sampling before automatic collection, but manual tools remain available.\n   On attention_required inspect the current page before recovery; never blindly repeat an abnormal gesture or raise the threshold.\n   On yielded incorporate the new user message. Only resume automatic collection if still appropriate.\n   Untrained product operations are blocked; page-similarity warnings remain advisory.\n   Inspect the current view before choosing a recovery action. No automatic collection occurs before training.\n   To leave an unfinished merchant for repair/re-entry, provide recovery_reason to navigate_back/navigate_to.\n   Recovery never counts as collection completion. Decide whether and when to revisit based on the task.\n   Ask collector to repair a proven bad baseline from the original screenshot rather than deleting cases or restarting blindly.\n\n- On merchant pages, use at most one tap_in_page before the first product-list swipe, and only when a product tab must be opened. Once scrolling starts, category-anchor taps are runtime-blocked; traverse products continuously with swipes.\n- Prefer collect_continuously after training. Its completed result uses the same three-zero-swipe completion rule as is_done and authorizes navigate_back without another is_done call. With manual tools, do not call is_done after ordinary swipes: check only on likely exhaustion. If done=false, continue and wait for new possible-end evidence. attention_required and yielded never authorize completion by themselves.\n\nUnlike the old advisory behavior, untrained product operations are blocked. Retrain when instructed; observation, communication and recovery remain available."
-)
-
 SWIPES: frozenset[str] = frozenset({"swipe_up", "swipe_up_long", "swipe_down", "collect_continuously"})
 
 
@@ -44,23 +38,13 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
         self.service: CollectionService = service
 
     def before_model(self, state: ConductorState, runtime: Runtime[None]) -> dict[str, object] | None:
-        update: dict[str, object] = {}
         visit: PageVisit | None = state["general"].get("visit")
         if visit is not None and is_merchant_visit(visit) and unconfirmed_arrival(state["general"]) is None:
             if state["merchant"].get("phase") != MERCHANT_AWAITING_TRAINING and self._training_error(
                 state, state["merchant"]
             ):
-                update.update(self._invalidate(state, state["merchant"]))
-                phase: str = MERCHANT_AWAITING_TRAINING
-            else:
-                phase = state["merchant"].get("phase", "inactive")
-            update["messages"] = [
-                SystemMessage(
-                    content=f"Merchant collection phase: {phase}.\n{MERCHANT_INSTRUCTIONS}",
-                    id=f"merchant-phase:{current_visit(state).get('visit_id', '')}",
-                ),
-            ]
-        return update or None
+                return dict(self._invalidate(state, state["merchant"]))
+        return None
 
     async def abefore_model(self, state: ConductorState, runtime: Runtime[None]) -> dict[str, object] | None:
         return self.before_model(state, runtime)

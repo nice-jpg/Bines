@@ -110,6 +110,7 @@ typed tool metadata + 已通过 schema 校验的 justification → 危险调用�
 只保留确认商家页内部的训练版本、滑动证据、入口点击额度及恢复导航约束。训练前禁止产品动作，观察、沟通和带理由的恢复仍可用。
 导航获准进入候选后，下一轮路由 General，不再继承来源商家的限制。恢复不建立全局回访义务。
 `get_probe_progress`、危险关闭等非商品动作不应承担训练前置条件；它们由相应独立模块判断。
+before_model 只在训练版本失效时更新状态，不发送阶段说明或操作指令。商家操作协议由 conductor 基础 prompt 和页面 task.md 提供，训练结果由 prepare_collector 的工具结果提供。
 
 ### CollectorAssignmentMiddleware
 校验 collector 的独立任务身份并关闭并行 tool calls；不处理 conductor 页面策略或全局生命周期。
@@ -127,6 +128,7 @@ typed tool metadata + 已通过 schema 校验的 justification → 危险调用�
 路由层的生命周期对齐先于所选策略的所有 before_model hooks；VisitHistory 随后记录已提交页面事实。
 PageInput 在 VisitHistory 之后运行；未确认时注入明确标识的候选 manual，不宣称目标已到达。旧页面指令只作为历史。
 manual 和事实消息只在变化时追加，基础 system prompt 不变。压缩仅投影 ModelRequest.messages，不修改完整 graph history，也不压缩 collector。
+页面确认反馈只由 PageVisit 发出：导航后的候选提示与 confirm_page 的工具结果。PageInput 仅提供候选/当前 manual，不重复发出确认要求，也不追加 page_identity 消息。完整消息来源、压缩规则和一帧输入/输出图见 [上下文投影说明](general/context/Compression.md)。
 通知、manual 读取或诊断失败不建立新业务卡口；框架 interrupt 和取消不被当作普通诊断吞掉。
 
 `summarize_probe_progress` 从目标、访问历史和既有采集摘要生成只读事实，同时供 PageInput 与 `get_probe_progress` 使用。访问过不等于采集完成；没有对应完成证据时使用 unknown。不会生成 authorized 或强制回访指令。
