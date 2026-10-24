@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.errors import GraphBubbleUp
+from pydantic import BaseModel
 
 from src.agent_messages.tool_results import ToolResult
 
@@ -20,6 +21,7 @@ class ToolErrorMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], ToolResult],
     ) -> ToolResult:
         try:
+            validate_tool_arguments(request)
             return handler(request)
         except Exception as error:
             if _is_langgraph_control_flow(error):
@@ -32,11 +34,21 @@ class ToolErrorMiddleware(AgentMiddleware):
         handler: Callable[[ToolCallRequest], Awaitable[ToolResult]],
     ) -> ToolResult:
         try:
+            validate_tool_arguments(request)
             return await handler(request)
         except Exception as error:
             if _is_langgraph_control_flow(error):
                 raise
             return make_tool_error_message(request, error)
+
+
+def validate_tool_arguments(request: ToolCallRequest) -> None:
+    """Validate model-provided arguments without requiring injected runtime fields."""
+    if request.tool is None:
+        return
+    schema: type[BaseModel] | dict = request.tool.tool_call_schema
+    if isinstance(schema, type) and issubclass(schema, BaseModel):
+        schema.model_validate(request.tool_call["args"])
 
 
 def make_tool_error_message(request: ToolCallRequest, error: Exception) -> ToolMessage:

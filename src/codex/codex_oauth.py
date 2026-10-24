@@ -1057,12 +1057,8 @@ def create_chat_model(
     *,
     model: str,
     reasoning_effort: str | None = "medium",
-    prompt_cache_key: str | None = None,
     stream_max_retries: int = 5,
 ) -> OpenAICodexModel:
-    # Preserve the legacy no-op: Pydantic previously ignored this undeclared field.
-    # Session identity remains the request cache key.
-    del prompt_cache_key
     return OpenAICodexModel(
         model=model,
         token_provider=CodexOAuthTokenProvider(),

@@ -52,6 +52,7 @@ def test_terminal_arrival_reenters_same_checkpoint_without_duplicate_user():
 
 def test_engines_sharing_gateway_do_not_copy_messages_or_history():
     child_model = Model(replies=[AIMessage(content="child first"), AIMessage(content="child done")])
+    child_states = []
 
     def delegate() -> str:
         """Run an isolated child."""
@@ -63,6 +64,7 @@ def test_engines_sharing_gateway_do_not_copy_messages_or_history():
         result = child.run_turn()
         while result.status == EngineStatus.CONTINUE_REQUIRED:
             result = child.continue_turn()
+        child_states.append(child._state)
         child.close()
         return result.output
 
@@ -77,6 +79,8 @@ def test_engines_sharing_gateway_do_not_copy_messages_or_history():
     result = AgentCoordinator(parent).run()
     assert result.output == "parent done"
     assert any("user: fix baseline" in m.content for m in child_model.seen[-1])
+    assert any(m.content == "child assignment" for m in child_model.seen[-1])
+    assert child_states[0]["active_strategy"] == "general"
     assert not any("fix baseline" in m.content for m in model.seen[-1])
     assert not any(m.content == "child assignment" for m in model.seen[-1])
 

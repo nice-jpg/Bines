@@ -85,10 +85,17 @@ class ScriptedEngine(ConductorEngine):
         return [*self._test_tools, create_talk_tool(self.send_message)]
 
     def _strategy_registrations(self):
-        return ()
-
-    def _create_middlewares(self):
-        return self._test_middlewares
+        from src.agent_runtime.strategy.base import Strategy
+        from src.agent_runtime.strategy.registration import StrategyRegistration
+        from src.strategy.general.state import GeneralState, initial_general_state
+        from src.strategy.merchant.state import MerchantState, initial_merchant_state
+        from src.conductor.state import ProbeState, read_conductor_fields
+        strategy = Strategy(constraints=self._test_middlewares, features=[])
+        return (
+            StrategyRegistration("general", strategy, GeneralState, initial_general_state),
+            StrategyRegistration("merchant", strategy, MerchantState, initial_merchant_state),
+            StrategyRegistration("probe", strategy, ProbeState, lambda: read_conductor_fields({})["probe"]),
+        )
 
     def _evaluate_result(self, state):
         if self._structured:

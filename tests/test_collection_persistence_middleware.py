@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from src.conductor.state import read_conductor_state, merge_fields
-from src.conductor.state import collection_completed
-from page_strategy_helpers import new_visit
-
 import asyncio
-import json
 import hashlib
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from page_strategy_helpers import page_fields
+
+from src.conductor.state import collection_completed, read_conductor_state
 from src.tools.collection.service import CollectionService
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -22,12 +21,10 @@ from workbook_helpers import collection_sink, workbook_service
 from workbook_helpers import read_xlsx as _read_xlsx
 
 from src.collector.training import CollectorTrainingRegistry
-
 from src.device.services.page.bridge import PageBridge
-from src.strategy.merchant.persistence import CollectionPersistenceMiddleware
 from src.page.collection_contract import CollectionContract
 from src.page.mechanism import PageMechanism
-
+from src.strategy.merchant.persistence import CollectionPersistenceMiddleware
 
 
 def _request(
@@ -41,9 +38,7 @@ def _request(
         tool_call={"name": tool_name, "id": f"{tool_name}-1", "args": {}},
         tool=None,
         state=read_conductor_state({
-            'page_context_path': page_path,
-            'page_visit_id': page_visit_id,
-            'page_visit': new_visit('merchant' if page_path.endswith('/商家') else 'general'),
+            **page_fields(page_path, page_visit_id, 'merchant' if page_path.endswith('/商家') else 'general'),
         }),
     )
 
@@ -149,7 +144,7 @@ def test_wrap_tool_call_does_not_collect_before_training(tmp_path: Path, monkeyp
 
 
 def test_advisory_scroll_results_still_accumulate_completion_evidence(tmp_path):
-    from src.middleware.tool_io import ToolInvocation, with_warning
+    from src.strategy.tool_io import ToolInvocation, with_warning
     middleware, registry, _ = _middleware(tmp_path)
     _mark_trained(registry, mechanism=middleware.service.mechanism)
     request = _request("swipe_up")

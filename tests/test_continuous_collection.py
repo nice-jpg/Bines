@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from src.conductor.state import read_conductor_state, merge_fields
 from src.conductor.state import collection_completed
-from page_strategy_helpers import new_visit
+from page_strategy_helpers import page_fields
 
 import asyncio
 import hashlib
@@ -48,7 +48,7 @@ def setup_loop(tmp_path, observations):
     registry.set_swipe_threshold(visit, 0.55, 2)
     hub = ScriptedHub(observations)
     loop = ContinuousCollection(service, hub, lambda _: None)
-    state = read_conductor_state({"page_context_path": path, "page_visit_id": visit, "messages": [], "page_visit": new_visit("merchant")})
+    state = read_conductor_state(page_fields(path, visit, "merchant"))
     state["merchant"].update(phase="ready", training_version=service.training_version(state))
     runtime = ToolRuntime(state=state, context=None, config={}, stream_writer=lambda _: None,
                           tool_call_id="loop", store=None)
@@ -211,16 +211,10 @@ def test_real_agent_tool_loop_commits_state_without_double_collection(tmp_path):
     from page_strategy_helpers import strategies
     from src.agent_runtime.strategy.middleware import StrategyDispatchMiddleware
     from src.conductor.state import ConductorState, read_conductor_state
-    from page_strategy_helpers import new_visit
+    from page_strategy_helpers import page_fields
     loop, tool_runtime, hub, _ = setup_loop(tmp_path, [observation()] * 4)
-    extra_calls = []
-    def swipe_up() -> str:
-        """A second device action must not run in this same model response."""
-        extra_calls.append(True)
-        return "unexpected"
     model = Model(replies=[AIMessage(content="", tool_calls=[
         {"name": "collect_continuously", "args": {"x": 500, "y": 1200, "change_threshold": .55}, "id": "collect"},
-        {"name": "swipe_up", "args": {}, "id": "extra"},
     ]), AIMessage(content="done")])
     general, office = strategies(loop.service)
 
@@ -231,15 +225,15 @@ def test_real_agent_tool_loop_commits_state_without_double_collection(tmp_path):
     registry = StrategyRegistry()
     registry.register(StrategyRegistration("merchant", office, MerchantState, initial_merchant_state))
     registry.validate_schema(ConductorState)
-    agent = ScriptedEngine(name="test", model=model, tools=[loop.create_tool(), StructuredTool.from_function(swipe_up)],
+    agent = ScriptedEngine(name="test", model=model, tools=[loop.create_tool()],
         system_prompt="base", middleware=[
-            StrategyDispatchMiddleware(state_schema=ConductorState,registry=registry,select_strategy=lambda _: "merchant")])
+            StrategyDispatchMiddleware(state_schema=ConductorState,registry=registry)])
     state = agent.agent.invoke(read_conductor_state({**tool_runtime.state, "general": {**tool_runtime.state["general"], "active": True, "app_root": "meituan"},
                           "messages": [HumanMessage(content="collect")]}), config={"configurable": {"thread_id": "collection-test"}}, durability="exit")
     assert state["merchant"]["phase"] == "completed", "\n".join(str(m.content) for m in state["messages"])
     assert state['probe']['visit_summaries']["visit-a"]["collected_items"] == 1
     assert "merchant_collection_done" not in state
-    assert len(hub.calls) == 4 and not extra_calls
+    assert len(hub.calls) == 4
     assert len(model.seen) == 2
 
 

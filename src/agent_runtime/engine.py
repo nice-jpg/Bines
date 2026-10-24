@@ -1,14 +1,15 @@
 """One compiled agent and execution policy, with an owned conversation session."""
 
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-import logging
 from uuid import uuid4
 
 from langchain.agents.middleware.types import AgentState
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import set_config_context
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphBubbleUp, GraphRecursionError
@@ -34,8 +35,8 @@ from .types.execution import (
     EngineLifecycle,
     EngineResult,
     EngineStatus,
-    ExecutionState,
     ExecutionSource,
+    ExecutionState,
     InterruptKind,
     YieldReason,
 )
@@ -65,6 +66,7 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
         self._execution: ExecutionState = ExecutionState()
         self._state: dict[str, object] = {}
         self._checkpoint_id: str = session_id or f"agent:{uuid4().hex}"
+        self._checkpointer: InMemorySaver = InMemorySaver()
         self.agent, self._trace = self._build_graph(model)
 
     def _build_graph(self, model: str | BaseChatModel) -> tuple[RuntimeGraph, NTrace]:
@@ -86,21 +88,15 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
             registry.validate_schema(schema)
             strategy_layers.append(
                 StrategyDispatchMiddleware(
-                    state_schema=schema, registry=registry, select_strategy=self._select_strategy
+                    state_schema=schema, registry=registry
                 )
             )
-        business_layers: list[RuntimeMiddleware] = list(self._create_middlewares())
-        if strategy_layers:
-            position: int = self._strategy_middleware_position()
-            if not 0 <= position <= len(business_layers):
-                raise ValueError("Strategy middleware position is outside the business chain")
-            business_layers[position:position] = strategy_layers
         layers: list[RuntimeMiddleware] = [
             createNTraceHostMiddleware(trace),
             create_model_retry_middleware(),
             ConversationInputMiddleware(self._conversation),
-            *business_layers,
             ToolErrorMiddleware(),
+            *strategy_layers,
             createNTraceToolMiddleware(trace),
             createNTraceLLMMiddleware(trace),
         ]
@@ -110,7 +106,7 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
             tools=tools,
             system_prompt=prompt,
             middleware=layers,
-            checkpointer=InMemorySaver(),
+            checkpointer=self._checkpointer,
         )
         return graph, trace
 
@@ -138,21 +134,11 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
     def _system_prompt(self) -> str:
         raise NotImplementedError
 
-    def _create_middlewares(self) -> Sequence[RuntimeMiddleware]:
-        return ()
-
-    def _strategy_middleware_position(self) -> int:
-        """Insert dispatch before business middleware unless a subclass specifies nesting."""
-        return 0
-
     def _strategy_registrations(self) -> Sequence[StrategyRegistration[StateT]]:
         return ()
 
     def _strategy_state_schema(self) -> type:
         return AgentState
-
-    def _select_strategy(self, state: StateT) -> str:
-        raise NotImplementedError("Engines with registered strategies must select a strategy")
 
     def _create_initial_messages(self) -> Sequence[InputMessage]:
         """Build an internal startup assignment; empty means wait for user input.
@@ -238,10 +224,23 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
         return EngineResult(EngineStatus.STOPPED, "Runtime is shutting down.")
 
     def _execute(self, input: GraphInput | Command[str] | None, *, source: ExecutionSource) -> EngineResult:
+        """Enter this engine's independent graph execution and recovery context.
+
+        A nested Python call is not a LangGraph subgraph. Only this engine's
+        explicit configuration crosses the boundary; parent task identity,
+        checkpoint storage, callbacks and resume bookkeeping do not.
+        """
         config: RunnableConfig = {
             "recursion_limit": self._max_iterations,
             "configurable": {**self._conversation.route, "thread_id": self._checkpoint_id},
         }
+        with set_config_context(config) as context:
+            return context.run(self._execute_turn, input, source=source, config=config)
+
+    def _execute_turn(
+        self, input: GraphInput | Command[str] | None, *, source: ExecutionSource, config: RunnableConfig
+    ) -> EngineResult:
+        """Run and recover within the execution context established by _execute."""
         continuing: bool = source in {ExecutionSource.CONTINUATION, ExecutionSource.RESUME}
         binding: TraceBinding | None = self._trace.current_binding
         missing_binding: bool = continuing and (binding is None or binding.session_id != self._checkpoint_id)

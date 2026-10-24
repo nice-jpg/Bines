@@ -1,24 +1,20 @@
 from __future__ import annotations
 
-from page_strategy_helpers import new_visit
-
-from page_strategy_helpers import page_controller
-
-from src.conductor.state import read_conductor_state, merge_fields
-
 import asyncio
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+from page_strategy_helpers import page_fields, page_controller
+
+from src.conductor.state import read_conductor_state
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 
-from src.middleware.execution.operation_notice import OperationNoticeMiddleware
-from src.strategy.general.visits import PageVisitController
-
+from src.strategy.general.operation_notice import OperationNoticeMiddleware
 from src.tools.notifications.policy import (
     EXTERNAL_OPERATION_POLICY_METADATA_KEY,
     ExternalOperationPolicy,
@@ -60,7 +56,12 @@ def _request(tool: StructuredTool, *, state: dict | None = None, args: dict | No
     return SimpleNamespace(
         tool=tool,
         tool_call={"name": tool.name, "id": "call-1", "args": args or {}},
-        state=state or read_conductor_state({'page_context_path': "meituan", "page_visit": new_visit("merchant" if "meituan".endswith("/商家") else "general"), "page_visit_id": "test-visit"}),
+        state=state
+        or read_conductor_state(
+            {
+                **page_fields("meituan", "test-visit", "general"),
+            }
+        ),
         runtime=SimpleNamespace(config={"configurable": {"thread_id": "thread-1"}}),
     )
 
@@ -117,9 +118,10 @@ def test_dangerous_justification_supplies_notice_reason() -> None:
     assert service.calls[0]["reason"] == "Start the configured probe."
 
 
-def test_page_guard_rejection_does_not_emit_notice() -> None:
+def test_unknown_page_allows_observation_and_notice() -> None:
     notice_middleware, service = _middleware()
     from src.page.mechanism import PageMechanism
+
     page_middleware = page_controller(PageMechanism())
     tool = _tool(
         "page_view",
@@ -130,7 +132,7 @@ def test_page_guard_rejection_does_not_emit_notice() -> None:
         state=read_conductor_state({"general": {"active": True, "visit": None}}),
     )
 
-    result = page_middleware.execute_operation(
+    result = page_middleware.wrap_tool_call(
         request,
         lambda inner_request: notice_middleware.wrap_tool_call(
             inner_request,
@@ -138,8 +140,8 @@ def test_page_guard_rejection_does_not_emit_notice() -> None:
         ),
     )
 
-    assert result.status == "error"
-    assert service.calls == []
+    assert result.status == "success"
+    assert len(service.calls) == 1
 
 
 def test_async_external_operation_uses_same_notice_path() -> None:
@@ -156,3 +158,17 @@ def test_async_external_operation_uses_same_notice_path() -> None:
 
     assert result.content == "ok"
     assert service.calls[0]["operation"] == "swipe_up"
+
+
+def test_notice_failure_does_not_prevent_device_action():
+    middleware, service = _middleware()
+
+    def fail(**kwargs):
+        raise RuntimeError("offline notification channel")
+
+    service.notify_user = fail
+    tool = _tool("run_package", {EXTERNAL_OPERATION_POLICY_METADATA_KEY: ExternalOperationPolicy("start")})
+    result = middleware.wrap_tool_call(
+        _request(tool), lambda _: ToolMessage(content="executed", tool_call_id="call-1")
+    )
+    assert result.content == "executed"

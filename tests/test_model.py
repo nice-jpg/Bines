@@ -50,7 +50,6 @@ def test_build_codex_model(monkeypatch, configuration_service):
             "MODEL_PROVIDER": "codex",
             "CODEX_MODEL": "gpt-configured",
             "CODEX_REASONING_EFFORT": "high",
-            "CODEX_PROMPT_CACHE_KEY": "cache-key",
             "CODEX_STREAM_MAX_RETRIES": "7",
         }
     )
@@ -58,7 +57,7 @@ def test_build_codex_model(monkeypatch, configuration_service):
     monkeypatch.setattr(model, "create_chat_model", constructor)
     assert model.build_model() is constructor.return_value
     constructor.assert_called_once_with(
-        model="gpt-configured", reasoning_effort="high", prompt_cache_key="cache-key", stream_max_retries=7
+        model="gpt-configured", reasoning_effort="high", stream_max_retries=7
     )
 
 

@@ -49,5 +49,5 @@ provides the shared single-step extraction, admission, persistence and completio
 logic used by that tool and `CollectionPersistenceMiddleware`. Both belong to
 `src/tools/collection`; the service does not depend on middleware or the Engine.
 `ConductorEngine` constructs and shares one service instance during tool assembly.
-The middleware remains in `src/middleware`, where it adapts device-tool results.
+The middleware remains in `src/strategy/merchant/persistence.py`, where it adapts device-tool results.
 Shared collection contracts and record types retain their existing ownership.

@@ -27,7 +27,7 @@ class StrategyRegistry[StateT: AgentState]:
         if (
             not name.isidentifier()
             or name in get_type_hints(AgentState)
-            or name in {"jump_to", "__interrupt__"}
+            or name in {"jump_to", "__interrupt__", "active_strategy"}
         ):
             raise ValueError(f"Invalid or reserved strategy name: {name}")
         if name in self._registrations:
@@ -40,6 +40,8 @@ class StrategyRegistry[StateT: AgentState]:
         if self._frozen:
             raise RuntimeError("Strategy registry is frozen")
         hints: dict[str, object] = get_type_hints(state_schema, include_extras=True)
+        if hints.get("active_strategy") is not str:
+            raise TypeError("Root state must declare active_strategy: str")
         for name, registration in self._registrations.items():
             field: object = hints.get(name)
             if get_origin(field) is Annotated:
@@ -79,3 +81,8 @@ class StrategyRegistry[StateT: AgentState]:
             return self._registrations[name].strategy
         except KeyError as error:
             raise ValueError(f"Unregistered strategy: {name}") from error
+
+    def inactive_strategies(self, selected: str) -> tuple[Strategy[StateT], ...]:
+        return tuple(
+            registration.strategy for name, registration in self._registrations.items() if name != selected
+        )

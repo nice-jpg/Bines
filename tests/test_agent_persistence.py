@@ -76,7 +76,7 @@ def test_response_parser_rejects_invalid_completion(payload):
     assert AgentResponse.parse(payload) is None
 
 
-def test_business_completion_gate_is_checked():
+def test_structured_completion_is_not_vetoed_by_business_gate():
     class GatedEngine(ScriptedEngine):
         def _completion_allowed(self, state):
             return len(self.model_for_test.seen) > 1
@@ -85,4 +85,4 @@ def test_business_completion_gate_is_checked():
     engine = GatedEngine(model=model, structured=True, initial_messages=[HumanMessage(content="go")])
     engine.model_for_test = model
     assert AgentCoordinator(engine).run().status == EngineStatus.COMPLETED
-    assert len(model.seen) == 2
+    assert len(model.seen) == 1

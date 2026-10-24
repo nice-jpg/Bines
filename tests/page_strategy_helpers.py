@@ -1,26 +1,30 @@
 """Explicit page fixtures and tool requests for the strategy workflow."""
-from src.conductor.state import read_conductor_state, merge_fields
 
-
-from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 from langchain_core.messages import ToolMessage
-
-from src.strategy.general.visits import PageVisitController
-from src.page.collection_contract import CollectionContract
 from page_helpers import page_mechanism
 
+from src.conductor.state import ConductorFields, initial_fields, read_conductor_state
+from src.page.collection_contract import CollectionContract
+from src.strategy.general.page_visit import PageVisitMiddleware
+from src.strategy.general.state import PageVisit
+from src.strategy.merchant.state import begin_merchant_visit
 
-def new_visit(kind):
-    # Legacy checkpoint fixture; production readers translate it once.
-    return {"kind": kind, **({"phase": "awaiting_training", "training_version": "", "entry_taps": 0} if kind == "merchant" else {})}
+
+def page_fields(path: str, visit_id: str, strategy: str) -> ConductorFields:
+    fields: ConductorFields = initial_fields()
+    visit: PageVisit = {"path": path, "visit_id": visit_id, "strategy": strategy}
+    fields["active_strategy"] = strategy
+    fields["general"].update(active=True, app_root=path.split("/")[0], visit=visit)
+    if strategy == "merchant":
+        fields["merchant"] = begin_merchant_visit(visit)
+    return fields
 
 
 def page_controller(mechanism):
-    from src.strategy.merchant.strategy import MerchantStrategy
-    return PageVisitController(mechanism, strategy_names=frozenset({"general", "merchant"}), begin_merchant=MerchantStrategy.begin_visit, end_merchant=MerchantStrategy.end_visit)
+    return PageVisitMiddleware(mechanism, frozenset({"general", "merchant"}))
 
 
 def mechanism(root):
@@ -34,11 +38,7 @@ def mechanism(root):
     ):
         directory = root / path
         directory.mkdir(parents=True, exist_ok=True)
-        kind = (
-            "merchant"
-            if path in {"meituan/外卖/美食/商家", "meituan/美食/商家"}
-            else "general"
-        )
+        kind = "merchant" if path in {"meituan/外卖/美食/商家", "meituan/美食/商家"} else "general"
         (directory / "PAGE.md").write_text(f"---\npage_strategy: {kind}\n---\n\nPage {path}")
         (directory / "task.md").write_text("Page task")
     result = page_mechanism(root)
@@ -50,20 +50,14 @@ def mechanism(root):
 
 
 def state(path="meituan/外卖/美食", **extra):
-    kind = (
-        "merchant"
-        if path in {"meituan/外卖/美食/商家", "meituan/美食/商家"}
-        else "general"
+    kind = "merchant" if path in {"meituan/外卖/美食/商家", "meituan/美食/商家"} else "general"
+    return read_conductor_state(
+        {
+            **page_fields(path, "visit-current", kind),
+            "messages": [],
+            **extra,
+        }
     )
-    return read_conductor_state({
-        "page_context_active": True,
-        "page_context_path": path,
-        "page_context_app_root": "meituan",
-        "page_visit_id": "visit-current",
-        "page_visit": new_visit(kind),
-        "messages": [],
-        **extra,
-    })
 
 
 def request(name, current, **args):
@@ -87,19 +81,29 @@ def apply(current, result):
 
 
 def strategies(service):
-    from src.strategy.general.strategy import GeneralStrategy
-    from src.strategy.merchant.strategy import MerchantStrategy
+    from src.device import DeviceOperationService
+    from src.strategy.general.captcha import CaptchaHumanInTheLoopMiddleware
     from src.strategy.general.context.middleware import PageInputMiddleware
     from src.strategy.general.reliability import DeviceOperationReliabilityMiddleware
-    from src.strategy.general.captcha import CaptchaHumanInTheLoopMiddleware
+    from src.strategy.general.strategy import GeneralStrategy
     from src.strategy.merchant.persistence import CollectionPersistenceMiddleware
-    from src.device import DeviceOperationService
+    from src.strategy.merchant.strategy import MerchantStrategy
 
     controller = page_controller(service.mechanism)
-    general = GeneralStrategy(
-        controller,
-        PageInputMiddleware(mechanism=service.mechanism),
-        DeviceOperationReliabilityMiddleware(event_hub=DeviceOperationService()),
-        CaptchaHumanInTheLoopMiddleware(),
+    from src.device.services.execution import DeviceOperationExecutor
+    from src.strategy.general.visit_history import VisitHistoryMiddleware
+    from src.strategy.merchant.workflow import MerchantWorkflowMiddleware
+
+    page = controller
+    context = PageInputMiddleware(mechanism=service.mechanism)
+    reliability = DeviceOperationReliabilityMiddleware(event_hub=DeviceOperationService())
+    executor = DeviceOperationExecutor()
+    captcha = CaptchaHumanInTheLoopMiddleware(authentication_tool=None, executor=executor)
+    history = VisitHistoryMiddleware()
+    return (
+        GeneralStrategy(constraints=[captcha, page], features=[history, context, reliability]),
+        MerchantStrategy(
+            constraints=[captcha, MerchantWorkflowMiddleware(service), page],
+            features=[history, context, CollectionPersistenceMiddleware(service), reliability],
+        ),
     )
-    return general, MerchantStrategy(general, CollectionPersistenceMiddleware(service))

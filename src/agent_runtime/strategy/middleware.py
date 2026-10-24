@@ -4,10 +4,10 @@ from collections.abc import Awaitable, Callable
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
-    AgentState,
     ModelRequest,
     ModelResponse,
     ToolCallRequest,
+    hook_config,
 )
 from langgraph.runtime import Runtime
 from pydantic import TypeAdapter
@@ -16,42 +16,64 @@ from src.agent_messages.tool_results import ToolResult
 
 from .base import Strategy
 from .registry import StrategyRegistry
+from .state import StrategyState
 
 
-class StrategyDispatchMiddleware[StateT: AgentState](AgentMiddleware[StateT, None]):
+class StrategyDispatchMiddleware[StateT: StrategyState](AgentMiddleware[StateT, None]):
     def __init__(
         self,
         *,
         state_schema: type[StateT],
         registry: StrategyRegistry[StateT],
-        select_strategy: Callable[[StateT], str],
     ) -> None:
         self.state_schema: type[StateT] = state_schema
         self._adapter: TypeAdapter[StateT] = TypeAdapter(state_schema)
         self._registry: StrategyRegistry[StateT] = registry
-        self._select_strategy: Callable[[StateT], str] = select_strategy
 
     def _read_state(self, value: object) -> StateT:
         return self._adapter.validate_python(value, strict=True)
 
     def _resolve_strategy(self, state: StateT) -> Strategy[StateT]:
-        return self._registry.get(self._select_strategy(state))
+        return self._registry.get(state["active_strategy"])
 
     def before_agent(self, state: StateT, runtime: Runtime[None]) -> dict[str, object] | None:
+        self._registry.get(state["active_strategy"])
         return self._registry.initial_state(state) or None
 
     async def abefore_agent(self, state: StateT, runtime: Runtime[None]) -> dict[str, object] | None:
         return self.before_agent(state, runtime)
 
     def before_model(self, state: StateT, runtime: Runtime[None]) -> dict[str, object] | None:
-        return self._resolve_strategy(state).before_model(state, runtime)
+        strategy, current, update = self._prepare_strategy_state(state)
+        update.update(strategy.before_model(current, runtime) or {})
+        return update or None
 
     async def abefore_model(self, state: StateT, runtime: Runtime[None]) -> dict[str, object] | None:
-        return await self._resolve_strategy(state).abefore_model(state, runtime)
+        strategy, current, update = self._prepare_strategy_state(state)
+        update.update(await strategy.abefore_model(current, runtime) or {})
+        return update or None
 
+    def _prepare_strategy_state(self, state: StateT) -> tuple[Strategy[StateT], StateT, dict[str, object]]:
+        selected: str = state["active_strategy"]
+        strategy: Strategy[StateT] = self._registry.get(selected)
+        current: StateT = state
+        update: dict[str, object] = {}
+        for inactive in self._registry.inactive_strategies(selected):
+            cleanup: dict[str, object] | None = inactive.deactivate(current)
+            if cleanup:
+                update.update(cleanup)
+                current = self._read_state({**state, **update})
+        binding: dict[str, object] | None = strategy.activate(current)
+        if binding:
+            update.update(binding)
+            current = self._read_state({**state, **update})
+        return strategy, current, update
+
+    @hook_config(can_jump_to=["model", "tools", "end"])
     def after_model(self, state: StateT, runtime: Runtime[None]) -> dict[str, object] | None:
         return self._resolve_strategy(state).after_model(state, runtime)
 
+    @hook_config(can_jump_to=["model", "tools", "end"])
     async def aafter_model(self, state: StateT, runtime: Runtime[None]) -> dict[str, object] | None:
         return await self._resolve_strategy(state).aafter_model(state, runtime)
 

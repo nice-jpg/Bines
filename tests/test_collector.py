@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from page_strategy_helpers import new_visit
+from page_strategy_helpers import page_fields
 
 from src.conductor.state import read_conductor_state, merge_fields
 from src.agent_runtime.types.execution import EngineResult, EngineStatus
@@ -349,7 +349,7 @@ def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkey
     manager = CollectorTrainingCoordinator(gateway_id="test", model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
     manager.history = collector_history(tmp_path / "history")
     result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
-        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({"page_context_path":"meituan","page_visit_id":"visit","probe_run_id":"probe-a", "page_visit": new_visit("merchant")}))))
+        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({**page_fields("meituan", "visit", "merchant"), "probe": {"run_id": "probe-a"}}))))
     assert result["verification"]["ready"]
     assert result["collector_message"] == "Ready.", result
     assert result["trained"], result
@@ -443,7 +443,7 @@ def test_prepare_collector_requires_runtime_run_identity(tmp_path, monkeypatch):
     monkeypatch.setattr("src.collector.core.CollectorEngine", lambda **_: pytest.fail("must not launch collector"))
     with pytest.raises(ValueError, match="probe_run_id"):
         manager.prepare_collector("meituan", "page", '{"name":""}', '{"items":[{"name":""}]}',
-            SimpleNamespace(state=read_conductor_state({"page_context_path": "meituan", "page_visit_id": "visit", "page_visit": new_visit("merchant")})))
+            SimpleNamespace(state=read_conductor_state(page_fields("meituan", "visit", "merchant"))))
 
 
 def test_contract_reuse_is_noop_and_repair_requires_evidence(tmp_path):
@@ -578,7 +578,7 @@ def test_manager_returns_and_registers_verified_swipe_threshold(tmp_path, monkey
     monkeypatch.setattr("src.collector.core.CollectorEngine", build)
     result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
         '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({
-            "page_context_path": "meituan", "page_visit_id": "visit", "probe_run_id": "probe", "page_visit": new_visit("merchant")}))))
+            **page_fields("meituan", "visit", "merchant"), "probe": {"run_id": "probe"}}))))
     assert result["trained"], result
     profile = result["normal_swipe_profile"]
     record = manager.training_registry.record_for("visit")

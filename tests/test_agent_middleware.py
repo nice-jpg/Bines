@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.conductor.state import read_conductor_state
+from src.device.services.execution import DeviceOperationExecutor
 import importlib
 import sys
 import types
@@ -40,33 +41,44 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 "HostTraceMiddleware",
                 "ModelRetryMiddleware",
                 "ConversationInputMiddleware",
-                "ProbeLifecycleMiddleware",
-                "StrategyDispatchMiddleware",
-                "ToolExecutionPolicyMiddleware",
                 "ToolErrorMiddleware",
+                "StrategyDispatchMiddleware",
                 "ToolTraceMiddleware",
                 "LLMTraceMiddleware",
             ],
         )
         dispatcher = captured["middleware"][4]
         general = dispatcher._resolve_strategy(read_conductor_state({"messages": []}))
-        hitl = general.captcha
+        layers = {type(layer).__name__: layer for layer in general.middlewares}
+        hitl = layers["CaptchaHumanInTheLoopMiddleware"]
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
         self.assertEqual(hitl.interrupt_on["authenticate_captcha"]["allowed_decisions"], ["respond"])
         self.assertIn("checkpointer", captured)
         self.assertIn("is_done", [tool.name for tool in captured["tools"]])
-        self.assertIn("authorize_probe_completion", [tool.name for tool in captured["tools"]])
+        self.assertIn("get_probe_progress", [tool.name for tool in captured["tools"]])
+        self.assertNotIn("authorize_probe_completion", [tool.name for tool in captured["tools"]])
         self.assertNotIn("notify_user", [tool.name for tool in captured["tools"]])
-        self.assertIs(general.controller.mechanism, general.context.mechanism)
+        self.assertIs(layers["PageVisitMiddleware"].mechanism, layers["PageInputMiddleware"].mechanism)
+        self.assertEqual(
+            list(layers),
+            [
+                "DangerousToolMiddleware",
+                "CaptchaHumanInTheLoopMiddleware",
+                "PageVisitMiddleware",
+                "VisitHistoryMiddleware",
+                "PageInputMiddleware",
+                "OperationNoticeMiddleware",
+                "DeviceOperationReliabilityMiddleware",
+            ],
+        )
         self.assertIn("confirm_page", [tool.name for tool in captured["tools"]])
-        execution_policy = captured["middleware"][5]
-        self.assertEqual(type(execution_policy._notice.service).__name__, "OperationNoticeTool")
+        self.assertEqual(type(layers["OperationNoticeMiddleware"].service).__name__, "OperationNoticeTool")
 
     def test_captcha_hitl_middleware_factory_is_available_in_execution_module(self) -> None:
         self.test_build_agent_registers_request_compression_without_summarization()
         middleware = importlib.import_module("src.strategy.general.captcha")
 
-        hitl = middleware.create_captcha_human_in_the_loop_middleware()
+        hitl = middleware.create_captcha_human_in_the_loop_middleware([], DeviceOperationExecutor())
 
         self.assertEqual(type(hitl).__name__, "CaptchaHumanInTheLoopMiddleware")
         self.assertEqual(list(hitl.interrupt_on), ["authenticate_captcha"])
@@ -86,7 +98,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 calls.append(args)
                 return "started"
 
-        hitl = middleware.create_captcha_human_in_the_loop_middleware([FakeTool()])
+        hitl = middleware.create_captcha_human_in_the_loop_middleware([FakeTool()], DeviceOperationExecutor())
         hitl._should_interrupt = lambda tool_call, config, state, runtime: True
         captcha_module = importlib.import_module("src.strategy.general.captcha")
         state = {

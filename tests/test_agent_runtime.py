@@ -17,6 +17,7 @@ from engine_helpers import ScriptedEngine, Model
 
 def test_engine_owns_session_and_keeps_one_conversation(monkeypatch):
     from gateway_helpers import GatewayHandle, RecordingChannel
+
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
     model = Model(replies=[AIMessage(content="answer")])
@@ -108,19 +109,15 @@ def test_probe_preparation_only_uses_current_messages(monkeypatch):
     assert engine._prepare_messages([{"role": "user", "content": "normal"}]) == [
         {"role": "user", "content": "normal"}
     ]
-    assert engine._input_state([{"role": "user", "content": "执行应用探测任务"}])['probe']['status'] == 'running'
+    assert engine._input_state([{"role": "user", "content": "执行应用探测任务"}])["probe"]["run_id"]
 
 
-def test_conductor_preserves_human_and_liveness_payloads():
+def test_conductor_preserves_human_payload():
     from src.agent_runtime.types.execution import InterruptKind
 
     engine = ConductorEngine.__new__(ConductorEngine)
     assert engine._resume_payload(InterruptKind.HUMAN, "done") == {
         "decisions": [{"type": "respond", "message": "done"}]
-    }
-    assert engine._resume_payload(InterruptKind.LIVENESS, "continue") == {
-        "action": "continue",
-        "message": "continue",
     }
 
 

@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-from page_strategy_helpers import new_visit
-
-from src.conductor.state import read_conductor_state, merge_fields
-
 import asyncio
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+from page_strategy_helpers import page_fields
+
+from src.conductor.state import read_conductor_state
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import ToolMessage
 
-from src.middleware.execution.dangerous_tool import DangerousToolMiddleware
-
+from src.agent_runtime.middleware.tool_error import ToolErrorMiddleware
+from src.strategy.general.dangerous_tool import DangerousToolMiddleware
+from src.tools.shared.factory import create_tool
 from src.tools.shared.safety import (
     DANGEROUS_TOOL_POLICY_METADATA_KEY,
+    DangerousActionJustification,
     DangerousToolPolicy,
 )
 
@@ -47,21 +48,18 @@ def _request(
     policy: DangerousToolPolicy | None = None,
     justification=None,
 ):
-    metadata = (
-        {DANGEROUS_TOOL_POLICY_METADATA_KEY: policy}
-        if policy is not None
-        else {}
-    )
+    metadata = {DANGEROUS_TOOL_POLICY_METADATA_KEY: policy} if policy is not None else {}
     args = {}
     if justification is not None:
         args["justification"] = justification
     return SimpleNamespace(
         tool_call={"id": "call-1", "name": tool_name, "args": args},
         tool=SimpleNamespace(name=tool_name, metadata=metadata),
-        state=read_conductor_state({
-            'page_context_path': "meituan/外卖",
-            'page_visit_id': "visit-1",
-         "page_visit": new_visit("merchant" if "meituan/外卖".endswith("/商家") else "general")}),
+        state=read_conductor_state(
+            {
+                **page_fields("meituan/外卖", "visit-1", "general"),
+            }
+        ),
     )
 
 
@@ -92,7 +90,8 @@ def test_custom_policy_protects_tool_without_name_registration() -> None:
 
     result = middleware.wrap_tool_call(
         _request(policy=policy, justification=_justification()),
-        lambda request: handler_calls.append(request) or ToolMessage(
+        lambda request: handler_calls.append(request)
+        or ToolMessage(
             content="ok",
             tool_call_id="call-1",
             name="custom_device_action",
@@ -120,17 +119,22 @@ def test_missing_or_invalid_justification_is_rejected_without_execution() -> Non
     for justification in invalid_values:
         middleware, logger = _middleware()
         handler_calls = []
-        result = middleware.wrap_tool_call(
-            _request(tool_name="close_package", policy=policy, justification=justification),
-            lambda request: handler_calls.append(request),
+
+        def close_package(justification: DangerousActionJustification) -> str:
+            """Close with validated reasons."""
+            return "closed"
+
+        call = _request(tool_name="close_package", policy=policy, justification=justification)
+        call.tool = create_tool(close_package, metadata={DANGEROUS_TOOL_POLICY_METADATA_KEY: policy})
+        result = ToolErrorMiddleware().wrap_tool_call(
+            call,
+            lambda call: middleware.wrap_tool_call(call, lambda request: handler_calls.append(request)),
         )
-        payload = json.loads(result.content)
 
         assert result.status == "error"
-        assert payload["error_type"] == "dangerous_action_reason_invalid"
-        assert payload["invalid_fields"]
+        assert result.additional_kwargs["error_type"] == "ValidationError"
         assert handler_calls == []
-        assert logger.records[0][2]["decision"] == "rejected"
+        assert logger.records == []
 
 
 def test_valid_async_justification_executes_and_is_audited() -> None:

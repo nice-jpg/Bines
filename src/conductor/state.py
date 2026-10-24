@@ -1,7 +1,7 @@
 """Conductor state composition and validated graph boundaries."""
 
 from collections.abc import Mapping
-from typing import Final, Literal
+from typing import Literal
 from uuid import uuid4
 
 from langchain.agents.middleware.types import AgentState
@@ -12,7 +12,7 @@ from typing_extensions import TypedDict
 from src.agent_messages.types import GraphInput
 from src.common.utils.json import JsonObject
 from src.common.utils.validation import is_string_mapping
-from src.strategy.general.state import GeneralState, PageVisit, initial_general_state
+from src.strategy.general.state import GeneralState, PageVisit, initial_general_state, unconfirmed_arrival
 from src.strategy.merchant.state import (
     MERCHANT_COMPLETED,
     MERCHANT_TRAVERSING,
@@ -20,29 +20,6 @@ from src.strategy.merchant.state import (
     initial_evidence,
     initial_merchant_state,
 )
-
-from .checkpoints import migrate_conductor_checkpoint
-
-PROBE_STARTED: Final = "probe_started"
-
-
-# Cross-page recovery and continuation reasons
-REASON_PAGE_CONFIRMATION: Final = "page_confirmation_required"
-REASON_APPLICATION_CLOSE: Final = "application_close_required"
-REASON_MERCHANT_INCOMPLETE: Final = "merchant_collection_incomplete"
-REASON_UNVISITED_PAGES: Final = "configured_leaf_pages_unvisited"
-REASON_NOT_AUTHORIZED: Final = "completion_not_authorized"
-REASON_UNFINISHED_MERCHANTS: Final = "unfinished_merchants_require_recovery"
-REASON_NOT_RUNNING: Final = "probe_not_running"
-REASON_APPLICATION_NOT_OPEN: Final = "application_not_open"
-REASON_MERCHANT_ACTIVE: Final = "merchant_page_active"
-UNVISITED_LEAF_PREFIX: Final = "unvisited_leaf:"
-
-
-PROBE_INACTIVE: Final = "inactive"
-PROBE_RUNNING: Final = "running"
-PROBE_COMPLETION_AUTHORIZED: Final = "completion_authorized"
-PROBE_COMPLETED: Final = "completed"
 
 
 class CollectionVisitSummary(TypedDict):
@@ -54,22 +31,24 @@ class CollectionVisitSummary(TypedDict):
     is_leaf: bool
 
 
+class VisitFact(TypedDict):
+    visit_id: str
+    path: str
+    event: Literal["entered", "exited", "closed"]
+
+
 class ProbeState(TypedDict, total=False):
     package_name: str
-    status: str
     current_merchant: str
-    unfinished_merchants: dict[str, dict[str, str]]
-    failed_tool_count: int
     run_id: str
     completed_merchants: dict[str, tuple[str, ...]]
-    premature_final_count: int
     target_leaf_paths: tuple[str, ...]
-    visited_leaf_paths: tuple[str, ...]
-    continuation_reason: str
+    visit_history: tuple[VisitFact, ...]
     visit_summaries: dict[str, CollectionVisitSummary]
 
 
 class ConductorFields(TypedDict):
+    active_strategy: str
     general: GeneralState
     merchant: MerchantState
     probe: ProbeState
@@ -80,12 +59,14 @@ class ConductorState(ConductorFields, AgentState):
 
 
 class ConductorInput(GraphInput, total=False):
+    active_strategy: str
     general: GeneralState
     merchant: MerchantState
     probe: ProbeState
 
 
 class ConductorUpdate(TypedDict, total=False):
+    active_strategy: str
     general: GeneralState
     merchant: MerchantState
     probe: ProbeState
@@ -99,14 +80,19 @@ _UPDATE_ADAPTER: TypeAdapter[ConductorUpdate] = TypeAdapter(ConductorUpdate)
 
 
 def initial_fields() -> ConductorFields:
-    return {"general": initial_general_state(), "merchant": initial_merchant_state(), "probe": {}}
+    return {
+        "active_strategy": "general",
+        "general": initial_general_state(),
+        "merchant": initial_merchant_state(),
+        "probe": {},
+    }
 
 
 def read_conductor_state(value: object) -> ConductorState:
     if not is_string_mapping(value):
         raise TypeError("Conductor state must be a mapping")
     return _STATE_ADAPTER.validate_python(
-        {"messages": [], **initial_fields(), **migrate_conductor_checkpoint(dict(value))}, strict=True
+        {"messages": [], **initial_fields(), **value}, strict=True
     )
 
 
@@ -114,7 +100,7 @@ def read_conductor_fields(value: object) -> ConductorFields:
     if not is_string_mapping(value):
         raise TypeError("Conductor fields must be a mapping")
     return _FIELDS_ADAPTER.validate_python(
-        {**initial_fields(), **migrate_conductor_checkpoint(dict(value))}, strict=True
+        {**initial_fields(), **value}, strict=True
     )
 
 
@@ -123,7 +109,9 @@ def read_conductor_update(value: object) -> ConductorUpdate:
 
 
 def current_visit(state: ConductorFields) -> PageVisit:
-    visit: PageVisit | None = state["general"].get("visit")
+    visit: PageVisit | None = (
+        state["general"].get("visit") if unconfirmed_arrival(state["general"]) is None else None
+    )
     return visit if visit is not None else {"visit_id": "", "path": "", "strategy": "general"}
 
 
@@ -157,16 +145,11 @@ def reset_collection_state() -> ConductorUpdate:
 def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> ConductorUpdate:
     return {
         "probe": {
-            "status": PROBE_RUNNING,
             "current_merchant": "",
-            "unfinished_merchants": {},
-            "failed_tool_count": 0,
             "run_id": uuid4().hex,
             "completed_merchants": {},
-            "premature_final_count": 0,
             "target_leaf_paths": tuple(dict.fromkeys(target_leaf_paths)),
-            "visited_leaf_paths": (),
-            "continuation_reason": PROBE_STARTED,
+            "visit_history": (),
             "visit_summaries": {},
         }
     }
@@ -175,6 +158,8 @@ def initial_probe_state(target_leaf_paths: tuple[str, ...]) -> ConductorUpdate:
 def merge_fields(state: ConductorFields, *updates: Mapping[str, object]) -> ConductorFields:
     result: dict[str, object] = dict(state)
     for update in updates:
+        if "active_strategy" in update:
+            result["active_strategy"] = update["active_strategy"]
         for key in ("general", "merchant", "probe"):
             if key not in update:
                 continue

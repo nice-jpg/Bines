@@ -21,32 +21,35 @@ from src.agent_runtime.engine import AgentEngine
 from src.agent_runtime.strategy.base import Strategy
 from src.agent_runtime.strategy.registration import StrategyRegistration
 from src.agent_runtime.types.execution import EngineResult, EngineStatus
-from src.agent_runtime.types.framework import RuntimeMiddleware
 from src.agent_runtime.types.response import AgentResponse
 from src.common.utils.json import JsonObject, JsonValue
 from src.conductor.state import (
-    PROBE_COMPLETED,
-    PROBE_INACTIVE,
+    ConductorFields,
     ConductorInput,
     ConductorState,
     initial_probe_state,
     read_conductor_fields,
 )
 from src.device import DeviceOperationService
-from src.middleware.execution.policy import ToolExecutionPolicyMiddleware
-from src.middleware.probe.lifecycle import ProbeLifecycleMiddleware
 from src.page.mechanism import PageMechanism
 from src.prompts import CONDUCTOR_PROMPT, build_initial_messages, build_probe_task_spec
-from src.strategy.general.captcha import create_captcha_human_in_the_loop_middleware
+from src.strategy.general.captcha import (
+    CaptchaHumanInTheLoopMiddleware,
+    create_captcha_human_in_the_loop_middleware,
+)
 from src.strategy.general.context.middleware import PageInputMiddleware
+from src.strategy.general.dangerous_tool import DangerousToolMiddleware
+from src.strategy.general.operation_notice import OperationNoticeMiddleware
+from src.strategy.general.page_visit import PageVisitMiddleware
 from src.strategy.general.reliability import DeviceOperationReliabilityMiddleware
-from src.strategy.general.state import GENERAL, GeneralState, PageVisit, initial_general_state
+from src.strategy.general.state import GENERAL, GeneralState, initial_general_state
 from src.strategy.general.strategy import GeneralStrategy
 from src.strategy.general.tools import create_confirm_page_tool
-from src.strategy.general.visits import PageVisitController
+from src.strategy.general.visit_history import VisitHistoryMiddleware
 from src.strategy.merchant.persistence import CollectionPersistenceMiddleware
 from src.strategy.merchant.state import MERCHANT, MerchantState, initial_merchant_state
 from src.strategy.merchant.strategy import MerchantStrategy
+from src.strategy.merchant.workflow import MerchantWorkflowMiddleware
 from src.tools.captcha.tools import CaptchaAuthenticationTool, create_captcha_tools
 from src.tools.collection.continuous import ContinuousCollection
 from src.tools.collection.service import CollectionService
@@ -56,6 +59,7 @@ from src.tools.device.operations import create_conductor_event_hub_tools
 from src.tools.device.pages import create_page_tools
 from src.tools.notifications.service import OperationNoticeTool
 from src.tools.page_notes.tools import create_page_notes_tool
+from src.tools.progress import create_progress_tool
 from src.tools.reasoning.tools import create_thinking_tool
 from src.tools.workbooks.excel import CollectionWorkbookSink
 
@@ -92,7 +96,6 @@ class ConductorEngine(AgentEngine[ConductorState]):
     ) -> None:
         self._model: str | BaseChatModel = model
         self._notifier: Callable[[str], None] = notifier or self._notify
-        self._business_middlewares: list[RuntimeMiddleware] = []
         super().__init__(
             model=model,
             gateway_id=gateway_id,
@@ -106,17 +109,12 @@ class ConductorEngine(AgentEngine[ConductorState]):
     def _system_prompt(self) -> str:
         return CONDUCTOR_PROMPT
 
-    def _create_middlewares(self) -> Sequence[RuntimeMiddleware]:
-        return self._business_middlewares
-
     def _evaluate_result(self, state: Mapping[str, object]) -> EngineResult:
         response: AgentResponse | None = AgentResponse.parse(latest_message_text(state))
         if response is None:
             self._execution.continuation_reason = "structured_response_required"
         elif not response.resolved:
             self._execution.continuation_reason = "agent_reported_unresolved"
-        elif not self._completion_allowed(state):
-            self._execution.continuation_reason = "task_state_is_not_complete"
         else:
             return EngineResult(
                 EngineStatus.COMPLETED,
@@ -132,6 +130,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
     def _input_state(self, messages: list[InputMessage]) -> GraphInput:
         if self._requests_app_probe(messages):
             state: ConductorInput = {
+                "active_strategy": GENERAL,
                 "general": initial_general_state(),
                 "merchant": initial_merchant_state(),
                 "probe": {
@@ -141,7 +140,8 @@ class ConductorEngine(AgentEngine[ConductorState]):
                 "messages": messages,
             }
             return state
-        state = {"messages": messages, "probe": read_conductor_fields(self._state)["probe"]}
+        fields: ConductorFields = read_conductor_fields(self._state)
+        state = {"messages": messages, "probe": fields["probe"], "active_strategy": fields["active_strategy"]}
         return state
 
     def _requests_app_probe(self, messages: Sequence[InputMessage]) -> bool:
@@ -158,13 +158,8 @@ class ConductorEngine(AgentEngine[ConductorState]):
                 return True
         return False
 
-    def _completion_allowed(self, state: Mapping[str, object]) -> bool:
-        return read_conductor_fields(state)["probe"].get("status") in (None, PROBE_INACTIVE, PROBE_COMPLETED)
-
     def _resume_payload(self, kind: str, user_input: JsonValue) -> JsonObject:
         message: str = "Human captcha authentication completed." if user_input is None else str(user_input)
-        if kind == "liveness":
-            return {"action": "continue", "message": message}
         return {"decisions": [{"type": "respond", "message": message}]}
 
     def _create_tools(self) -> Sequence[BaseTool]:
@@ -191,18 +186,9 @@ class ConductorEngine(AgentEngine[ConductorState]):
         continuous_collection: ContinuousCollection = ContinuousCollection(
             collection_service, event_hub, self._tool_yield_reason
         )
-        lifecycle: ProbeLifecycleMiddleware = ProbeLifecycleMiddleware(
-            mechanism=mechanism,
-        )
-        visits: PageVisitController = PageVisitController(
-            mechanism,
-            strategy_names=frozenset({GENERAL, MERCHANT}),
-            begin_merchant=MerchantStrategy.begin_visit,
-            end_merchant=MerchantStrategy.end_visit,
-        )
-        visits.validate_targets(build_probe_task_spec().target_leaf_paths)
+        page_visit: PageVisitMiddleware = PageVisitMiddleware(mechanism, frozenset({GENERAL, MERCHANT}))
         registered_tools: list[BaseTool] = [
-            create_confirm_page_tool(visits),
+            create_confirm_page_tool(page_visit),
             *create_captcha_tools(captcha),
             create_thinking_tool(),
             create_talk_tool(self.send_message),
@@ -213,28 +199,46 @@ class ConductorEngine(AgentEngine[ConductorState]):
             *create_prepare_collector_tool(collector_manager),
             *collection_persistence.create_tools(),
             continuous_collection.create_tool(),
-            *lifecycle.create_tools(),
+            create_progress_tool(),
         ]
-        general: GeneralStrategy = GeneralStrategy(
-            visits,
-            PageInputMiddleware(mechanism=mechanism),
-            DeviceOperationReliabilityMiddleware(event_hub=event_hub),
-            create_captcha_human_in_the_loop_middleware(registered_tools),
+
+        visit_history: VisitHistoryMiddleware = VisitHistoryMiddleware()
+        dangerous: DangerousToolMiddleware = DangerousToolMiddleware()
+        captcha_middleware: CaptchaHumanInTheLoopMiddleware = create_captcha_human_in_the_loop_middleware(
+            registered_tools, event_hub.operation_executor
+        )
+        context: PageInputMiddleware = PageInputMiddleware(mechanism=mechanism)
+        notice: OperationNoticeMiddleware = OperationNoticeMiddleware(service=operation_notice_service)
+        reliability: DeviceOperationReliabilityMiddleware = DeviceOperationReliabilityMiddleware(
+            event_hub=event_hub
         )
         self._page_strategies: dict[str, Strategy[ConductorState]] = {
-            GENERAL: general,
-            MERCHANT: MerchantStrategy(general, collection_persistence),
+            GENERAL: GeneralStrategy(
+                constraints=[
+                    dangerous,
+                    captcha_middleware,
+                    page_visit,
+                ],
+                features=[visit_history, context, notice, reliability],
+            ),
+            MERCHANT: MerchantStrategy(
+                constraints=[
+                    dangerous,
+                    captcha_middleware,
+                    MerchantWorkflowMiddleware(collection_service),
+                    page_visit,
+                ],
+                features=[
+                    visit_history,
+                    context,
+                    notice,
+                    collection_persistence,
+                    reliability,
+                ],
+            ),
         }
-        self._business_middlewares = [
-            lifecycle,
-            ToolExecutionPolicyMiddleware(notice_service=operation_notice_service),
-        ]
 
         return registered_tools
-
-    def _strategy_middleware_position(self) -> int:
-        # Lifecycle sees final strategy results; execution notices occur after admission.
-        return 1
 
     def _strategy_registrations(self) -> Sequence[StrategyRegistration[ConductorState]]:
         return (
@@ -248,10 +252,6 @@ class ConductorEngine(AgentEngine[ConductorState]):
 
     def _strategy_state_schema(self) -> type[ConductorState]:
         return ConductorState
-
-    def _select_strategy(self, state: ConductorState) -> str:
-        visit: PageVisit | None = state["general"].get("visit")
-        return visit["strategy"] if visit is not None else GENERAL
 
     def _notify(self, message: str) -> None:
         if not self.send_message(message):

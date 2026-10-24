@@ -8,6 +8,7 @@ from langchain_core.tools import BaseTool
 from src.agent_messages.types import InputMessage
 from src.agent_runtime.engine import AgentEngine
 from src.agent_runtime.strategy.registration import StrategyRegistration
+from src.agent_runtime.strategy.state import StrategyInput
 from src.prompts import COLLECTOR_PROMPT
 from src.strategy.collector.state import COLLECTOR, CollectorState
 from src.strategy.collector.strategy import CollectorStrategy
@@ -69,5 +70,5 @@ class CollectorEngine(AgentEngine[CollectorAgentState]):
     def _strategy_state_schema(self) -> type[CollectorAgentState]:
         return CollectorAgentState
 
-    def _select_strategy(self, state: CollectorAgentState) -> str:
-        return COLLECTOR
+    def _input_state(self, messages: list[InputMessage]) -> StrategyInput:
+        return {"messages": messages, "active_strategy": COLLECTOR}

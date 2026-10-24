@@ -34,7 +34,7 @@ class NavigationTools:
     ) -> PageOperationResult:
         """Tap a control that enters the declared absolute canonical child page."""
 
-        # ProbeControlMiddleware owns canonical-path validation.
+        # PageVisitMiddleware validates the declared target before dispatch.
         del next_path, merchant_name
         return self.event_hub.tap(x, y)
 
@@ -71,8 +71,7 @@ def create_navigation_tools(
                 "Tap a visible target that enters another business page. Provide x, y, and next_path. "
                 "next_path must be the complete canonical path from the app home, for example "
                 "meituan/外卖/美食/商家. The target manual is validated before the device is touched. "
-                "For merchant destinations, merchant_name is required: copy the full currently visible name including branch. "
-                "Previously completed merchants are rejected before tapping, regardless of list order or coordinates. "
+                "merchant_name is an optional navigation hint, not a collection identity. Revisiting is allowed. "
                 "If leaving an unfinished merchant for recovery, provide a concrete recovery_reason; this does not mark it complete. "
                 "Returns page_change_hint search entrances to query by ID, not page content (root view on first capture)."
             ),
@@ -87,7 +86,7 @@ def create_navigation_tools(
             description=(
                 "Return to a declared prior business page. Provide its complete canonical next_path, "
                 "for example meituan/外卖/美食. The target manual is validated before the device is touched. "
-                "For recovery from an unfinished merchant, provide recovery_reason; revisit and complete it later. "
+                "For recovery from an unfinished merchant, provide recovery_reason explaining the local workflow exit. "
                 "Returns page_change_hint search entrances to query by ID, not page content (root view on first capture)."
             ),
         ),

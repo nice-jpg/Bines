@@ -1,15 +1,14 @@
 
-from src.conductor.state import read_conductor_state, merge_fields
+import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import ValidationError
-import pytest
 
-from src.common.utils.json import json_value
 from src.agent_messages.text import latest_message_text
-from src.middleware.tool_io import with_state_update
-from src.device.types.page import artifact_snapshot
+from src.common.utils.json import json_value
 from src.conductor.state import read_conductor_fields, read_conductor_state
+from src.device.types.page import artifact_snapshot
+from src.strategy.tool_io import with_state_update
 
 
 def test_state_validation_preserves_checkpoint_and_message_identity():
@@ -21,6 +20,22 @@ def test_state_validation_preserves_checkpoint_and_message_identity():
     assert state["general"]["visit"]["path"] == "app/page"
     assert checkpoint["extension"] is extension
     assert read_conductor_fields(checkpoint)["general"] == state["general"]
+
+
+def test_current_checkpoint_preserves_strategy_and_collection_evidence() -> None:
+    from page_strategy_helpers import page_fields
+
+    checkpoint = read_conductor_state(page_fields("app/shop", "visit", "merchant"))
+    checkpoint["merchant"].update(phase="completed", training_version="v1", entry_taps=1)
+    checkpoint["merchant"]["evidence"].update(
+        initialized=True, latest_new_count=0, consecutive_empty_swipes=3, last_swipe="swipe_up"
+    )
+    checkpoint["probe"] = {"run_id": "run", "target_leaf_paths": ("app/shop",)}
+    restored = read_conductor_state(checkpoint)
+    assert restored == checkpoint
+    assert read_conductor_fields(restored) == {
+        key: value for key, value in checkpoint.items() if key != "messages"
+    }
 
 
 

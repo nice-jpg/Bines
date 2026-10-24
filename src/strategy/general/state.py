@@ -1,6 +1,6 @@
-"""Page identities and arrival evidence, independent of merchant progress."""
+"""Page identities and pending arrivals, independent of merchant progress."""
 
-from typing import Final
+from typing import Final, Literal
 
 from typing_extensions import TypedDict
 
@@ -13,23 +13,25 @@ class PageVisit(TypedDict):
     strategy: str
 
 
-class PendingVisit(TypedDict):
+class PageArrival(TypedDict):
     candidate_id: str
     path: str
     strategy: str
     app_root: str
-    package_name: str
-    merchant_name: str
-    observation_id: str
-    rejected: bool
+    status: Literal["awaiting_confirmation", "confirmed"]
 
 
 class GeneralState(TypedDict, total=False):
     active: bool
     app_root: str
     visit: PageVisit | None
-    pending: PendingVisit | None
+    arrival: PageArrival | None
 
 
 def initial_general_state() -> GeneralState:
-    return {"active": False, "app_root": "", "visit": None, "pending": None}
+    return {"active": False, "app_root": "", "visit": None, "arrival": None}
+
+
+def unconfirmed_arrival(state: GeneralState) -> PageArrival | None:
+    arrival: PageArrival | None = state.get("arrival")
+    return arrival if arrival is not None and arrival["status"] != "confirmed" else None

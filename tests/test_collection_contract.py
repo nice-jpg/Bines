@@ -1,5 +1,5 @@
 
-from page_strategy_helpers import new_visit
+from page_strategy_helpers import page_fields
 
 from src.conductor.state import read_conductor_state, merge_fields
 import json
@@ -25,7 +25,7 @@ def test_notes_and_contract_have_independent_sections(tmp_path):
     contract = CollectionContract.from_dict({"primary_key": ["name", "size"], "required_fields": ["price"]})
     mechanism.save_collection_contract("app", contract)
     tool = create_page_notes_tool(mechanism)
-    tool.func("Use screenshots for ambiguous controls", SimpleNamespace(state=read_conductor_state({"page_context_path": "app", "page_visit": new_visit("merchant" if "app".endswith("/商家") else "general"), "page_visit_id": "test-visit"})))
+    tool.func("Use screenshots for ambiguous controls", SimpleNamespace(state=read_conductor_state(page_fields("app", "test-visit", "general"))))
     assert mechanism.collection_contract("app") == contract
     assert "Schema stays here" in (page / "PAGE.md").read_text()
     assert (page / "task.md").read_text() == "Unchanged task"

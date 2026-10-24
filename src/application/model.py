@@ -20,7 +20,6 @@ def build_model() -> ChatOpenAI | OpenAICodexModel:
         return create_chat_model(
             model=config.model,
             reasoning_effort=_option_text(config, "reasoning_effort") or "medium",
-            prompt_cache_key=_option_text(config, "prompt_cache_key"),
             stream_max_retries=_retry_count(config),
         )
 
@@ -46,7 +45,6 @@ def load_model_config() -> ModelConfig:
     config: ModelConfig = ConfigurationManager.instance().get_model()
     if config.provider == "codex":
         _option_text(config, "reasoning_effort")
-        _option_text(config, "prompt_cache_key")
         _retry_count(config)
     return config
 

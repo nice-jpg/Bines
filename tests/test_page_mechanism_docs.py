@@ -17,16 +17,13 @@ class PageMechanismDocTests(unittest.TestCase):
                 self.assertIn("## Canonical Manual Path", content)
                 self.assertIn("Current page: `meituan", content)
 
-    def test_page_mechanism_dirs_include_task_and_run_agent_py(self) -> None:
+    def test_page_mechanism_dirs_include_task(self) -> None:
         page_dirs = sorted(page_doc.parent for page_doc in PAGE_ROOT.rglob("PAGE.md"))
         self.assertTrue(page_dirs)
         for page_dir in page_dirs:
             relative_dir = page_dir.relative_to(PAGE_ROOT)
             with self.subTest(relative_dir=relative_dir.as_posix()):
                 self.assertTrue((page_dir / "task.md").is_file())
-                self.assertTrue((page_dir / "run.agent.py").is_file())
-                run_text = (page_dir / "run.agent.py").read_text(encoding="utf-8")
-                self.assertIn("def run(xml: str) -> dict", run_text)
 
     def test_secondary_page_docs_point_to_generic_merchant_manuals(self) -> None:
         food = (PAGE_ROOT / "美食" / "PAGE.md").read_text(encoding="utf-8")
@@ -44,7 +41,6 @@ class PageMechanismDocTests(unittest.TestCase):
             with self.subTest(relative_path=relative_path):
                 content = page_doc.read_text(encoding="utf-8")
                 task = page_doc.with_name("task.md").read_text(encoding="utf-8")
-                run_text = page_doc.with_name("run.agent.py").read_text(encoding="utf-8")
                 self.assertIn("## Structure", content)
                 self.assertIn("## Collection Target", content)
                 self.assertIn("## Merchant Schema", content)
@@ -53,8 +49,6 @@ class PageMechanismDocTests(unittest.TestCase):
                 self.assertNotIn("Merchant Schema", task)
                 self.assertNotIn("Collection Schema", task)
                 self.assertNotIn("Collection Target", task)
-                self.assertNotIn('"merchant"', run_text)
-                self.assertIn('return {"items":', run_text)
                 self.assertIn("collect_continuously(x, y, change_threshold)", task)
                 self.assertIn("call `is_done` only when the page may be exhausted", task)
                 self.assertIn("three consecutive valid collection swipes", task)

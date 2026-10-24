@@ -24,7 +24,7 @@ from src.page.collection_contract import CollectionContract
 from src.page.mechanism import PageMechanism
 from src.page.script_types import ScriptResult, ScriptSourceResult, ScriptSuccess
 from src.strategy.general.declarations import requires_collection
-from src.strategy.general.state import PageVisit
+from src.strategy.general.state import PageVisit, unconfirmed_arrival
 from src.strategy.merchant.state import is_merchant_visit
 from src.tools.collection.audit import sample_collection
 from src.tools.collection.types import CompletionPayload, IncompleteRow
@@ -81,7 +81,7 @@ class CollectionService:
         )
 
     def training_error(self, state: ConductorFields) -> str:
-        if state["general"].get("pending") is not None:
+        if unconfirmed_arrival(state["general"]) is not None:
             return "page_confirmation_required"
         path: str = current_visit(state).get("path", "")
         visit_id: str = current_visit(state).get("visit_id", "")
@@ -388,7 +388,7 @@ class CollectionService:
             return {"ok": False, "error_type": type(exc).__name__, "error": str(exc)}
 
     def initialize(self, state: ConductorFields) -> CollectionStepResult:
-        if state["general"].get("pending") is not None:
+        if unconfirmed_arrival(state["general"]) is not None:
             return CollectionStepResult(StepStatus.FAILED, {}, error="page_confirmation_required")
         current_path: str = current_visit(state).get("path", "")
         visit_id: str = current_visit(state).get("visit_id", "")
@@ -442,10 +442,12 @@ class CollectionService:
         raw_name: JsonValue = record.merchant_profile.get("name")
         return CollectionStepResult(
             StepStatus.SUCCESS,
-            {"probe": {
-                "visit_summaries": summaries,
-                "current_merchant": merchant_identity(raw_name) if isinstance(raw_name, str) else "",
-            }},
+            {
+                "probe": {
+                    "visit_summaries": summaries,
+                    "current_merchant": merchant_identity(raw_name) if isinstance(raw_name, str) else "",
+                }
+            },
         )
 
 

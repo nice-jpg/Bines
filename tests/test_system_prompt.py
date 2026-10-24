@@ -6,13 +6,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from src.strategy.merchant.strategy import MERCHANT_INSTRUCTIONS
-
 from src.prompts import (
     COLLECTOR_PROMPT,
-    RUN_AGENT_PY_PATCH_GRAMMAR,
     CONDUCTOR_PROMPT,
+    RUN_AGENT_PY_PATCH_GRAMMAR,
 )
+from src.strategy.merchant.workflow import MERCHANT_INSTRUCTIONS
 
 
 class SystemPromptTests(unittest.TestCase):
@@ -29,7 +28,9 @@ class SystemPromptTests(unittest.TestCase):
 
     def test_conductor_prompt_requires_explicit_navigation_and_runtime_manuals(self) -> None:
         self.assertIn("Only after confirm_page accepts fresh observation evidence", CONDUCTOR_PROMPT)
-        self.assertIn("latest `<current_page_manual>` system message is the authoritative manual", CONDUCTOR_PROMPT)
+        self.assertIn(
+            "latest `<current_page_manual>` system message is the authoritative manual", CONDUCTOR_PROMPT
+        )
         self.assertIn("Use tap_in_page only", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_to", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_back", CONDUCTOR_PROMPT)
@@ -41,29 +42,37 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Do not inspect extraction output or repair scripts", CONDUCTOR_PROMPT)
         self.assertIn("do not call is_done after ordinary swipes", MERCHANT_INSTRUCTIONS)
         self.assertIn("wait for new possible-end evidence", MERCHANT_INSTRUCTIONS)
-        self.assertIn("completed result uses the same three-zero-swipe completion rule", MERCHANT_INSTRUCTIONS)
+        self.assertIn(
+            "completed result uses the same three-zero-swipe completion rule", MERCHANT_INSTRUCTIONS
+        )
         self.assertIn("Collection and persistence run silently", CONDUCTOR_PROMPT)
         self.assertIn("must not extract information yourself", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_requires_dangerous_tool_justification(self) -> None:
         self.assertIn("run_package and close_package are dangerous operations", CONDUCTOR_PROMPT)
         self.assertIn("risk_acknowledged=true", CONDUCTOR_PROMPT)
-        self.assertIn("page tasks, collection, and archival are complete", CONDUCTOR_PROMPT)
+        self.assertIn("Completion authorization is not required", CONDUCTOR_PROMPT)
         self.assertIn("Never use an operation-only or templated placeholder", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_requires_persistent_structured_completion(self) -> None:
         self.assertIn('"resolved": true', CONDUCTOR_PROMPT)
         self.assertIn('"next_action": null', CONDUCTOR_PROMPT)
         self.assertIn("persistence layer will retain the existing context", CONDUCTOR_PROMPT)
-        self.assertIn("validates both the structured response and deterministic graph state", CONDUCTOR_PROMPT)
+        self.assertIn("validates the structured response, not business completion state", CONDUCTOR_PROMPT)
 
     def test_collector_owns_visual_validation_and_script_repair(self) -> None:
         for instruction in (
-            "run(view)", "save_baseline", "screenshot", "read_collection_guide",
-            "apply_run_agent_py_patch", "collector_swipe_to_random",
-            "Baseline correction is allowed only through repair_baseline", "capture_validation_case",
+            "run(view)",
+            "save_baseline",
+            "screenshot",
+            "read_collection_guide",
+            "apply_run_agent_py_patch",
+            "collector_swipe_to_random",
+            "Baseline correction is allowed only through repair_baseline",
+            "capture_validation_case",
             "save_baseline stores evidence, not a test result",
-            "English docstrings", "stagnation_review_required=true",
+            "English docstrings",
+            "stagnation_review_required=true",
         ):
             self.assertIn(instruction, COLLECTOR_PROMPT)
         self.assertIn(RUN_AGENT_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)

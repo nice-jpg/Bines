@@ -57,7 +57,7 @@ def _request(tool: StructuredTool):
     return SimpleNamespace(
         tool=tool,
         tool_call={"name": tool.name, "id": "call-1", "args": {}},
-        state=read_conductor_state({"page_context_path": "meituan/外卖", "page_visit_id": "visit-1", "page_visit": {"kind": "general"}}),
+        state=read_conductor_state({"active_strategy": "general", "general": {"visit": {"path": "meituan/外卖", "visit_id": "visit-1", "strategy": "general"}}}),
         runtime=SimpleNamespace(config={"configurable": {"thread_id": "thread-1"}}),
     )
 

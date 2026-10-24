@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
+from langgraph.errors import GraphBubbleUp
 
 from src.agent_messages.tool_results import ToolResult
 from src.common.utils.json import JsonValue
 from src.conductor.state import current_visit
-from src.middleware.tool_io import ToolInvocation
+from src.strategy.tool_io import ToolInvocation
 from src.tools.notifications.policy import (
     ExternalOperationPolicy,
     OperationNoticeService,
@@ -40,6 +42,16 @@ class OperationNoticeMiddleware(AgentMiddleware):
         return await handler(request)
 
     def _notify(self, request: ToolCallRequest) -> None:
+        try:
+            self._send_notice(request)
+        except GraphBubbleUp:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Operation notice failed; device execution remains available"
+            )
+
+    def _send_notice(self, request: ToolCallRequest) -> None:
         invocation: ToolInvocation = ToolInvocation.from_request(request)
         policy: ExternalOperationPolicy | None = external_operation_policy_from_metadata(
             invocation.tool_metadata

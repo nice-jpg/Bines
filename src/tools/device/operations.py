@@ -47,7 +47,7 @@ TOOL_SPECS: Final[
         "close_package",
         "Force-stop an Android application by package name. This dangerous action requires a structured justification.",
         "close_package",
-        notice_reason="Complete the application probe task.",
+        notice_reason="Close the Android application.",
     ),
     ToolSpec(
         "tap",

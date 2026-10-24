@@ -522,14 +522,14 @@ def test_middleware_reads_collection_summaries_from_graph_state() -> None:
     ]
     state = {
         "messages": messages,
-        'collection_visit_summaries': {
+        "probe": {"visit_summaries": {
             "merchant-1": {
                 "page_path": "meituan/美食/商家",
                 "merchant_profile": {"name": "炒面"},
                 "collected_items": 9,
                 "is_leaf": True,
             }
-        },
+        }},
     }
 
     projected = middleware.wrap_model_call(

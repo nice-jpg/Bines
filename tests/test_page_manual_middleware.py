@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from page_strategy_helpers import new_visit
+from page_strategy_helpers import page_fields
 
 from src.conductor.state import read_conductor_state, merge_fields
 
@@ -49,11 +49,9 @@ def _mechanism(tmp_path: Path) -> PageMechanism:
 
 def _state(*, path: str = "meituan/外卖", visit_id: str = "visit-1", messages=None, overlay=False) -> dict:
     return read_conductor_state({
-        'page_context_active': True,
-        'page_context_path': path,
-        'page_visit_id': visit_id,
+        **page_fields(path, visit_id, "merchant" if path.endswith("/商家") else "general"),
         "messages": list(messages or []),
-     "page_visit": new_visit("merchant" if path.endswith("/商家") else "general")})
+    })
 
 
 def _manual_from(update: dict) -> SystemMessage:

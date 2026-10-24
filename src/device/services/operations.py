@@ -8,6 +8,7 @@ from typing import Final
 from src.common.event_log import WorkspaceEventLogger
 from src.device.commands.executor import DEFAULT_SCREENSHOT_PATH, AndroidCommandExecutor
 from src.device.commands.shadow_control import start_shadow_service, stop_shadow_service
+from src.device.services.execution import DeviceOperationExecutor
 from src.device.services.gestures import GestureReplay
 from src.device.services.page.bridge import PageBridge, PageOperationResult
 from src.device.services.screenshots import capture_png
@@ -29,6 +30,7 @@ class DeviceOperationService:
         self.post_action_ui_delay_seconds: float = DEFAULT_POST_ACTION_UI_DELAY_SECONDS
         self._sleep: Callable[[float], None] = _POST_ACTION_SLEEP
         self.operation_lock: RLock = RLock()
+        self.operation_executor: DeviceOperationExecutor = DeviceOperationExecutor()
         self.page_bridge: PageBridge = PageBridge(self.executor, lock=self.operation_lock)
 
     def tap(self, x: int, y: int) -> PageOperationResult:

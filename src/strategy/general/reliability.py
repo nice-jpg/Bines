@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain_core.messages import ToolMessage
+from langgraph.errors import GraphBubbleUp
 from langgraph.types import Command
 
 from src.agent_messages.tool_results import ToolResult
@@ -17,7 +20,7 @@ from src.device import (
     PageSimilarityEvaluator,
     PageSimilarityResult,
 )
-from src.middleware.tool_io import ToolInvocation, page_xml, tool_succeeded, with_warning
+from src.strategy.tool_io import ToolInvocation, page_xml, tool_succeeded, with_warning
 from src.tools.device.effect import OperationEffectPolicy, operation_effect_policy_from_metadata
 
 
@@ -41,7 +44,7 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
 
         before_xml: str = self._before_xml()
         result: ToolResult = handler(request)
-        return self._evaluate(request, result, before_xml, policy)
+        return self._evaluate_safely(request, result, before_xml, policy)
 
     async def awrap_tool_call(
         self,
@@ -53,9 +56,20 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         if policy is None:
             return await handler(request)
 
-        before_xml: str = self._before_xml()
+        before_xml: str = await asyncio.to_thread(self._before_xml)
         result: ToolResult = await handler(request)
-        return self._evaluate(request, result, before_xml, policy)
+        return self._evaluate_safely(request, result, before_xml, policy)
+
+    def _evaluate_safely(
+        self, request: ToolCallRequest, result: ToolResult, before_xml: str, policy: OperationEffectPolicy
+    ) -> ToolResult:
+        try:
+            return self._evaluate(request, result, before_xml, policy)
+        except GraphBubbleUp:
+            raise
+        except Exception:
+            logging.getLogger(__name__).exception("Operation diagnostics failed; preserving device result")
+            return result
 
     def _evaluate(
         self,
@@ -98,6 +112,8 @@ class DeviceOperationReliabilityMiddleware(AgentMiddleware):
         try:
             _, snapshot = self.event_hub.page_bridge.refresh()
             return snapshot["page_xml"] if snapshot else ""
+        except GraphBubbleUp:
+            raise
         except Exception:
             return ""
 

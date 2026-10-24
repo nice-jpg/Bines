@@ -151,7 +151,6 @@ def legacy_configuration(values: Mapping[str, str | None]) -> ConfigurationSnaps
         if provider == "codex":
             for source, target in (
                 ("CODEX_REASONING_EFFORT", "reasoning_effort"),
-                ("CODEX_PROMPT_CACHE_KEY", "prompt_cache_key"),
             ):
                 if values.get(source):
                     options[target] = values[source]

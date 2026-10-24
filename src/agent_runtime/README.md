@@ -22,6 +22,15 @@ Engine 不维护多会话字典、ready 队列、父子通信、线程归属标�
 `ConversationInputMiddleware` 与其余 middleware 一起注册到 graph，Engine 不保存独立成员。
 Engine 与 middleware 共用无状态的 `middleware.communication.read_pending_input` 转换及确认消息块。
 
+策略路由直接读取固定的 `state["active_strategy"]`，不接受选择函数或 engine 回调。
+策略 graph 声明 `StrategyState` 的路由字段，入口通过 `StrategyInput` 或业务输入 schema
+显式设置初始值；业务工具切换策略时与对应业务状态一起提交该字段，checkpoint 自动保留。
+缺少字段或策略未注册时返回错误，不使用默认或页面推断。
+路由在每次模型边界先调用未选中策略的 `deactivate(state)`，再调用选中策略的
+`activate(state)`，将更新投影后执行该策略的 `before_model`。两个生命周期接口幂等，
+只返回完整状态命名空间，不执行工具、不生成消息或跳转。默认 no-op；业务策略自行定义
+其状态初始化/清理，路由器不理解页面或采集字段，也不缓存跨 thread 的上一次策略。
+
 子类覆盖 `_create_initial_messages() -> Sequence[InputMessage]` 自定义启动输入。
 该接口首次 `run_turn()` 时才调用，构造函数不接受 `initial_messages`，也不保存 `_initial`。
 默认返回空序列，表示等待渠道输入；Collector 根据 assignment、Subagent 根据任务消息生成首轮输入。
@@ -61,6 +70,22 @@ Engine.close 幂等关闭自己的 Session，记录未确认消息数量，不�
 
 所有 graph.invoke 使用 `durability="exit"`。InMemorySaver 提供进程内 checkpoint，
 不承诺进程崩溃恢复或旧逐条消息历史的自动迁移。基础 tracing、模型重试和工具错误处理保持原有职责。
+
+### 独立 Engine 运行契约
+
+每个 Engine 显式持有自己的 InMemorySaver 与 checkpoint thread ID。即使在另一个
+agent 的工具内调用，它也不是父 graph 的 LangGraph 子图；相同 thread ID 在不同 saver
+中不会共享状态。业务调用必须通过 run_turn/continue_turn/resume_turn，不直接调用 graph。
+
+`_execute` 是唯一执行边界：以本 Engine 的配置建立 Runnable 上下文，再执行完整的
+`_execute_turn`，包括 trace 更新、invoke、异常后的 get_state 和结果验收。
+首次运行、续跑及 interrupt 恢复共用此边界，不分别修补 namespace 或补齐缺失字段。
+父任务的 checkpointer、task ID、scratchpad、checkpoint map 和 callbacks 不隐式继承；
+通信关联由 gateway ID 显式提供，trace 由本 Engine 管理。
+
+边界不创建线程，调用结束或异常退出后恢复调用方原上下文。续跑只提交增量输入，
+消息、策略和业务字段由同一个根 namespace checkpoint 恢复，不从 Python `_state` 回灌。
+失败后的 checkpoint 读取也在该上下文内完成，不会误读父 saver。
 
 ## 目录职责
 

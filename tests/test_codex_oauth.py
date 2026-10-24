@@ -187,7 +187,6 @@ class CodexOAuthModelTests(unittest.TestCase):
     def test_build_request_includes_bound_tools_and_tool_choice(self) -> None:
         model = OpenAICodexModel(
             model="test-model",
-            prompt_cache_key="cache-key",
             reasoning_effort="high",
         )
         request = model._build_request(
@@ -208,7 +207,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         self.assertEqual(request["tools"][0]["name"], "sample_lookup")
         self.assertEqual(request["tool_choice"], {"type": "function", "name": "sample_lookup"})
         self.assertFalse(request["parallel_tool_calls"])
-        self.assertEqual(request["prompt_cache_key"], "cache-key")
+        self.assertEqual(request["prompt_cache_key"], model.session_id)
         self.assertEqual(request["reasoning"], {"effort": "high", "summary": "detailed"})
         self.assertEqual(request["include"], ["reasoning.encrypted_content"])
         self.assertFalse(request["store"])
@@ -259,7 +258,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         )
         self.assertNotEqual(
             first_request["prompt_cache_key"],
-            second_model.prompt_cache_key,
+            second_model.session_id,
         )
 
     def test_build_request_serializes_tool_call_history(self) -> None:

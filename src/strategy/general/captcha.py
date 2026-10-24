@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from typing import Final
 
@@ -12,6 +13,7 @@ from langchain_core.tools import BaseTool
 from langgraph.runtime import Runtime
 
 from src.common.utils.json import JsonObject, json_object
+from src.device.services.execution import DeviceOperationExecutor
 from src.tools.shared.factory import invoke_tool_json
 
 CAPTCHA_AUTHENTICATION_TOOL_NAME: Final[str] = "authenticate_captcha"
@@ -25,12 +27,18 @@ CAPTCHA_HITL_DESCRIPTION: Final[str] = (
 class CaptchaHumanInTheLoopMiddleware(HumanInTheLoopMiddleware):
     """Start captcha access before interrupting for human input."""
 
-    def __init__(self, *, authentication_tool: BaseTool | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        authentication_tool: BaseTool | None,
+        executor: DeviceOperationExecutor,
+    ) -> None:
         super().__init__(
             interrupt_on={CAPTCHA_AUTHENTICATION_TOOL_NAME: _respond_interrupt_config()},
             description_prefix="Captcha authentication requires human input",
         )
         self.authentication_tool: BaseTool | None = authentication_tool
+        self._executor: DeviceOperationExecutor = executor
         self._started_tool_call_ids: set[str] = set()
 
     def after_model(self, state: AgentState, runtime: Runtime[None]) -> dict[str, object] | None:
@@ -38,7 +46,8 @@ class CaptchaHumanInTheLoopMiddleware(HumanInTheLoopMiddleware):
         return super().after_model(state, runtime)
 
     async def aafter_model(self, state: AgentState, runtime: Runtime[None]) -> dict[str, object] | None:
-        return self.after_model(state, runtime)
+        await asyncio.to_thread(self._start_pending_authentication_sessions, state, runtime)
+        return super().after_model(state, runtime)
 
     def _start_pending_authentication_sessions(self, state: AgentState, runtime: Runtime[None]) -> None:
         if self.authentication_tool is None:
@@ -64,18 +73,21 @@ class CaptchaHumanInTheLoopMiddleware(HumanInTheLoopMiddleware):
             if call_id and call_id in self._started_tool_call_ids:
                 continue
             args: JsonObject = json_object(tool_call["args"])
-            invoke_tool_json(self.authentication_tool, args)
+            self._executor.execute(lambda: invoke_tool_json(self.authentication_tool, args))
             if call_id:
                 self._started_tool_call_ids.add(call_id)
 
 
 def create_captcha_human_in_the_loop_middleware(
-    tools: Sequence[BaseTool] | None = None,
+    tools: Sequence[BaseTool],
+    executor: DeviceOperationExecutor,
 ) -> CaptchaHumanInTheLoopMiddleware:
     """Create captcha HITL middleware and bind the captcha start tool."""
 
     authentication_tool: BaseTool | None = _find_tool(tools or (), CAPTCHA_AUTHENTICATION_TOOL_NAME)
-    return CaptchaHumanInTheLoopMiddleware(authentication_tool=authentication_tool)
+    return CaptchaHumanInTheLoopMiddleware(
+        authentication_tool=authentication_tool, executor=executor
+    )
 
 
 def _respond_interrupt_config() -> InterruptOnConfig:

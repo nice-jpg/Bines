@@ -14,7 +14,8 @@ from src.agent_messages.text import message_content
 from src.agent_messages.tool_results import ToolResult
 from src.conductor.state import ConductorState, complete_update, current_visit, read_conductor_fields
 from src.device import PageSnapshot, artifact_snapshot
-from src.middleware.tool_io import ToolInvocation, command_messages, command_update
+from src.strategy.general.state import unconfirmed_arrival
+from src.strategy.tool_io import ToolInvocation, command_messages, command_update
 from src.tools.collection.service import CollectionService, CollectionStepResult, CompletionResult, StepStatus
 from src.tools.shared.factory import create_tool
 
@@ -63,6 +64,8 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ConductorState]):
         handler: Callable[[ToolCallRequest], ToolResult],
     ) -> ToolResult:
         result: ToolResult = handler(request)
+        if unconfirmed_arrival(ToolInvocation.from_request(request).state["general"]) is not None:
+            return result
         return self._process_tool_result(request, result)
 
     async def awrap_tool_call(
@@ -71,6 +74,8 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ConductorState]):
         handler: Callable[[ToolCallRequest], Awaitable[ToolResult]],
     ) -> ToolResult:
         result: ToolResult = await handler(request)
+        if unconfirmed_arrival(ToolInvocation.from_request(request).state["general"]) is not None:
+            return result
         return self._process_tool_result(request, result)
 
     def _process_tool_result(self, request: ToolCallRequest, result: ToolResult) -> ToolResult:
