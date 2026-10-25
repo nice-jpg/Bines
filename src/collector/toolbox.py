@@ -217,18 +217,59 @@ class CollectorToolbox:
                     "next": "Inspect regions and screenshot, then write_collection_guide",
                 }
             )
-        self._guide_version = guide["fingerprint"]
-        self.validation.marked.clear()
+        self._adopt_guide(guide)
         return encoded({"ok": True, **guide})
 
     def write_collection_guide(self, content: str) -> str:
-        """Write English COLLECT.md. First line: JSON required_aliases, e.g. {\"required_aliases\":[\"1\"]}."""
+        """Save a changed structural annotation guide and retire obsolete cases; identical content is a no-op.
+
+        Write only when localization rules need correction. First line: JSON required_aliases,
+        e.g. {"required_aliases":["1","2","3"]}; describe each anchor and its relationships in English.
+        A changed guide requires fresh live samples, not re-marking old baselines to pass.
+        """
         if not self._saw_screenshot or not self._read_regions:
             raise ValueError("Inspect region evidence and a screenshot before writing the guide")
+        try:
+            existing: CollectionGuide | None = self._guide()
+        except FileNotFoundError:
+            existing = None
+        if existing is not None and existing["content"] == content:
+            return encoded({"ok": True, "updated": False, "fingerprint": existing["fingerprint"]})
         guide: CollectionGuide = self.mechanism.write_collection_guide(self.page_path, content)
+        invalidated: int = self._adopt_guide(guide)
+        return encoded(
+            {
+                "ok": True,
+                "updated": True,
+                "fingerprint": self._guide_version,
+                "invalidated_cases": invalidated,
+                "next": "Mark the live page and collect fresh visual cases",
+            }
+        )
+
+    def _adopt_guide(self, guide: CollectionGuide) -> int:
+        """Bind validation to one annotation guide without erasing audit evidence."""
+        self.history.retire_other_guides(self.page_path, guide["fingerprint"], run_id=self.run_id)
+        obsolete: set[str] = {
+            key
+            for key, case in self.validation.cases.items()
+            if case["guide_fingerprint"] != guide["fingerprint"]
+        }
+        if obsolete:
+            for key in obsolete:
+                del self.validation.cases[key]
+            self.validation.historical_ids.difference_update(obsolete)
+            self.validation.reviewed_images.difference_update(obsolete)
+            self.validation.return_to_live()
+            self.validation.invalidate()
+            self._swipe_samples.clear()
+            self._confirmed_swipes = ()
+            self._restored = False
+            self._tap_attempted = False
+            self._random = False
         self._guide_version = guide["fingerprint"]
         self.validation.marked.clear()
-        return encoded({"ok": True, "fingerprint": self._guide_version, "remark_all_cases": True})
+        return len(obsolete)
 
     def read_run_agent_py(self, force: bool = False) -> str:
         """Read the current script; unchanged content is omitted unless force=true."""
@@ -348,7 +389,7 @@ class CollectorToolbox:
         case_id: str = uuid4().hex
         self.validation.cases[case_id] = {
             "case_id": case_id,
-            'page_visit_id': self.page_visit_id,
+            "page_visit_id": self.page_visit_id,
             "run_id": self.run_id,
             "snapshot": snapshot,
             "baseline": None,

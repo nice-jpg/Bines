@@ -46,6 +46,19 @@ def test_other_run_cannot_be_written_or_loaded_in_current_namespace(tmp_path):
         history.load("app", run_id="current")
 
 
+def test_guide_retirement_is_scoped_and_not_reversed_by_reusing_old_guide(tmp_path):
+    history = collector_history(tmp_path)
+    history.commit("app/page", "visit", [record("first")], [], run_id="first")
+    history.commit("app/page/child", "visit", [record("first", "child")], [], run_id="first")
+    history.commit("app/page", "visit", [record("second")], [], run_id="second")
+    history.retire_other_guides("app/page", "new-guide", run_id="first")
+    assert not history.load("app/page", run_id="first")
+    assert len(history.load("app/page/child", run_id="first")) == 1
+    assert len(history.load("app/page", run_id="second")) == 1
+    history.retire_other_guides("app/page", "guide", run_id="first")
+    assert not history.load("app/page", run_id="first")
+
+
 @pytest.mark.parametrize("run_id", ["", "..", ".", "../other", "/tmp/other"])
 def test_run_scope_cannot_escape_history_root(tmp_path, run_id):
     with pytest.raises(ValueError, match="run ID"):

@@ -236,7 +236,7 @@ def test_history_persists_all_visual_cases_and_reloads(tmp_path):
         second.save_baseline('{"items":[]}')
 
 
-def test_guide_change_requires_reannotation_of_history(tmp_path):
+def test_guide_change_retires_all_old_cases_and_requires_fresh_sampling(tmp_path):
     t = setup(tmp_path)
     train(t)
     t.return_to_live_page()
@@ -245,16 +245,49 @@ def test_guide_change_requires_reannotation_of_history(tmp_path):
     second = setup(tmp_path, visit="b")
     key = next(iter(second.validation.historical_ids))
     second.load_validation_case(key)
-    original = second.validation.cases[key]["baseline"]
     second._page_call("page_read", {})
     second.screenshot()
-    second.write_collection_guide(GUIDE + "\nUse control state to distinguish nearby regions.")
-    result = json.loads(second.sniff_run())
-    assert result["eval_grades"]["cases"][key]["errors"] == ["remark_required"]
-    mark(second)
-    result = json.loads(second.sniff_run())
-    assert result["eval_grades"]["cases"][key]["score"] == 100
-    assert second.validation.cases[key]["baseline"] == original
+    second.return_to_live_page()
+    verify(second, "cup")
+    old_ids = set(second.validation.cases)
+    result = json.loads(second.write_collection_guide(GUIDE + "\nUse control state to distinguish nearby regions."))
+    assert result["invalidated_cases"] == 3
+    assert not second.validation.cases
+    assert not second.validation.historical_ids
+    assert second.validation.active_id is None
+    assert second.validation.frozen is None
+    assert not second.training_result()["ready"]
+    assert not second.history.load("meituan", run_id=second.run_id)
+    archived = list((tmp_path / "history/runs/probe-a/meituan/invalidated").rglob("record.json"))
+    assert len(archived) == 3
+    assert {json.loads(file.read_text())["case_id"] for file in archived} == old_ids
+    with pytest.raises(ValueError, match="Prepare visual cases"):
+        second.sniff_run()
+    train(second)
+    assert not old_ids.intersection(second.validation.cases)
+    assert set(setup(tmp_path, visit="c").validation.cases) == set(second.validation.cases)
+
+
+def test_unchanged_guide_preserves_cases_and_readiness(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    cases = set(t.validation.cases)
+    stamp = t.validation.tested_stamp
+    result = json.loads(t.write_collection_guide(GUIDE))
+    assert result["updated"] is False
+    assert set(t.validation.cases) == cases
+    assert t.validation.tested_stamp == stamp
+    assert t.training_result()["ready"]
+
+
+def test_invalid_guide_does_not_retire_cases(tmp_path):
+    t = setup(tmp_path)
+    train(t)
+    cases = set(t.validation.cases)
+    with pytest.raises(ValueError):
+        t.write_collection_guide('{"required_aliases":["x1"]}\nInvalid')
+    assert set(t.validation.cases) == cases
+    assert len(t.history.load("meituan", run_id=t.run_id)) == 2
 
 
 def test_script_regression_against_history_blocks_readiness(tmp_path):

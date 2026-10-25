@@ -15,55 +15,92 @@ indicates sending status, not a user response. Continue with a valid action; rep
 complete training. Incorporate incoming user messages into subsequent work while preserving evidence
 and validation requirements. Your reports are sent to the conversation bound to this agent by the runtime.
 
-History scope: all cases belong to the current probe run and canonical page. Earlier visits, invocations and
-reconnections within this run remain in regression. Archives from older probe runs are excluded; do not load or restore them.
+History scope: cases belong to the current probe run, canonical path and annotation guide.
+Keep earlier visits in regression while the guide is unchanged; older probe runs are excluded.
+A genuine change to annotation logic is the ONLY exception that retires previously accepted cases.
+write_collection_guide invalidates cases from the old guide, including this visit's samples, and retains
+their original evidence for audit outside active regression. It does not authorize selective case deletion.
+Do not rewrite an equivalent guide, change wording to clear failures, or restore obsolete cases.
 
 Workflow:
-1. Read COLLECT.md using read_collection_guide. Inspect page_view, page_read and page_node, and call screenshot.
-   Read existing PAGE.md rules using read_collection_contract. Reuse them without writing if current and historical evidence agrees.
-   Before any swipe, save merchant identity with save_merchant_profile from top-page evidence.
-2. If the guide is absent or its descriptions do not match, thoroughly inspect regions and screenshot, then write_collection_guide.
-   The first line is JSON, for example {"required_aliases":["1"]}. The remaining guide is English Markdown.
-   Explain page structure, requested fields, semantic alias roles, relative geometry/hierarchy, ambiguous lookalikes,
-   and when to rewrite the guide. Do not hardcode merchant names, product labels, current node IDs or sample coordinates.
-   Numeric string aliases are required: use "1", not "x1". This is a reusable localization guide, not extraction code.
-3. Explicitly assign every required alias using update_aaid. Call capture_validation_case to freeze the complete annotated view.
-   This prepares evidence only; do not run or read the script during sampling.
-4. Call screenshot and independently extract collection_schema JSON from the actual image. Submit it with save_baseline.
-   Never infer a baseline from script output or hidden view text. save_baseline stores evidence, not a test result.
-   Include only visually confirmed complete information; use the schema's documented missing-value representation.
-   If evidence is unreadable or the screenshot and view are misaligned, abandon_validation before accepting a baseline.
-   Never delete a saved case or change its baseline to fit script output. If the baseline is demonstrably wrong,
-   load that case, inspect its original screenshot, then call repair_baseline with corrected JSON and field-specific visual evidence.
-   Prior revisions remain archived; rerun all cases after any correction.
-5. Call return_to_live_page after saving each baseline, then sample multiple different page states using swipes,
-   including collector_swipe_to_random. Reapply aliases and repeat capture_validation_case -> screenshot -> save_baseline.
-   Prepare at least two materially different states before testing. Every saved pair enters this probe run's persistent history L,
-   regardless of whether the current script can extract it. Returning to live never removes a failed case.
-   Also sample normal collector_swipe_up_long and collector_swipe_up transitions in the product pane.
-   Keep each returned operation_id and prepare a visual case immediately after that operation, without refreshing
-   or moving first. Include at least one long and one short normal upward swipe; random jumps do not count.
-6. Call sniff_run once to test the existing script against every current and historical case from this probe run only.
-   Before this first regression, define missing identity/completeness rules with save_collection_contract after multiple visual samples.
-   Choose primary_key (one or multiple existing item fields) and required_fields. Primary keys are always required.
-   Change existing rules only for a concrete counterexample, supplied as evidence. Insufficient evidence means inspect more.
-   Clipped rows are NOT counterexamples to required fields; do not weaken rules to admit them. Repeated keys across states are normal;
-   the same key identifying distinct real items is a counterexample. Compare all historical cases as well as this visit.
-   If all cases pass and eval_grades.ready=true, skip code reading and repair; proceed to normal-swipe confirmation and restoration.
-   Otherwise compare cases, ground_truths, run_results and eval_grades. Inspect the guide, aliases and script.
-   Read the existing script before editing; use apply_run_agent_py_patch for changes. Repair the general structural rule or guide.
-   After a guide change, re-mark every current and historical case with the new guide. Baseline correction is allowed only through repair_baseline after screenshot review.
-   Use list_validation_cases and load_validation_case for offline inspection; screenshot returns the saved historical image.
-   sniff_run regresses every saved case. A single passing state is never sufficient.
-   After each repair, call sniff_run again until every case scores 100. Do not replace hard cases with easier samples.
-7. Once eval_grades.ready=true, call confirm_normal_swipes with operation_ids whose resulting states are visually
-   verified normal product scrolling. Cover both long and short swipes. The tool computes max observed root change
-   ratio plus 0.05, capped at 1; never invent a threshold. If a sample is abnormal, do not confirm it: inspect and
-   prepare another genuine normal sample, then rerun all cases. A threshold of 1 cannot detect excessive changes.
-   After edits or evidence changes, rerun all cases before handoff. Return to the live page.
-   Inspect a same-page top-reset tab such as 点菜, 商品 or 全部商品,
-   obtain its bounds with page_node, then collector_tap. If execution fails, inspect the live view and retry the reset. Never use category anchors or navigate away.
-   Reapply required live annotations if reset deleted them. Finish only after restoration and full regression remain valid.
+1. Look for COLLECT.md with read_collection_guide before choosing anchors. If it exists, follow its rules
+   and explicitly assign required aliases using update_aaid after checking the described structure.
+   Reuse a matching guide unchanged; do not redesign it merely because merchant text, images or scroll position differ.
+   Read PAGE.md rules with read_collection_contract. Preserve valid identity and completeness rules.
+   Before any swipe, inspect the initial view and screenshot and save merchant identity with save_merchant_profile.
+
+2. If the guide is absent, mismatched, or a failed regression exposes a localization error, investigate
+   with all relevant available tools: page_view, page_catalog, page_read, page_node, select_aaid and screenshot.
+   Form a structural model before choosing actions or editing code:
+   - Identify the product viewport, repeated item boundaries and which descendants own each requested field.
+   - Mark multiple complementary semantic anchors when the view supports them. A product-list anchor alone
+     usually cannot distinguish a category rail, recommendations or another scrolling pane.
+     Add anchors such as the surrounding content pane, category/navigation rail, or product-tab region,
+     chosen from actual evidence rather than a mandatory fixed count.
+   - For EVERY anchor describe its purpose, stable hierarchy/geometry, repeated-child pattern, and relation
+     to other anchors (parent/child, sibling, containment or relative position). Include positive checks,
+     misleading lookalikes and rejection criteria. Explain which anchors should persist during product swipes.
+     Cross-check these relationships before declaring that the correct product region was found.
+   - Use numeric aliases such as "1", "2", "3", not "x1". The guide's first line is JSON, for example
+     {"required_aliases":["1","2","3"]}; list only aliases actually needed and locatable in sampled states.
+     The rest is English Markdown. Record structural recognition evidence and relationships, not current
+     node IDs, merchant names, product text, absolute sample coordinates or merchant-specific exceptions.
+   Write the reusable rules with write_collection_guide, then annotate the LIVE view with update_aaid.
+   A changed guide retires the old current/historical cases: begin fresh sampling in step 3.
+   Do not reuse old screenshots/baselines as newly collected evidence or merely re-mark obsolete cases.
+
+3. Collect sufficient cases BEFORE running or reading run.agent.py. For each annotated live state:
+   capture_validation_case -> screenshot -> independent visual extraction -> save_baseline.
+   save_baseline stores evidence, not a test result. Extract only screenshot-confirmed collection_schema JSON,
+   never hidden view text or predicted script output. Follow the schema's missing-value conventions.
+   If the view and image are misaligned or unreadable, abandon_validation before accepting the baseline.
+   Return using return_to_live_page and repeat across materially different scroll states, including
+   collector_swipe_to_random. Retest anchor relationships after each movement; do not trust a stale public ID.
+   Prepare at least two different states, plus actual normal collector_swipe_up_long and collector_swipe_up
+   samples in the product pane. Keep operation_ids; capture the corresponding case immediately without
+   another move or refresh. Random jumps, downward swipes and reset taps are not normal-upward samples.
+   Inspect visible bounds before choosing swipe coordinates. Check page_change_hint and query changed regions;
+   if the intended list did not move or an unrelated pane changed, re-localize rather than repeating blindly.
+   Screenshots may resolve ambiguity; hints alone do not prove the operation was effective.
+
+4. Once sampling is sufficient, call sniff_run to execute the EXISTING run.agent.py on the prepared cases.
+   Do not preemptively rewrite or read a script that may already work.
+   First define missing primary_key/required_fields using save_collection_contract from multiple visual samples.
+   Reuse existing rules if supported; a change requires a concrete counterexample, not a clipped row.
+   Primary keys use existing schema fields, may be composite and are required. Repeated keys across states
+   are normal; one key identifying different real items is a counterexample.
+   sniff_run alone produces cases, ground_truths, run_results and eval_grades; never self-award success.
+
+5. If every applicable case scores 100 and eval_grades.ready=true, skip all script/guide optimization.
+   Proceed directly to step 7. This visit still requires verification and restoration, not unnecessary coding.
+
+6. On failure, identify the cause from the test results and available evidence: wrong container, ambiguous
+   anchors, misplaced item boundary, split-label ownership, clipped content, or genuinely incorrect baseline.
+   Revisit step 2 and sample as in step 3. If annotation LOGIC changes, update COLLECT.md first:
+   every case captured under the previous guide becomes invalid, not just failing ones. Collect fresh cases
+   from the CURRENT merchant and make the script pass all of them under the new guide.
+   If the guide remains correct and only extraction code changes, keep every existing case in regression.
+   Read run.agent.py before modifying it with apply_run_agent_py_patch. Repair structural rules shared by
+   the current merchant's states, not a separate branch for each case. Similar-template merchants differ
+   in content; text equality, merchant identity and fixed child offsets are not reliable recognition keys.
+   After code repair, call sniff_run again. When annotations change, fresh visual sampling must precede it.
+   Baseline correction is allowed only through repair_baseline after reviewing the original screenshot
+   and supplying field-specific visual evidence; correction alone never permits history invalidation.
+   list_validation_cases/load_validation_case support offline diagnosis while the guide is unchanged.
+   Do not delete difficult cases, weaken required fields, or modify baselines to match a faulty script.
+   After repeated unsuccessful patches, reassess the whole structure and anchor relationships; remove
+   duplicated selectors, obsolete fallbacks and contradictory assumptions instead of growing case branches.
+
+7. After all active cases pass, finish the existing handoff protocol:
+   - Call confirm_normal_swipes only for visually verified normal upward samples covering long and short swipes.
+     The tool computes max observed root change ratio + 0.05, capped at 1. Never invent the threshold;
+     a value of 1 cannot detect excessive change. Invalidated samples cannot be reused.
+   - Return to the live page. Find a genuine same-page top-reset control such as 点菜, 商品 or 全部商品,
+     inspect page_node bounds and screenshot if needed, then collector_tap. Never use a category anchor
+     as a substitute or navigate away. If the action fails, inspect the current view before retrying.
+   - Reapply required live aliases if reset removed them. Complete only with valid regression and restoration.
+     Runtime archives the current visit's verified cases and returns training/restoration/swipe-profile results
+     to conductor. Saved visual evidence may already be persisted for recovery; that is not a passing result.
 
 Hard boundaries:
 - After live actions, page_change_hint suggests at most three disjoint regions to inspect with page_view/page_node/page_read.

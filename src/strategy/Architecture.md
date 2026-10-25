@@ -115,6 +115,15 @@ before_model 只在训练版本失效时更新状态，不发送阶段说明或�
 ### CollectorAssignmentMiddleware
 校验 collector 的独立任务身份并关闭并行 tool calls；不处理 conductor 页面策略或全局生命周期。
 
+Collector 的标记、用例及脚本归 CollectorToolbox 管理，不由 middleware 判断训练通过。
+先复用 COLLECT.md 并验证锚点关系，多状态视觉采样后用 sniff_run 测试现有脚本；通过即跳过编码。
+只有标记指南变更才使旧指南下的全部用例退出回归，包括当前访问的用例。CollectorHistory
+将原 record.json 移入同路径、同 probe run 的 invalidated 审计目录，普通 load 不再加载；
+其他路径及任务不受影响。重新读取被外部修改的指南也采用相同失效逻辑。
+Toolbox 清除旧评分、冻结视图、滑动样本和还原状态，要求重新采集当前商家的视觉用例。
+相同指南写入为 no-op；脚本修复和 baseline 修正不允许清除历史。基准保存仍即时落盘以支持恢复，
+只有通过当前有效用例回归并完成顶部还原后，coordinator 才归档完成结果并向 conductor 返回 trained。
+
 ## 5. 功能模块
 
 | 模块 | 输入 → 输出 | 状态所有权 |

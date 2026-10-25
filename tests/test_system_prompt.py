@@ -77,6 +77,20 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn(RUN_AGENT_PY_PATCH_GRAMMAR, COLLECTOR_PROMPT)
         self.assertNotIn("consult_coder", COLLECTOR_PROMPT)
 
+    def test_collector_reuses_structure_before_coding_and_scopes_invalidation(self) -> None:
+        for instruction in (
+            "multiple complementary semantic anchors",
+            "relation",
+            "Do not preemptively rewrite or read a script",
+            "skip all script/guide optimization",
+            "annotation logic is the ONLY exception",
+            "including this visit's samples",
+            "only extraction code changes, keep every existing case",
+            "CURRENT merchant",
+            "Do not rewrite an equivalent guide",
+        ):
+            self.assertIn(instruction, COLLECTOR_PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()

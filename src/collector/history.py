@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from threading import RLock
 from typing import Final
+from uuid import uuid4
 
 from pydantic import TypeAdapter
 
@@ -67,11 +68,28 @@ class CollectorHistory:
             if any(record.get("run_id") != run_id for record in [*historical, *candidates]):
                 raise ValueError("Cannot archive a case from another probe run")
             for record in historical:
-                self._write(directory, record['page_visit_id'], record)
+                self._write(directory, record["page_visit_id"], record)
             for candidate in candidates:
-                record: ValidationCase = {**candidate, "format_version": 2, 'page_visit_id': visit_id}
+                record: ValidationCase = {**candidate, "format_version": 2, "page_visit_id": visit_id}
                 self._write(directory, visit_id, record)
             return [case["case_id"] for case in candidates]
+
+    def retire_other_guides(self, path: str, guide_fingerprint: str, *, run_id: str) -> None:
+        """Remove obsolete annotation cases from regression while retaining their audit records."""
+        with self._lock:
+            directory: Path = self._directory(path, run_id)
+            archive: Path = directory / "invalidated" / uuid4().hex
+            for record in self.load(path, run_id=run_id):
+                if record["guide_fingerprint"] == guide_fingerprint:
+                    continue
+                source: Path = directory / record["page_visit_id"] / record["case_id"] / "record.json"
+                if not source.resolve().is_relative_to(directory):
+                    raise ValueError("History source escapes the run's page directory")
+                destination: Path = archive / record["page_visit_id"] / record["case_id"] / "record.json"
+                if not destination.resolve().is_relative_to(archive):
+                    raise ValueError("History archive escapes its directory")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(source, destination)
 
     def _write(self, page_directory: Path, visit_id: str, record: ValidationCase) -> None:
         if not visit_id or Path(visit_id).name != visit_id or visit_id in {".", ".."}:
