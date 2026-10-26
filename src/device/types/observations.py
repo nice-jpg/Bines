@@ -14,7 +14,7 @@ class CollectionSwipe(StrEnum):
 
 @dataclass(frozen=True)
 class SwipeObservation:
-    """One device operation and its synchronized full snapshot."""
+    """One operation and snapshot; change_ratio is the whole-page view update ratio."""
 
     hint: JsonValue
     snapshot: PageSnapshot | None

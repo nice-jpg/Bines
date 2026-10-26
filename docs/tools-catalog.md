@@ -91,7 +91,8 @@ OperationNoticeTool 迁至 notifications/service.py，作为自动通知服务�
 | `page_node` | key（必填） | 单个节点信息 |
 | `update_aaid` | id、value（必填） | 修改语义别名；这是写入操作，不是纯查询 |
 | `select_aaid` | aaid（必填） | 按别名定位 |
-| `update_ratio` | id（必填） | 查询区域更新比例 |
+| `node_update_ratio` | id（必填） | 节点变化量 / 旧子树节点数，上限 1 |
+| `view_update_ratio` | id（必填） | 可视区域内绝对面积变化 / 旧可视面积，上限 1 |
 
 除表中标注项外参数均非必填。页面捕获与缓存条件由 PageBridge 决定，工具层不重复实现。collector 使用相同 Reco 名称和 schema，但由 CollectorToolbox 包装，以支持冻结/历史视图限制，不能把这两个注册路径当作同一个工具对象。
 

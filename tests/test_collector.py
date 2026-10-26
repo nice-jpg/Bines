@@ -551,7 +551,7 @@ def test_normal_swipe_threshold_uses_verified_live_short_and_long_samples(tmp_pa
     confirmed = json.loads(t.confirm_normal_swipes([long["operation_id"], short["operation_id"]]))
     assert confirmed["sample_count"] == 2
     assert confirmed["actions"] == ["swipe_up", "swipe_up_long"]
-    assert confirmed["change_threshold"] == min(1, max(long["update_ratio"], short["update_ratio"]) + .05)
+    assert confirmed["change_threshold"] == min(1, max(long["view_update_ratio"], short["view_update_ratio"]) + .05)
     assert t.training_result()["normal_swipe_profile"]["change_threshold"] == confirmed["change_threshold"]
     with pytest.raises(ValueError, match="both"):
         t.confirm_normal_swipes([short["operation_id"]])
@@ -570,7 +570,7 @@ def test_random_swipes_do_not_supply_normal_threshold_evidence(tmp_path):
     assert not t._swipe_samples
 
 
-def test_move_records_the_same_normalized_ratio_as_the_page_hint(tmp_path, monkeypatch):
+def test_move_records_view_ratio_even_when_node_ratio_saturates(tmp_path, monkeypatch):
     from test_page_change_hint import page, button, container, items
     t = setup(tmp_path)
     before = page(button("header"), container(items(2)), button("footer"))
@@ -579,7 +579,8 @@ def test_move_records_the_same_normalized_ratio_as_the_page_hint(tmp_path, monke
     monkeypatch.setattr(t.event_hub, "swipe_up", lambda x, y: t.event_hub.page_bridge.observe(after))
     result = json.loads(t.collector_swipe_up(500, 1200))
     sample = t._swipe_samples[result["operation_id"]]
-    assert result["update_ratio"] == sample.ratio == pytest.approx(20 / 24)
+    assert result["view_update_ratio"] == sample.ratio == 0.0
+    assert result["node_update_ratio"] == 1.0
 
 
 def test_manager_returns_and_registers_verified_swipe_threshold(tmp_path, monkeypatch):
@@ -617,3 +618,16 @@ def test_manager_returns_and_registers_verified_swipe_threshold(tmp_path, monkey
     record = manager.training_registry.record_for("visit")
     assert record.change_threshold == profile["change_threshold"]
     assert record.normal_swipe_samples == profile["sample_count"] == 2
+
+
+def test_move_records_nonzero_view_change_instead_of_node_fraction(tmp_path, monkeypatch):
+    from test_page_change_hint import visible, button
+    t = setup(tmp_path)
+    before = visible(button('a', bounds='[0,0][100,100]'))
+    after = visible(button('a', bounds='[0,0][100,20]'))
+    t.event_hub.page_bridge.observe(before)
+    monkeypatch.setattr(t.event_hub, 'swipe_up', lambda x, y: t.event_hub.page_bridge.observe(after))
+    result = json.loads(t.collector_swipe_up(500, 1200))
+    sample = t._swipe_samples[result['operation_id']]
+    assert sample.ratio == result['view_update_ratio'] == .8
+    assert result['node_update_ratio'] == pytest.approx(1 / 3)

@@ -51,7 +51,7 @@ page_identity，也不在候选文档中重复 confirm_page 指令。确认反�
 以下工具合计保留最近 3 个调用 ID，限额作用于每个展开的 manual body，而非整个请求：
 
 `swipe_up, swipe_up_long, swipe_down, swipe_to_random, tap, tap_in_page,
-page_view, page_catalog, page_read, page_node, select_aaid, update_ratio, screenshot`。
+page_view, page_catalog, page_read, page_node, select_aaid, node_update_ratio, view_update_ratio, screenshot`。
 
 `_remove_tool_call_turns` 删除包含过期 ID 的整条 AIMessage（含文本和所有同轮调用），
 并删除这一 AIMessage 所有调用 ID 对应的 ToolMessage。混合多工具轮次也整体删除，

@@ -668,18 +668,19 @@ class CollectorToolbox:
             or any(sample.revision not in revisions for sample in samples)
         ):
             return None
+        # Samples use whole-page view_update_ratio, matching collection_swipe.
         threshold: float = min(1.0, max(sample.ratio for sample in samples) + 0.05)
         return {
             "change_threshold": threshold,
             "sample_count": len(samples),
             "actions": sorted({sample.action for sample in samples}),
-            "warning": "Threshold is 1; change ratio cannot detect excessive changes."
+            "warning": "Threshold is 1; view update ratio cannot detect excessive changes."
             if threshold == 1
             else "",
         }
 
     def confirm_normal_swipes(self, operation_ids: list[str]) -> str:
-        """Confirm observed normal live swipes after visual regression passes.
+        """Confirm normal live swipes and train the view update ratio threshold.
 
         Include at least one short and one long upward swipe operation_id. Each resulting
         state needs a current, passing screenshot baseline; random and historical states do not count.

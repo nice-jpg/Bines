@@ -137,7 +137,7 @@ src/tools/device/               # 第三层：Agent 工具桥接
 **页面访问接口维持原状：**
 
 - `create_page_tools` 继续以 `Reco.model_interface.TOOLS` 为工具名称、description、input_schema 的唯一来源，不手写另一套 schema。
-- 保留 `PageBridge.call/query/refresh/reset/snapshot/load_snapshot/root_change_ratio` 的对外语义，以及 ReadOnlyPageView 的页面脚本接口。
+- 保留 `PageBridge.call/query/refresh/reset/snapshot/load_snapshot` 的对外语义；`root_change_ratio` 统一返回整页可视区域的视图更新率，页面提示同时提供 `node_update_ratio` 与 `view_update_ratio`，以及 ReadOnlyPageView 的页面脚本接口。
 - `call` 在无快照或满足现有根 page_view 条件时刷新；普通分页、区域读取及别名访问保持原有缓存与查询行为。
 - 首次观测返回根视图，后续返回 page_change_hint；提示结构、整页比例算法、最多三个互不为祖先的入口规则不变。
 - 返回 `(content, artifact)`，artifact 中的 page_xml/page_snapshot、快照身份与别名格式不变；桥接层继续将页面查询 content 转为 JSON 文本。

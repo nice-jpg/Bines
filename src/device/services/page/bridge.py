@@ -113,7 +113,7 @@ class PageBridge:
             )
 
     def root_change_ratio(self) -> float | None:
-        """Return normalized whole-page region change, not pixel-area change."""
+        """Return whole-page visible-area change relative to the old visible area."""
         with self._lock:
             if self._session is None:
                 return None

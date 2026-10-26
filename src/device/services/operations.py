@@ -107,7 +107,7 @@ class DeviceOperationService:
             return self._replay_and_refresh(action_name, x, y)
 
     def collection_swipe(self, action: CollectionSwipe, x: int, y: int) -> SwipeObservation:
-        """Execute a collection gesture without invoking a model-facing tool."""
+        """Execute a collection gesture and report its whole-page view update ratio."""
         with self.operation_lock:
             page, artifact = self._replay_and_refresh(action.value, x, y)
             if artifact is None:

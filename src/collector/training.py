@@ -94,7 +94,7 @@ class CollectorTrainingRegistry:
         return current_path is None or record.page_path == self._canonical_path(current_path)
 
     def set_swipe_threshold(self, visit_id: str, threshold: float, sample_count: int) -> None:
-        """Attach verified live swipe evidence to an already trained visit."""
+        """Attach a verified whole-page view-change threshold to a trained visit."""
         with self._lock:
             record: CollectorTrainingRecord = self._records[visit_id]
             if not record.trained or not 0 <= threshold <= 1 or sample_count < 2:

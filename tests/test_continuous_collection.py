@@ -34,7 +34,7 @@ class ScriptedHub:
 
 
 def observation(name="cup", ratio=0.2):
-    return SwipeObservation({"kind": "page_change_hint", "update_ratio": ratio, "regions": []},
+    return SwipeObservation({"kind": "page_change_hint", "view_update_ratio": ratio, "node_update_ratio": 1.0, "regions": []},
                             _tool_message("swipe_up", name).artifact["page_snapshot"], ratio)
 
 
@@ -260,3 +260,24 @@ def test_loop_device_lock_blocks_concurrent_action(tmp_path):
         assert payload(work.result(timeout=5))["status"] == "completed"
         competing.result(timeout=5)
     assert competitor_done.is_set()
+
+
+def test_device_view_ratio_stops_loop_even_when_node_ratio_is_below_threshold(tmp_path, monkeypatch):
+    from src.device.services.operations import DeviceOperationService
+    from src.device.services.page.bridge import PageBridge
+    from test_page_change_hint import visible, button
+
+    before = visible(button('a', bounds='[0,0][100,100]'))
+    after = visible(button('a', bounds='[0,0][100,20]'))
+    device = DeviceOperationService()
+    device.page_bridge = PageBridge(lambda: before)
+    device.page_bridge.refresh()
+    monkeypatch.setattr(device, '_replay_and_refresh', lambda *args: device.page_bridge.observe(after))
+    observed = device.collection_swipe(CollectionSwipe.LONG, 500, 1200)
+    assert observed.hint['node_update_ratio'] == pytest.approx(1 / 3)
+    assert observed.change_ratio == observed.hint['view_update_ratio'] == .8
+    loop, runtime, _, _ = setup_loop(tmp_path, [observed])
+    monkeypatch.setattr(loop.service, 'collect', lambda *args: pytest.fail('excessive view change must stop'))
+    result = payload(loop.collect_continuously(500, 1200, .55, runtime))
+    assert result['reason'] == 'page_change_exceeded'
+    assert result['change_ratio'] == .8

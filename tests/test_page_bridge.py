@@ -19,9 +19,9 @@ def test_action_hint_keeps_complete_internal_snapshot():
     bridge = PageBridge(lambda: XML)
     bridge.refresh()
     unchanged, artifact = bridge.observe(XML)
-    assert unchanged == {"kind": "page_change_hint", "update_ratio": 0.0, "regions": []}
+    assert unchanged == {"kind": "page_change_hint", "view_update_ratio": 0.0, "node_update_ratio": 0.0, "regions": []}
     changed, artifact = bridge.observe(XML.replace("商品", "点菜"))
-    assert changed == {"kind": "page_change_hint", "update_ratio": 0.5, "regions": [{"id": 1, "update_ratio": 1.0}]}
+    assert changed == {"kind": "page_change_hint", "view_update_ratio": 0.0, "node_update_ratio": 0.5, "regions": []}
     assert "点菜" in artifact["page_xml"]
     assert bridge.query("page_view", {})[0]["summary"] == "点菜"
     assert "private-id" not in json.dumps(changed)
@@ -64,7 +64,7 @@ def test_bridge_reads_one_snapshot_and_syncs_ids_and_aliases():
     bridge.call("page_view", {})
     node, _ = bridge.call("select_aaid", {"aaid": 12})
     assert node["id"] == key
-    ratio, _ = bridge.call("update_ratio", {"id": key})
+    ratio, _ = bridge.call("node_update_ratio", {"id": key})
     assert ratio > 0
     with pytest.raises(ValueError):
         bridge.call("select_aaid", {"aaid": "12"})
@@ -103,3 +103,17 @@ def test_device_tool_returns_abstract_content_and_hidden_snapshot():
     assert "<hierarchy" not in result.content
     assert json.loads(result.content)["summary"] == "商品"
     assert result.artifact["page_xml"] == hub.page_bridge.xml
+
+
+def test_refresh_ratios_match_both_reco_queries():
+    before = XML.replace('[0,0][100,80]', '[0,0][100,100]')
+    after = before.replace('[0,0][100,100]', '[0,0][100,50]')
+    bridge = PageBridge(lambda: before)
+    bridge.refresh()
+    hint, _ = bridge.observe(after)
+    for name in ('node_update_ratio', 'view_update_ratio'):
+        assert hint[name] == bridge.call(name, {'id': 0})[0]
+        for region in hint['regions']:
+            assert region[name] == bridge.call(name, {'id': region['id']})[0]
+    assert hint['view_update_ratio'] == .5
+    assert hint['view_update_ratio'] == bridge.root_change_ratio()

@@ -102,7 +102,7 @@ def test_keeps_only_three_latest_short_lived_tool_pairs_in_active_manual() -> No
 def test_change_hints_remain_paired_and_allow_explicit_context_recovery() -> None:
     messages = [user("probe"), manual("meituan", "home")]
     for index in range(5):
-        hint = json.dumps({"kind": "page_change_hint", "regions": [{"id": index, "update_ratio": 0.8}]})
+        hint = json.dumps({"kind": "page_change_hint", "regions": [{"id": index, "view_update_ratio": 0.0, "node_update_ratio": 0.8}]})
         messages.extend(call_pair(f"swipe-{index}", "swipe_up", hint))
     full_view = json.dumps({"id": 4, "summary": "explicitly requested context", "regions": []})
     messages.extend(call_pair("query", "page_view", full_view, key=4))

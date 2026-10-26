@@ -72,7 +72,7 @@ class ContinuousCollection:
     ) -> Command[str]:
         """Collect the trained merchant with long swipes, short-swiping incomplete rows.
 
-        Pass the exact collector change_threshold and coordinates inside the product pane.
+        Pass the exact collector view-update change_threshold and coordinates inside the product pane.
         Returns on completion, anomalies, incoming user input or shutdown. No navigation.
         """
         state: ConductorFields = read_conductor_fields(runtime.state)

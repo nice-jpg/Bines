@@ -21,12 +21,14 @@ class PageArtifact(TypedDict):
 
 class ChangedRegion(TypedDict):
     id: int
-    update_ratio: float
+    node_update_ratio: float
+    view_update_ratio: float
 
 
 class PageChangeHint(TypedDict):
     kind: Literal["page_change_hint"]
-    update_ratio: float
+    node_update_ratio: float
+    view_update_ratio: float
     regions: list[ChangedRegion]
 
 
