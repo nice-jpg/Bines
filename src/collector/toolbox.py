@@ -72,21 +72,22 @@ def object_value(value: object) -> JsonObject:
         raise ValueError("Expected a JSON object") from exc
 
 
-def shape_errors(schema: JsonValue, value: JsonValue, path: str = "result") -> list[str]:
+def shape_errors(schema: JsonValue, value: JsonValue, path: str = "result", *, partial: bool = False) -> list[str]:
     if isinstance(schema, dict):
         if not isinstance(value, dict):
             return [path]
         if not schema:
             return []
-        errors: list[str] = [f"{path}.{key}" for key in set(value) ^ set(schema)]
+        invalid_keys = set(value) - set(schema) if partial else set(value) ^ set(schema)
+        errors: list[str] = [f"{path}.{key}" for key in invalid_keys]
         for key in set(value) & set(schema):
-            errors.extend(shape_errors(schema[key], value[key], f"{path}.{key}"))
+            errors.extend(shape_errors(schema[key], value[key], f"{path}.{key}", partial=partial))
         return errors
     if isinstance(schema, list):
         if not isinstance(value, list):
             return [path]
         return (
-            [error for i, item in enumerate(value) for error in shape_errors(schema[0], item, f"{path}[{i}]")]
+            [error for i, item in enumerate(value) for error in shape_errors(schema[0], item, f"{path}[{i}]", partial=partial)]
             if schema
             else []
         )
@@ -136,6 +137,7 @@ class CollectorToolbox:
         self._tap_attempted: bool = False
         self._exposed_fingerprint: str | None = None
         self._repair_count: int = 0
+        self._baseline_repair_count: int = 0
         self._lock: RLock = RLock()
 
     def _guide(self) -> CollectionGuide:
@@ -405,7 +407,7 @@ class CollectorToolbox:
         )
 
     def sniff_run(self) -> str:
-        """Test all prepared cases for this page in the current probe run, without device operations."""
+        """Test all prepared cases; return summary counts and only failed cases' expected/actual results."""
         if not self.validation.cases:
             raise ValueError("Prepare visual cases before running regression")
         if any(case["baseline"] is None or not case.get("image") for case in self.validation.cases.values()):
@@ -454,7 +456,7 @@ class CollectorToolbox:
         if not case["image"] or case["baseline"] is not None:
             raise ValueError("Capture screenshot first; an accepted baseline cannot be overwritten")
         baseline: JsonObject = object_value(r1)
-        errors: list[str] = shape_errors(self.collection_schema, baseline)
+        errors: list[str] = shape_errors(self.collection_schema, baseline, partial=True)
         if errors:
             raise ValueError(f"Baseline does not match collection_schema: {errors}")
         case["baseline"] = baseline
@@ -478,7 +480,7 @@ class CollectorToolbox:
         if not evidence.strip():
             raise ValueError("Describe the erroneous fields and what the original screenshot shows")
         baseline: JsonObject = object_value(r1)
-        errors: list[str] = shape_errors(case["schema"], baseline)
+        errors: list[str] = shape_errors(case["schema"], baseline, partial=True)
         if errors:
             raise ValueError(f"Baseline does not match the saved schema: {errors}")
         if baseline == case["baseline"]:
@@ -500,7 +502,20 @@ class CollectorToolbox:
             self.validation.cases[self.validation.active_id] = previous
             raise
         self.validation.reviewed_images.discard(self.validation.active_id)
-        return encoded({"ok": True, "changed": True, "regression_required": True})
+        self._baseline_repair_count += 1
+        response: JsonObject = {
+            "ok": True, "changed": True, "regression_required": True,
+            "baseline_repair_count": self._baseline_repair_count,
+            "baseline_review_required": self._baseline_repair_count >= 2,
+        }
+        if self._baseline_repair_count >= 2:
+            response["warning"] = (
+                "Repeated baseline repairs in this training visit. Use talk to report the evidence "
+                "problem and an improvement plan. Review screenshot/view alignment, clipping, anchor "
+                "selection and sampling before further repairs. Extra script data and fuller text "
+                "are already allowed; never alter visual evidence merely to pass regression."
+            )
+        return encoded(response)
 
     def _evaluate(self) -> str:
         guide: CollectionGuide = self._guide()
@@ -508,7 +523,7 @@ class CollectorToolbox:
         if contract is None:
             raise ValueError("Define the collection contract from visual evidence before regression")
         self._validate_contract(contract)
-        outputs: dict[str, JsonObject | None] = {}
+        failures: list[JsonObject] = []
         grades: dict[str, EvaluationGrade] = {}
         for case_id, case in self.validation.cases.items():
             result: ScriptResult | None = None
@@ -526,28 +541,30 @@ class CollectorToolbox:
                     grade["execution_error"] = result
                 elif shape_errors(self.collection_schema, result["result"]):
                     grade = {"score": 0, "errors": ["output_schema_mismatch"], "missing": []}
-            outputs[case_id] = result["result"] if result is not None and result["ok"] is True else None
+            if grade["score"] != 100:
+                failures.append({
+                    "case_id": case_id,
+                    "ground_truth": case["baseline"],
+                    "run_result": (
+                        result["result"] if result is not None and result["ok"] is True
+                        else result if result is not None
+                        else {"ok": False, "errors": grade["errors"]}
+                    ),
+                })
             grades[case_id] = grade
         self.validation.grades = grades
         self.validation.tested_stamp = self._stamp()
         return encoded(
             {
-                "cases": [
-                    {
-                        "case_id": key,
-                        "historical": key in self.validation.historical_ids,
-                        "snapshot_id": case["snapshot"]["snapshot_id"],
-                    }
-                    for key, case in self.validation.cases.items()
-                ],
-                "ground_truths": {key: case["baseline"] for key, case in self.validation.cases.items()},
-                "run_results": outputs,
-                "eval_grades": {
-                    "score": min((grade["score"] for grade in grades.values()), default=0),
-                    "cases": grades,
+                "summary": {
+                    "case_count": len(grades),
+                    "passed_count": len(grades) - len(failures),
+                    "failed_count": len(failures),
                     "ready": self.training_result()["ready"],
                     "stagnation_review_required": self._repair_count >= 3,
+                    "baseline_review_required": self._baseline_repair_count >= 2,
                 },
+                "run_results": failures,
             }
         )
 

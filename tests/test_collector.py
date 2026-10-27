@@ -105,7 +105,7 @@ def train(toolbox):
     toolbox.return_to_live_page()
     toolbox.collector_swipe_to_random(500, 1200)
     result = verify(toolbox, "bowl")
-    assert result["eval_grades"]["ready"]
+    assert result["summary"]["ready"]
     return result
 
 
@@ -125,8 +125,8 @@ def test_visual_workflow_locks_state_and_hides_output(tmp_path):
     assert image[1]["image_url"]["url"].startswith("data:image/png;base64,")
     assert json.loads(t.save_baseline('{"items":[{"name":"cup"}]}'))["saved"]
     report = json.loads(t.sniff_run())
-    assert report["eval_grades"]["score"] == 100
-    assert not report["eval_grades"]["ready"]
+    assert report["summary"]["failed_count"] == 0
+    assert not report["summary"]["ready"]
     with pytest.raises(ValueError, match="overwritten"):
         t.save_baseline('{"items":[]}')
 
@@ -163,6 +163,29 @@ def test_failed_reset_tap_can_be_retried(tmp_path):
     assert t._restored
 
 
+def test_repeated_baseline_repairs_require_report_and_review(tmp_path):
+    t = setup(tmp_path)
+    verify(t, "wrong")
+    first = json.loads(t.repair_baseline('{"items":[{"name":"cu"}]}', "Visible prefix is cu"))
+    assert not first["baseline_review_required"]
+    t.screenshot()
+    unchanged = json.loads(t.repair_baseline('{"items":[{"name":"cu"}]}', "Same evidence"))
+    assert not unchanged["changed"]
+    second = json.loads(t.repair_baseline('{"items":[{"name":"cup"}]}', "Full visible label is cup"))
+    assert second["baseline_repair_count"] == 2
+    assert second["baseline_review_required"]
+    assert "talk" in second["warning"]
+    assert json.loads(t.sniff_run())["summary"]["baseline_review_required"]
+
+
+def test_partial_visual_baseline_allows_full_script_fields(tmp_path):
+    t = setup(tmp_path)
+    t.collection_schema = {"items": [{"name": "", "price": 0}]}
+    t.mechanism.write_run_agent_py("meituan", 'def run(view):\n    return {"items": [{"name": "large cup", "price": 10}]}\n')
+    report = verify(t, "cup")
+    assert report["summary"]["failed_count"] == 0
+
+
 def test_two_states_require_random_sample_and_restore(tmp_path):
     t = setup(tmp_path)
     verify(t, "cup")
@@ -181,6 +204,25 @@ def test_two_states_require_random_sample_and_restore(tmp_path):
     assert "tap" in t.event_hub.calls
 
 
+def test_sniff_run_reports_only_failed_cases(tmp_path):
+    t = setup(tmp_path)
+    verify(t, "wrong")
+    failed_id = t.validation.active_id
+    t.return_to_live_page()
+    t.collector_swipe_to_random(500, 1200)
+    report = verify(t, "bowl")
+    assert set(report) == {"summary", "run_results"}
+    assert report["summary"]["case_count"] == 2
+    assert report["summary"]["passed_count"] == 1
+    assert report["summary"]["failed_count"] == 1
+    assert report["run_results"] == [{
+        "case_id": failed_id,
+        "ground_truth": {"items": [{"name": "wrong"}]},
+        "run_result": {"items": [{"name": "cup"}]},
+    }]
+    assert len(t.validation.grades) == 2
+
+
 def test_failed_case_cannot_be_evaded_or_rebased(tmp_path):
     t = setup(tmp_path)
     mark(t)
@@ -188,13 +230,13 @@ def test_failed_case_cannot_be_evaded_or_rebased(tmp_path):
     t.screenshot()
     t.save_baseline('{"items":[{"name":"wrong"}]}')
     report = json.loads(t.sniff_run())
-    assert report["eval_grades"]["score"] < 100
+    assert report["summary"]["failed_count"] > 0
     for action in (lambda: t.abandon_validation("snapshot_mismatch"),
                    lambda: t.collector_tap(1, 500)):
         with pytest.raises(ValueError):
             action()
     t.return_to_live_page()
-    assert json.loads(t.sniff_run())["eval_grades"]["score"] < 100
+    assert json.loads(t.sniff_run())["summary"]["failed_count"] > 0
 
 
 def test_patch_invalidates_training_and_preserves_scoped_file_tools(tmp_path):
@@ -206,7 +248,7 @@ def test_patch_invalidates_training_and_preserves_scoped_file_tools(tmp_path):
     patch = "*** Begin Patch\n*** Update File: run.agent.py\n@@\n def run(view):\n+    # Stable extraction contract.\n*** End Patch\n"
     assert json.loads(t.apply_run_agent_py_patch(patch))["ok"]
     assert not t.training_result()["ready"]
-    assert json.loads(t.sniff_run())["eval_grades"]["ready"]
+    assert json.loads(t.sniff_run())["summary"]["ready"]
     forbidden = patch.replace("run.agent.py", "../run.agent.py")
     assert not json.loads(t.apply_run_agent_py_patch(forbidden))["ok"]
 
@@ -302,7 +344,7 @@ def test_script_regression_against_history_blocks_readiness(tmp_path):
     second.mechanism.write_run_agent_py("meituan", 'def run(view):\n    return {"items": []}\n')
     second.load_validation_case(key)
     report = json.loads(second.sniff_run())
-    assert report["eval_grades"]["cases"][key]["score"] < 100
+    assert key in {case["case_id"] for case in report["run_results"]}
     assert expected
     assert not second.training_result()["ready"]
 
@@ -420,7 +462,7 @@ def test_batch_sampling_never_runs_script_and_regression_never_moves_device(tmp_
     before = t.event_hub.calls[:]
     ids = set(t.validation.cases)
     report = json.loads(t.sniff_run())
-    assert report["eval_grades"]["ready"]
+    assert report["summary"]["ready"]
     assert len(calls) == 2
     assert t.event_hub.calls == before
     assert t.validation.active_id is None and set(t.validation.cases) == ids
@@ -434,7 +476,7 @@ def test_failing_evidence_survives_restart_before_success(tmp_path):
     t.save_baseline('{"items":[{"name":"wrong"}]}')
     second = setup(tmp_path, visit="b")
     assert len(second.validation.historical_ids) == 1
-    assert json.loads(second.sniff_run())["eval_grades"]["score"] < 100
+    assert json.loads(second.sniff_run())["summary"]["failed_count"] > 0
 
 
 def test_new_run_excludes_old_failed_cases_but_keeps_archives(tmp_path):
@@ -451,9 +493,10 @@ def test_new_run_excludes_old_failed_cases_but_keeps_archives(tmp_path):
         with pytest.raises(ValueError, match="Unknown case"):
             current.load_validation_case(case_id)
     result = train(current)
-    assert result["eval_grades"]["ready"]
-    assert set(result["ground_truths"]) == set(current.validation.cases)
-    assert not set(result["ground_truths"]) & old.validation.cases.keys()
+    assert result["summary"]["ready"]
+    assert result["summary"]["case_count"] == len(current.validation.cases)
+    assert not current.validation.cases.keys() & old.validation.cases.keys()
+    assert result["run_results"] == []
     assert {p: p.read_bytes() for p in archived} == archived
 
 
@@ -465,9 +508,10 @@ def test_same_run_recreated_collector_keeps_all_prepared_cases(tmp_path):
     # Recreate the toolbox and storage object, as after retrying prepare_collector.
     resumed = setup(tmp_path, run="shared-run", visit="second-visit")
     report = json.loads(resumed.sniff_run())
-    assert len(report["cases"]) == 2
-    assert set(report["ground_truths"]) == set(second.validation.cases)
-    assert report["eval_grades"]["score"] == 100
+    assert report["summary"]["case_count"] == 2
+    assert resumed.validation.cases.keys() == second.validation.cases.keys()
+    assert report["run_results"] == []
+    assert report["summary"]["failed_count"] == 0
 
 
 def test_prepare_collector_requires_runtime_run_identity(tmp_path, monkeypatch):
@@ -503,7 +547,7 @@ def test_missing_contract_is_defined_after_multiple_samples(tmp_path):
         if name == "cup":
             t.collector_swipe_to_random(500, 1200)
     assert json.loads(t.save_collection_contract(["name"], []))["updated"]
-    assert json.loads(t.sniff_run())["eval_grades"]["ready"]
+    assert json.loads(t.sniff_run())["summary"]["ready"]
     assert "tap" not in t.event_hub.calls
 
 

@@ -52,7 +52,9 @@ Workflow:
 3. Collect sufficient cases BEFORE running or reading run.agent.py. For each annotated live state:
    capture_validation_case -> screenshot -> independent visual extraction -> save_baseline.
    save_baseline stores evidence, not a test result. Extract only screenshot-confirmed collection_schema JSON,
-   never hidden view text or predicted script output. Follow the schema's missing-value conventions.
+   never hidden view text or predicted script output. Omit fields whose values cannot be confirmed visually;
+   do not insert empty/null placeholders for obscured information. Retain readable partial text literally.
+   Do not invent full labels from clipped text or include entries with no visible identifying evidence.
    If the view and image are misaligned or unreadable, abandon_validation before accepting the baseline.
    Return using return_to_live_page and repeat across materially different scroll states, including
    collector_swipe_to_random. Retest anchor relationships after each movement; do not trust a stale public ID.
@@ -69,9 +71,16 @@ Workflow:
    Reuse existing rules if supported; a change requires a concrete counterexample, not a clipped row.
    Primary keys use existing schema fields, may be composite and are required. Repeated keys across states
    are normal; one key identifying different real items is a counterexample.
-   sniff_run alone produces cases, ground_truths, run_results and eval_grades; never self-award success.
+   sniff_run returns summary (case_count, passed_count, failed_count, ready, stagnation_review_required,
+   baseline_review_required)
+   and run_results containing only failed cases: case_id, ground_truth and run_result.
+   Passing case details are omitted, not skipped during evaluation; never self-award success.
+   Visual evidence is a lower bound: every baseline entry must match a DISTINCT script entry, every
+   baseline field must exist, and its visible text must be contained in that entry's field text.
+   Extra entries/fields and fuller text are allowed; numeric/boolean/null evidence must match exactly.
+   Matching is independent of list order. Script output must still satisfy the full collection_schema.
 
-5. If every applicable case scores 100 and eval_grades.ready=true, skip all script/guide optimization.
+5. If summary.failed_count=0 and summary.ready=true, skip all script/guide optimization.
    Proceed directly to step 7. This visit still requires verification and restoration, not unnecessary coding.
 
 6. On failure, identify the cause from the test results and available evidence: wrong container, ambiguous
@@ -86,6 +95,10 @@ Workflow:
    After code repair, call sniff_run again. When annotations change, fresh visual sampling must precede it.
    Baseline correction is allowed only through repair_baseline after reviewing the original screenshot
    and supplying field-specific visual evidence; correction alone never permits history invalidation.
+   When baseline_review_required=true (two or more actual repairs this visit), immediately use talk to
+   report the repeated evidence problems and a concrete improvement plan. Reassess screenshot/view
+   alignment, clipping, sampling and anchor selection, rather than editing evidence toward script output.
+   Extra tree-derived data or fuller text alone is NOT a baseline error and does not justify repair.
    list_validation_cases/load_validation_case support offline diagnosis while the guide is unchanged.
    Do not delete difficult cases, weaken required fields, or modify baselines to match a faulty script.
    After repeated unsuccessful patches, reassess the whole structure and anchor relationships; remove
