@@ -1,10 +1,8 @@
-"""Feishu SDK adapter; transport lifecycle stays inside the channel worker."""
+"""Feishu adapter with application-loop delivery and SDK-owned transport lifecycle."""
 
 import asyncio
 import json
 import logging
-from queue import Empty, Queue
-from threading import RLock, Thread
 
 from lark_oapi.channel import FeishuChannel as FeishuSDK  # pyright: ignore[reportMissingTypeStubs]
 from lark_oapi.channel.config import (  # pyright: ignore[reportMissingTypeStubs]
@@ -22,8 +20,9 @@ from lark_oapi.channel.types import (  # pyright: ignore[reportMissingTypeStubs]
 )
 from lark_oapi.core.enum import LogLevel  # pyright: ignore[reportMissingTypeStubs]
 
-from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
-from src.channel.base import Channel, MessageListener
+from src.channel.base import Channel
+from src.channel.buffer import MessageBuffer
+from src.channel.messages import InBoundMessage, OutBoundMessage
 
 from .config import FeishuConfig
 from .dedup import MessageDeduplicator
@@ -32,52 +31,70 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 
 class FeishuChannel(Channel):
-    """Translate Feishu messages and serialize delivery on an owned worker."""
+    """Marshal inbound callbacks onto the application loop, preserving chat identity."""
 
     def __init__(self, config: FeishuConfig, channel_id: str) -> None:
         self._config: FeishuConfig = config
         self._channel_id: str = channel_id
-        self._listener: MessageListener | None = None
-        self._outgoing: Queue[OutgoingMessage] = Queue(maxsize=256)
-        self._lock: RLock = RLock()
+        self._buffer: MessageBuffer | None = None
         self._closing: bool = False
         self._started: bool = False
         self._deduplicator: MessageDeduplicator = MessageDeduplicator()
-        self._thread: Thread = Thread(target=self._run, name=f"channel-{channel_id}")
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._sdk: FeishuSDK | None = None
 
     @property
     def channel_id(self) -> str:
         return self._channel_id
 
-    def bind_message_listener(self, listener: MessageListener) -> None:
+    def bind_buffer(self, buffer: MessageBuffer) -> None:
         if self._started:
-            raise RuntimeError("Bind the channel listener before startup")
-        self._listener = listener
+            raise RuntimeError("Bind the channel buffer before startup")
+        self._buffer = buffer
 
-    def start(self) -> None:
-        if self._listener is None:
-            raise RuntimeError("Channel has no message listener")
-        with self._lock:
-            if self._started or self._closing:
-                raise RuntimeError("Channel cannot be started again")
-            self._started = True
-        self._thread.start()
+    async def start(self) -> None:
+        if self._buffer is None:
+            raise RuntimeError("Channel has no message buffer")
+        if self._started or self._closing:
+            raise RuntimeError("Channel cannot be started again")
+        self._started = True
+        self._loop = asyncio.get_running_loop()
+        self._sdk = self._build_sdk()
+        self._sdk.on("message", self._receive)
+        await self._sdk.start_background(timeout=30)
 
-    def send_message(self, message: OutgoingMessage) -> None:
+    async def send_message(self, message: OutBoundMessage) -> bool:
         if message.channel_id != self._channel_id:
             raise ValueError("Message belongs to a different channel")
-        with self._lock:
-            if not self._started or self._closing or not self._thread.is_alive():
-                raise RuntimeError("Channel is not running")
-            self._outgoing.put_nowait(message)
+        if self._sdk is None or self._closing:
+            return False
+        result: SendResult = await asyncio.wait_for(
+            self._sdk.send(
+                message.session_id, OutboundText(text=message.text), {"receive_id_type": "chat_id"}
+            ),
+            timeout=30,
+        )
+        return result.success
 
-    def close(self) -> None:
-        with self._lock:
-            self._closing = True
-        if self._started:
-            self._thread.join()
+    async def close(self) -> None:
+        self._closing = True
+        if self._sdk is not None:
+            await asyncio.to_thread(self._sdk.stop)
+            self._sdk = None
 
-    def _receive(self, message: InboundMessage) -> None:
+    async def _receive(self, message: InboundMessage) -> None:
+        loop = self._loop
+        if loop is None or self._closing:
+            return
+        if asyncio.get_running_loop() is loop:
+            self._deliver(message)
+        else:
+            await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(self._deliver_on_owner(message), loop))
+
+    async def _deliver_on_owner(self, message: InboundMessage) -> None:
+        self._deliver(message)
+
+    def _deliver(self, message: InboundMessage) -> None:
         if not isinstance(message.content, TextContent) or not message.content.text.strip():
             return
         text: str = message.content.text
@@ -86,7 +103,7 @@ class FeishuChannel(Channel):
                 mention.name or mention.open_id or mention.user_id or mention.key.lstrip("@")
             )
             text = text.replace(mention.key, replacement)
-        incoming: IncomingMessage = IncomingMessage(
+        incoming: InBoundMessage = InBoundMessage(
             self._channel_id,
             message.conversation.chat_id,
             message.id,
@@ -98,31 +115,14 @@ class FeishuChannel(Channel):
         identity: str = (
             message.id if self._channel_id == "feishu" else json.dumps([self._channel_id, message.id])
         )
-        with self._lock:
-            if self._closing or self._deduplicator.contains(identity):
-                return
-            listener: MessageListener | None = self._listener
-            if listener is None or not listener(incoming):
-                raise RuntimeError("Incoming message was not accepted by the gateway")
-            self._deduplicator.mark_processed(identity, incoming.conversation_id)
+        if self._closing or self._deduplicator.contains(identity):
+            return
+        if self._buffer is None or not self._buffer.submit(incoming):
+            raise RuntimeError("Incoming message was not accepted by the agent inbox")
+        self._deduplicator.mark_processed(identity, incoming.session_id)
 
-    def _run(self) -> None:
-        try:
-            asyncio.run(self._serve())
-        except Exception:
-            logger.exception("Feishu channel stopped: %s", self._channel_id)
-        finally:
-            with self._lock:
-                self._closing = True
-            while True:
-                try:
-                    message: OutgoingMessage = self._outgoing.get_nowait()
-                except Empty:
-                    break
-                logger.error("Undelivered Feishu output for %s/%s", self._channel_id, message.conversation_id)
-
-    async def _serve(self) -> None:
-        sdk: FeishuSDK = FeishuSDK(
+    def _build_sdk(self) -> FeishuSDK:
+        return FeishuSDK(
             app_id=self._config.app_id,
             app_secret=self._config.app_secret,
             log_level=_log_level(self._config.log_level),
@@ -134,33 +134,6 @@ class FeishuChannel(Channel):
                 stale_message_window_ms=2**63 - 1,
             ),
         )
-        sdk.on("message", self._receive)
-        try:
-            await sdk.start_background(timeout=30)
-            while True:
-                try:
-                    message: OutgoingMessage = self._outgoing.get_nowait()
-                except Empty:
-                    with self._lock:
-                        if self._closing:
-                            break
-                    await asyncio.sleep(0.02)
-                    continue
-                try:
-                    result: SendResult = await asyncio.wait_for(
-                        sdk.send(  # pyright: ignore[reportUnknownMemberType]
-                            message.conversation_id,
-                            OutboundText(text=message.text),
-                            {"receive_id_type": "chat_id"},
-                        ),
-                        timeout=30,
-                    )
-                    if not result.success:
-                        logger.error("Feishu delivery failed: %s", result.error)
-                except Exception:
-                    logger.exception("Feishu delivery failed for %s", message.conversation_id)
-        finally:
-            await sdk.disconnect()
 
 
 def _log_level(value: str) -> LogLevel:

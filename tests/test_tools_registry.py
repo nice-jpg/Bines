@@ -7,24 +7,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from tests.tool_helpers import conductor_tools
-from src.tools.subagents.tools import create_subagent_tools
+from src.agent_runtime.messaging.tools import communication_tools
 from src.tools.device.effect import (
     NAVIGATION_PAGE_CHANGE_POLICY,
     OPERATION_EFFECT_POLICY_METADATA_KEY,
     SCROLL_PAGE_CHANGE_POLICY,
 )
 from src.tools.notifications.policy import EXTERNAL_OPERATION_POLICY_METADATA_KEY
-
-
-class FakeSubagentManager:
-    def spawn_subagent(self, name, agent_type, instructions, tool_names="", max_iterations=80):
-        return "spawned"
-
-    def call_subagent(self, agent_id, task):
-        return "called"
-
-    def kill_subagent(self, agent_id):
-        return "killed"
 
 
 class ToolsRegistryTests(unittest.TestCase):
@@ -90,16 +79,21 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertNotIn("runtime", schemas["prepare_collector"]["properties"])
 
     def test_collect_tools_can_include_subagent_tools_for_main_agent(self) -> None:
+        from engine_helpers import ScriptedEngine, Model
+        from langchain_core.messages import AIMessage
+        engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]))
         tool_names = [
             tool.name
-            for tool in create_subagent_tools(FakeSubagentManager())
+            for tool in communication_tools(engine)
         ]
 
         self.assertIn("spawn_subagent", tool_names)
-        self.assertIn("call_subagent", tool_names)
-        self.assertIn("kill_subagent", tool_names)
+        self.assertIn("call", tool_names)
+        self.assertIn("report", tool_names)
+        self.assertIn("kill", tool_names)
         self.assertNotIn("query_manual", tool_names)
         self.assertNotIn("swipe_to_random", tool_names)
+        engine.close()
 
     def test_operation_effect_policies_are_typed_and_narrowly_exposed(self) -> None:
         tools = {tool.name: tool for tool in conductor_tools()}

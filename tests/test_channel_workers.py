@@ -1,255 +1,251 @@
-"""Integration coverage for the replacement channel-independent workers."""
+"""Channel communication stays on the owner loop; model work does not."""
 
+import asyncio
 import json
-from unittest.mock import create_autospec
+from threading import get_ident
 
 import pytest
-from queue import Queue
-from threading import Event, current_thread
-from uuid import uuid4
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from test_agent_router import EchoModel
 
-from langchain_core.messages import AIMessage
-from langchain_core.tools import tool
-from langgraph.types import interrupt
-
-from src.agent_runtime.coordinator import AgentCoordinator
-from src.agent_runtime.worker import AgentWorker
-from src.agent_runtime.types.execution import EngineStatus
-from engine_helpers import ScriptedEngine
+from src.agent_hypervisor.host import Host
+from src.agent_hypervisor.root import RootAgent
 from src.channel.base import Channel
-from src.agent_runtime.messaging.messages import IncomingMessage, MessageStreamClosed
-from engine_helpers import Model
+from src.channel.gateway import Gateway
+from src.channel.messages import InBoundMessage, OutBoundMessage
 
 
-from gateway_helpers import RecordingChannel, GatewayHandle
+class ChannelStub(Channel):
+    def __init__(self, identity="binding"):
+        self.identity = identity
+        self.sent = []
+        self.threads = []
+        self.delivery = asyncio.Event()
+        self.closed = False
+
+    @property
+    def channel_id(self):
+        return self.identity
+
+    def bind_buffer(self, buffer):
+        self.listener = buffer.submit
+
+    async def start(self):
+        self.threads.append(get_ident())
+
+    async def close(self):
+        self.threads.append(get_ident())
+        self.closed = True
+
+    async def send_message(self, message):
+        self.sent.append(message)
+        self.threads.append(get_ident())
+        self.delivery.set()
+        return True
 
 
-def completed(summary):
-    return AIMessage(
-        content=json.dumps(
-            {
-                "resolved": True,
-                "summary": summary,
-                "result": {},
-                "next_action": None,
-            }
-        )
-    )
-
-
-def workers(settings, channels):
-    assert len(channels) == 1
-    gateway = GatewayHandle(next(iter(channels.values())))
-    engine = ScriptedEngine(**settings, gateway_id=gateway.gateway_id, structured=True)
-    worker = AgentWorker(AgentCoordinator(engine))
-    worker.start()
-    gateway.start()
-    return worker, gateway
-
-
-def stop(worker, gateway):
-    gateway.request_stop()
-    worker.join()
-    gateway.finish_output()
-    gateway.join()
-
-
-def test_long_running_agent_completes_unresolved_work_then_accepts_next_task():
-    unresolved = AIMessage(
-        content=json.dumps(
-            {
-                "resolved": False,
-                "summary": "working",
-                "result": {},
-                "next_action": "finish task",
-            }
-        )
-    )
-    model = Model(replies=[unresolved, completed("finished"), completed("next finished")])
-    settings = dict(name="test", model=model, tools=[], system_prompt="base")
-    channel = RecordingChannel()
-    agent, gateway = workers(settings, {"feishu": channel})
-    try:
-        assert channel.receive("chat", "first task")
-        assert json.loads(channel.output().text)["summary"] == "finished"
-        assert len(model.seen) == 2
-        assert channel.receive("chat", "second task")
-        assert json.loads(channel.output().text)["summary"] == "next finished"
-        assert len(model.seen) == 3
-        assert channel.sent.empty()
-    finally:
-        stop(agent, gateway)
-
-
-def test_supplement_does_not_approve_pending_human_interrupt():
-    approvals = []
-
-    @tool
-    def approve() -> str:
-        """Wait for explicit approval."""
-        approvals.append(interrupt({"kind": "human", "message": "approve"}))
-        return "approved"
-
-    model = Model(
-        replies=[
-            AIMessage(content="", tool_calls=[{"name": "approve", "args": {}, "id": "approve-1"}]),
-            completed("done"),
-        ]
-    )
-    settings = dict(name="test", model=model, tools=[approve], system_prompt="base")
-    channel = RecordingChannel()
-    worker, gateway = workers(settings, {"feishu": channel})
-    try:
-        channel.receive("a", "start")
-        assert channel.output().text == "approve"
-        channel.receive("a", "clarification")
-        assert approvals == []
-        channel.receive("a", "done")
-        assert json.loads(channel.output().text)["summary"] == "done"
-        assert approvals == ["done"]
-        assert any("user: clarification" in m.content for m in model.seen[-1])
-    finally:
-        stop(worker, gateway)
-
-
-def test_shutdown_waits_for_inflight_call_and_prevents_new_tool():
-    entered, release = Event(), Event()
-    calls = []
-
-    @tool
-    def operation() -> str:
-        """Record an operation."""
-        calls.append(True)
-        return "ok"
-
-    def block(index):
-        entered.set()
-        assert release.wait(5)
-
-    model = Model(
-        replies=[AIMessage(content="", tool_calls=[{"name": "operation", "args": {}, "id": "one"}])],
-        on_call=block,
-    )
-    settings = dict(name="test", model=model, tools=[operation], system_prompt="base")
-    channel = RecordingChannel()
-    worker, gateway = workers(settings, {"feishu": channel})
-    try:
-        channel.receive("a", "start")
-        assert entered.wait(5)
-        gateway.request_stop()
-        release.set()
-        assert worker.join().status == EngineStatus.STOPPED
-        worker.join()
-        gateway.finish_output()
-        gateway.join()
-        assert not calls
-        assert len(model.seen) == 1
-    finally:
-        release.set()
-
-
-def test_notifications_deliver_while_agent_tool_is_still_running():
-    from langchain.tools import ToolRuntime
-
-    entered, release = Event(), Event()
-
-    @tool
-    def notify_and_wait(runtime: ToolRuntime[None]) -> str:
-        """Emit a notice before completing a long operation."""
-        assert worker._coordinator._engine.send_message("notice")
-        entered.set()
-        assert release.wait(5)
-        return "tool done"
-
-    model = Model(
-        replies=[
-            AIMessage(
+class ReplyModel(EchoModel):
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        self.threads.append(get_ident())
+        if isinstance(messages[-1], ToolMessage):
+            reply = AIMessage(content="Not sent implicitly.")
+        else:
+            handled = {call["id"] for m in messages if isinstance(m, AIMessage) for call in m.tool_calls}
+            records = [json.loads(line) for m in messages if m.type == "human" for line in m.content.splitlines()[1:]]
+            records = [record for record in records if str(record["sequence"]) not in handled]
+            reply = AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "name": "notify_and_wait",
-                        "args": {},
-                        "id": "notice-1",
+                        "id": str(record["sequence"]),
+                        "name": "reply",
+                        "type": "tool_call",
+                        "args": {"channel_id": record["channel_id"], "session_id": record["session_id"], "message": json.loads(record["text"])["messages"][0]["text"]},
                     }
+                    for record in records
                 ],
-            ),
-            completed("final"),
-        ]
-    )
-    settings = dict(name="test", model=model, tools=[notify_and_wait], system_prompt="base")
-    channel = RecordingChannel()
-    worker, gateway = workers(settings, {"feishu": channel})
-    try:
-        channel.receive("chat", "start")
-        assert entered.wait(5)
-        assert channel.output().text == "notice"
-        assert len(model.seen) == 1
-        release.set()
-        assert json.loads(channel.output().text)["summary"] == "final"
-    finally:
-        release.set()
-        stop(worker, gateway)
+            )
+        return ChatResult(generations=[ChatGeneration(message=reply)])
 
 
-def test_conversation_address_stays_fixed_while_supplements_arrive():
-    entered, release = Event(), Event()
+def test_channel_serves_multiple_conversations_on_one_context():
+    async def run():
+        channel = ChannelStub()
+        model = ReplyModel()
+        host = Host()
+        engine = RootAgent(model=model, handle=host.register_root())
+        await host.open(engine, [channel])
+        try:
+            for conversation in ("a", "b"):
+                channel.delivery.clear()
+                assert channel.listener(
+                    InBoundMessage("binding", conversation, conversation, conversation, "user")
+                )
+                await asyncio.wait_for(channel.delivery.wait(), 3)
+            assert [(m.session_id, m.text) for m in channel.sent] == [("a", "a"), ("b", "b")]
+            assert all(identity != get_ident() for identity in model.threads)
+        finally:
+            await host.close()
+        assert channel.closed and all(identity == get_ident() for identity in channel.threads)
+        assert not host._workers
 
-    def block(index):
-        if index == 0:
-            entered.set()
-            assert release.wait(5)
-
-    model = Model(replies=[completed("first"), completed("updated"), completed("next")], on_call=block)
-    settings = dict(name="test", model=model, tools=[], system_prompt="base")
-    channel = RecordingChannel()
-    worker, gateway = workers(settings, {"feishu": channel})
-    try:
-        channel.receive("group", "start")
-        assert entered.wait(5)
-        channel.receive("group", "supplement")
-        release.set()
-        assert channel.output().conversation_id == "group"
-        channel.receive("group", "next task")
-        assert channel.output().conversation_id == "group"
-    finally:
-        release.set()
-        stop(worker, gateway)
-
-
-def test_input_arriving_during_interrupt_is_reported_without_approving():
-    entered, release = Event(), Event()
-    approvals = []
-
-    @tool
-    def approve() -> str:
-        """Wait for an explicit human confirmation."""
-        entered.set()
-        assert release.wait(5)
-        approvals.append(interrupt({"kind": "human", "message": "confirm"}))
-        return "approved"
-
-    model = Model(
-        replies=[
-            AIMessage(content="", tool_calls=[{"name": "approve", "args": {}, "id": "one"}]),
-            completed("final"),
-        ]
-    )
-    settings = dict(name="test", model=model, tools=[approve], system_prompt="base")
-    channel = RecordingChannel()
-    worker, gateway = workers(settings, {"feishu": channel})
-    try:
-        channel.receive("chat", "start")
-        assert entered.wait(5)
-        channel.receive("chat", "supplement while interrupting")
-        release.set()
-        assert channel.output().text == "confirm"
-        assert approvals == []
-        channel.receive("chat", "done")
-        assert json.loads(channel.output().text)["summary"] == "final"
-        assert approvals == ["done"]
-        assert any("user: supplement while interrupting" in m.content for m in model.seen[-1])
-    finally:
-        release.set()
-        stop(worker, gateway)
+    asyncio.run(run())
 
 
+def test_delivery_failure_is_returned_to_caller():
+    async def run():
+        class FailingChannel(ChannelStub):
+            async def send_message(self, message):
+                return False
+
+        output = Gateway([FailingChannel()])
+        output.buffer.submit(InBoundMessage("binding", "a", "1", "hello", "user"))
+        batch = await output.take_batch()
+        output.commit_batch(batch.batch_id)
+        assert await output.send(OutBoundMessage("binding", "a", "hello")) is False
+
+    asyncio.run(run())
+
+
+def test_topology_rejects_duplicate_channels_before_starting():
+    host = Host()
+    channel = ChannelStub()
+    engine = RootAgent(model=ReplyModel(), handle=host.register_root())
+    with pytest.raises(ValueError):
+        Gateway([channel, channel])
+    engine.close()
+
+
+def test_start_failure_closes_workers_and_channel():
+    async def run():
+        class BrokenChannel(ChannelStub):
+            async def start(self):
+                raise RuntimeError("startup failed")
+
+        channel = BrokenChannel()
+        host = Host()
+        engine = RootAgent(model=ReplyModel(), handle=host.register_root())
+        with pytest.raises(RuntimeError, match="startup failed"):
+            await host.open(engine, [channel])
+        assert channel.closed and not host._workers
+
+    asyncio.run(run())
+
+
+def test_root_delegates_and_relays_child_report_to_original_conversation():
+    from test_agent_router import EchoEngine
+
+    class DelegatingModel(EchoModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            last = messages[-1]
+            if isinstance(last, ToolMessage):
+                if last.name == "spawn_subagent":
+                    spawned = json.loads(last.content)
+                    origin = next(json.loads(m.content.splitlines()[-1]) for m in reversed(messages) if m.type == "human")
+                    calls = [
+                        {
+                            "name": "call",
+                            "args": {
+                                "subagent_id": spawned["subagent_id"],
+                                "task": "delegated task",
+                                "source_batch_ids": [origin["batch_id"]],
+                            },
+                            "id": "call",
+                        }
+                    ]
+                else:
+                    calls = []
+            else:
+                record = json.loads(last.content.splitlines()[-1])
+                if record["kind"] == "user":
+                    previous_spawn = next(
+                        (m for m in messages if isinstance(m, ToolMessage) and m.name == "spawn_subagent"),
+                        None,
+                    )
+                    calls = [
+                        {
+                            "name": "spawn_subagent",
+                            "args": {
+                                "agent_type": "echo",
+                            },
+                            "id": "spawn",
+                        }
+                    ]
+                    if previous_spawn is not None:
+                        calls = [
+                            {
+                                "name": "call",
+                                "args": {
+                                    "subagent_id": json.loads(previous_spawn.content)["subagent_id"],
+                                    "task": "delegated task",
+                                    "source_batch_ids": [record["batch_id"]],
+                                },
+                                "id": "reuse",
+                            }
+                        ]
+                else:
+                    # Resolve the report to its originating call, not the latest user input.
+                    call_index = next(
+                        i
+                        for i, m in enumerate(messages)
+                        if isinstance(m, ToolMessage)
+                        and m.name == "call"
+                        and json.loads(m.content)["task_id"] == record["task_id"]
+                    )
+                    user_records = [
+                        json.loads(m.content.splitlines()[-1])
+                        for m in messages[:call_index]
+                        if m.type == "human"
+                    ]
+                    origin = next(r for r in reversed(user_records) if r["kind"] == "user")
+                    calls = [
+                        {
+                            "name": "reply",
+                            "args": {
+                                "channel_id": origin["channel_id"],
+                                "session_id": origin["session_id"],
+                                "message": record["result"]["summary"],
+                            },
+                            "id": "reply",
+                        }
+                    ]
+            return ChatResult(
+                generations=[
+                    ChatGeneration(message=AIMessage(content="" if calls else "Waiting", tool_calls=calls))
+                ]
+            )
+
+    async def run():
+        channel = ChannelStub()
+
+        class DelegatingEngine(RootAgent):
+            def spawn_subagent(self, agent_type: str) -> dict[str, str]:
+                """Create an echo child."""
+                assert agent_type == "echo"
+                with self.handle.spawner.child() as handle:
+                    self.handle.spawner.start(EchoEngine(model=EchoModel(), handle=handle))
+                return {"subagent_id": handle.agent_id}
+
+        host = Host()
+        engine = DelegatingEngine(model=DelegatingModel(), handle=host.register_root())
+        await host.open(engine, [channel])
+        try:
+            assert channel.listener(InBoundMessage("binding", "chat-b", "1", "delegate", "user"))
+            await asyncio.wait_for(channel.delivery.wait(), 5)
+            assert [(message.session_id, message.text) for message in channel.sent] == [
+                ("chat-b", "delegated task")
+            ]
+            assert len(host._workers) == 2
+            channel.delivery.clear()
+            assert channel.listener(InBoundMessage("binding", "chat-c", "2", "delegate again", "user"))
+            await asyncio.wait_for(channel.delivery.wait(), 5)
+            assert [(m.session_id, m.text) for m in channel.sent] == [
+                ("chat-b", "delegated task"),
+                ("chat-c", "delegated task"),
+            ]
+            assert len(host._workers) == 2
+        finally:
+            await host.close()
+
+    asyncio.run(run())

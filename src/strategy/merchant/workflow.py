@@ -40,6 +40,14 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
     def before_model(self, state: ConductorState, runtime: Runtime[None]) -> dict[str, object] | None:
         visit: PageVisit | None = state["general"].get("visit")
         if visit is not None and is_merchant_visit(visit) and unconfirmed_arrival(state["general"]) is None:
+            if state["merchant"].get(
+                "phase"
+            ) == MERCHANT_AWAITING_TRAINING and not self.service.training_error(state):
+                updated = state["merchant"].copy()
+                updated.update(
+                    phase=MERCHANT_READY, training_version=self.service.training_version(state), entry_taps=0
+                )
+                return dict(complete_update(state, {"merchant": updated}))
             if state["merchant"].get("phase") != MERCHANT_AWAITING_TRAINING and self._training_error(
                 state, state["merchant"]
             ):
@@ -91,6 +99,9 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
         safe: bool = call.name in OBSERVATION_TOOLS | {
             "think",
             "talk",
+            "call",
+            "report",
+            "kill",
             "authenticate_captcha",
             "captcha_authenticated",
             "update_page_notes",

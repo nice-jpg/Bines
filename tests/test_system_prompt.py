@@ -56,8 +56,8 @@ class SystemPromptTests(unittest.TestCase):
     def test_conductor_prompt_requires_persistent_structured_completion(self) -> None:
         self.assertIn('"resolved": true', CONDUCTOR_PROMPT)
         self.assertIn('"next_action": null', CONDUCTOR_PROMPT)
-        self.assertIn("persistence layer will retain the existing context", CONDUCTOR_PROMPT)
-        self.assertIn("validates the structured response, not business completion state", CONDUCTOR_PROMPT)
+        self.assertIn("call report(task_id", CONDUCTOR_PROMPT)
+        self.assertIn("No final JSON message is needed", CONDUCTOR_PROMPT)
 
     def test_collector_owns_visual_validation_and_script_repair(self) -> None:
         for instruction in (

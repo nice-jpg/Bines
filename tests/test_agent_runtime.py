@@ -10,26 +10,26 @@ from src.agent_runtime.coordinator import AgentCoordinator
 from src.agent_runtime.worker import AgentWorker
 from src.agent_runtime.types.execution import EngineResult, EngineStatus
 from src.conductor.engine import ConductorEngine
-from src.application.gateway_manager import GatewayManager
-from src.agent_runtime.messaging.messages import IncomingMessage
+from src.channel.messages import InBoundMessage
 from engine_helpers import ScriptedEngine, Model
 
 
-def test_engine_owns_session_and_keeps_one_conversation(monkeypatch):
+def test_engine_owns_session_and_keeps_multiple_conversations(monkeypatch):
     from gateway_helpers import GatewayHandle, RecordingChannel
 
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
     model = Model(replies=[AIMessage(content="answer")])
-    engine = ScriptedEngine(model=model, gateway_id=gateway.gateway_id)
+    engine = ScriptedEngine(model=model, handle=gateway.handle)
     for text in ["first", "second"]:
         channel.receive("one", text)
         assert engine.run_turn().output == "answer"
     channel.receive("two", "other")
-    assert engine.conversation.read_input(wait=False) is None
-    assert engine.conversation.route["conversation_id"] == "one"
-    assert len(model.seen) == 2
-    other = ScriptedEngine(model=model, gateway_id=gateway.gateway_id)
+    assert engine.run_turn().output == "answer"
+    assert {session for _, session in engine.conversation.conversations} == {"one", "two"}
+    assert engine.conversation.route == {"agent_id": gateway.handle.agent_id}
+    assert len(model.seen) == 3
+    other = ScriptedEngine(model=model, handle=gateway.handle)
     assert engine.conversation is not other.conversation
     engine.close()
     with pytest.raises(Exception, match="closed"):
@@ -41,8 +41,8 @@ def test_engine_exposes_only_execution_methods():
     methods = {
         name for name, value in AgentEngine.__dict__.items() if callable(value) and not name.startswith("_")
     }
-    assert methods == {"run_turn", "continue_turn", "resume_turn", "close", "send_message"}
-    for method in methods - {"send_message"}:
+    assert methods == {"run_turn", "continue_turn", "resume_turn", "arun_turn", "acontinue_turn", "aresume_turn", "close", "send_message", "call", "report", "kill", "spawn_subagent", "report_interruption"}
+    for method in {"run_turn", "continue_turn", "resume_turn", "close"}:
         assert list(inspect.signature(getattr(AgentEngine, method)).parameters) == ["self"]
 
 
@@ -75,7 +75,8 @@ def test_worker_repeats_calls_then_closes_on_same_thread():
             status, interrupt_kind=InterruptKind.HUMAN if status == EngineStatus.INTERRUPTED else None
         )
 
-    coordinator.run.side_effect = run
+    from unittest.mock import AsyncMock
+    coordinator.arun = AsyncMock(side_effect=run)
     coordinator.close.side_effect = lambda: calls.append(threading.get_ident())
     worker = AgentWorker(coordinator)
     worker.start()
@@ -87,7 +88,8 @@ def test_worker_repeats_calls_then_closes_on_same_thread():
 
 def test_worker_propagates_exception_after_cleanup():
     coordinator = Mock()
-    coordinator.run.side_effect = ValueError("failed")
+    from unittest.mock import AsyncMock
+    coordinator.arun = AsyncMock(side_effect=ValueError("failed"))
     worker = AgentWorker(coordinator)
     worker.start()
     with pytest.raises(ValueError, match="failed"):

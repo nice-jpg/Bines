@@ -1,6 +1,6 @@
 # Codex 模型适配模块架构
 
-状态：**2026-10-14 当前实现分析**。本文依据 `src/codex` 及其直接调用方编写，描述本项目适配器的行为，不代表服务端协议保证。此次只编写文档，不重构代码。配置服务见 [configuration](configuration-architecture.md)，Agent 调度见 [agent_runtime](agent-runtime-architecture.md)。
+状态：**2026-10-14 实现分析快照**。本文依据 `src/codex` 及其直接调用方编写，描述本项目适配器的行为，不代表服务端协议保证。此次只编写文档，不重构代码。配置服务见 [configuration](configuration-architecture.md)，当时 Agent 调度见 [历史 Runtime](deprecated/runtime-before-hypervisor/agent-runtime-architecture.md)，新目标见 [三层设计](agent-system-design.md)。
 
 ## 1. 背景与职责
 

@@ -16,6 +16,7 @@ from langchain_core.tools import BaseTool
 
 from src.agent_messages.text import latest_message_text, message_content
 from src.agent_messages.types import GraphInput, InputMessage
+from src.agent_runtime.contracts import AgentHandle
 from src.agent_runtime.conversation import MessageBlock
 from src.agent_runtime.engine import AgentEngine
 from src.agent_runtime.strategy.base import Strategy
@@ -89,7 +90,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
         self,
         *,
         model: str | BaseChatModel,
-        gateway_id: str,
+        handle: AgentHandle,
         max_iterations: int = 1000,
         session_id: str | None = None,
         notifier: Callable[[str], None] | None = None,
@@ -98,13 +99,16 @@ class ConductorEngine(AgentEngine[ConductorState]):
         self._notifier: Callable[[str], None] = notifier or self._notify
         super().__init__(
             model=model,
-            gateway_id=gateway_id,
+            handle=handle,
             max_iterations=max_iterations,
             session_id=session_id,
         )
 
     def _name(self) -> str:
         return "conductor"
+
+    def _create_fork(self, handle: AgentHandle) -> ConductorEngine:
+        return ConductorEngine(model=self._model, handle=handle, max_iterations=self._max_iterations)
 
     def _system_prompt(self) -> str:
         return CONDUCTOR_PROMPT
@@ -175,7 +179,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
             model=self._model,
             mechanism=mechanism,
             event_hub=event_hub,
-            gateway_id=self.gateway_id,
+            handle=self.handle,
         )
         collection_service: CollectionService = CollectionService(
             mechanism, collector_manager.training_registry, CollectionWorkbookSink(), event_hub

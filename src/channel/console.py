@@ -2,32 +2,36 @@
 
 from uuid import uuid4
 
-from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
-from src.channel.base import Channel, MessageListener
+from src.channel.base import Channel
+from src.channel.buffer import MessageBuffer
+from src.channel.messages import InBoundMessage, OutBoundMessage
 
 
 class ConsoleChannel(Channel):
     def __init__(self) -> None:
-        self._listener: MessageListener | None = None
+        self._buffer: MessageBuffer | None = None
 
     @property
     def channel_id(self) -> str:
         return "console"
 
-    def bind_message_listener(self, listener: MessageListener) -> None:
-        self._listener = listener
+    def bind_buffer(self, buffer: MessageBuffer) -> None:
+        self._buffer = buffer
 
     def submit(self, text: str) -> None:
-        if self._listener is None or not self._listener(
-            IncomingMessage(self.channel_id, "main", uuid4().hex, text, "user")
+        if self._buffer is None or not self._buffer.submit(
+            InBoundMessage(self.channel_id, "main", uuid4().hex, text, "user")
         ):
             raise RuntimeError("Console input was not accepted")
 
-    def send_message(self, message: OutgoingMessage) -> None:
-        print(f"[NOTIFY] {message.text}")
+    async def send_message(self, message: OutBoundMessage) -> bool:
+        import asyncio
 
-    def start(self) -> None:
+        await asyncio.to_thread(print, f"[{message.session_id}] {message.text}")
+        return True
+
+    async def start(self) -> None:
         pass
 
-    def close(self) -> None:
-        self._listener = None
+    async def close(self) -> None:
+        self._buffer = None

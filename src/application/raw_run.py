@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import sys
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,15 +16,13 @@ from openpyxl.utils.exceptions import InvalidFileException
 from openpyxl.workbook.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
-from src.agent_runtime.coordinator import AgentCoordinator
-from src.application.gateway_manager import GatewayManager
+from src.agent_hypervisor.host import Host
+from src.application.assistant import AssistantEngine
 from src.application.model import build_model, close_model
-from src.application.trace import trace_client
 from src.channel.console import ConsoleChannel
 from src.common.paths import WORKSPACE_ROOT
+from src.common.tracing import trace_client
 from src.common.utils.validation import is_string_mapping, is_value_sequence
-from src.conductor.engine import ConductorEngine
-from src.conductor.state import ConductorState
 from src.configuration.manager import ConfigurationManager
 from src.tools.workbooks.excel import ExcelReadValue
 from src.tools.workbooks.paths import COLLECTION_WORKBOOK_NAME
@@ -80,31 +80,36 @@ class PlainNotifier:
 def run() -> None:
     ConfigurationManager.initialize()
     trace_client()
-    manager: GatewayManager = GatewayManager.instance()
     channel: ConsoleChannel = ConsoleChannel()
-    gateway_id: str = manager.create(channel)
     model: BaseChatModel | None = None
     try:
         model = build_model()
-        manager.start(gateway_id)
-        channel.submit("执行应用探测任务")
-        engine: ConductorEngine = ConductorEngine(
-            model=model,
-            gateway_id=gateway_id,
-            session_id="main",
-        )
-        coordinator: AgentCoordinator[ConductorState] = AgentCoordinator(engine)
-        try:
-            print(coordinator.run())
-        finally:
-            coordinator.close()
+        asyncio.run(_console_session(channel, model))
+    except KeyboardInterrupt:
+        pass
     finally:
-        manager.stop(gateway_id)
-        manager.finish_output(gateway_id)
-        manager.join(gateway_id)
-        manager.release(gateway_id)
         if model is not None:
             close_model(model)
+
+
+async def _console_session(channel: ConsoleChannel, model: BaseChatModel) -> None:
+    host = Host()
+    assistant = AssistantEngine(model=model, handle=host.register_root())
+    await host.open(assistant, [channel])
+    channel.submit("执行应用探测任务")
+    lines: asyncio.Queue[str] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    loop.add_reader(sys.stdin, lambda: lines.put_nowait(sys.stdin.readline()))
+    try:
+        while True:
+            text = await lines.get()
+            if not text:
+                break
+            if text.strip():
+                channel.submit(text)
+    finally:
+        loop.remove_reader(sys.stdin)
+        await host.close()
 
 
 def eval(result: EvaluationReport) -> EvaluationResult:

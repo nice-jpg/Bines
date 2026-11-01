@@ -29,12 +29,33 @@ class AgentCoordinator[StateT: AgentState = AgentState]:
             ):
                 result = self._engine.resume_turn()
             else:
-                if result.output and "conversation_id" in self._engine.conversation.route:
-                    self._engine.conversation.send_message(result.output)
+                if result.output and result.status == EngineStatus.INTERRUPTED:
+                    self._engine.report_interruption(result)
                 return result
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        self._engine.close()
+        try:
+            self._engine.close()
+        finally:
+            self._engine.handle.mailbox.stop()
+
+    async def arun(self) -> EngineResult:
+        if self._closed:
+            raise RuntimeError("AgentCoordinator is closed")
+        result = await self._engine.arun_turn()
+        while True:
+            if result.status == EngineStatus.CONTINUE_REQUIRED:
+                result = await self._engine.acontinue_turn()
+            elif result.status == EngineStatus.RESUME_READY or (
+                result.status == EngineStatus.INTERRUPTED
+                and result.interrupt_kind
+                in {InterruptKind.LIVENESS, InterruptKind.MODEL_TRANSPORT, InterruptKind.RECURSION}
+            ):
+                result = await self._engine.aresume_turn()
+            else:
+                if result.output and result.status == EngineStatus.INTERRUPTED:
+                    self._engine.report_interruption(result)
+                return result

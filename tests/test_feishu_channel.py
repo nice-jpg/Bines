@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from types import SimpleNamespace
 from src.configuration.loader import load_configuration
 from src.configuration.manager import ConfigurationManager
 from src.configuration.errors import ConfigurationError
@@ -112,22 +113,22 @@ class FeishuChannelTests(unittest.TestCase):
     def test_channel_marks_dedup_only_after_gateway_acceptance(self) -> None:
         received = []
         channel = FeishuChannel(FeishuConfig("app", "secret"), "feishu")
-        channel.bind_message_listener(lambda message: False)
+        channel.bind_buffer(SimpleNamespace(submit=lambda message: False))
         message = InboundMessage(
             id="msg-1", create_time=0, conversation=Conversation("chat", "p2p"),
             sender=Identity("person"), content=TextContent(text="hello"), content_text="hello",
         )
         with self.assertRaisesRegex(RuntimeError, "not accepted"):
-            channel._receive(message)
-        channel.bind_message_listener(lambda message: received.append(message) or True)
-        channel._receive(message)
-        channel._receive(message)
+            channel._deliver(message)
+        channel.bind_buffer(SimpleNamespace(submit=lambda message: received.append(message) or True))
+        channel._deliver(message)
+        channel._deliver(message)
         self.assertEqual(len(received), 1)
         self.assertEqual(received[0].sender_id, "person")
         message.id = "msg-2"
         message.conversation.chat_type = "group"
-        channel._receive(message)
-        self.assertEqual(received[-1].conversation_id, "chat")
+        channel._deliver(message)
+        self.assertEqual(received[-1].session_id, "chat")
 
     def test_transport_modules_only_depend_on_runtime_message_contracts(self) -> None:
         feishu_dir = Path(__file__).resolve().parents[1] / "src" / "channel" / "feishu"
@@ -152,7 +153,7 @@ class FeishuChannelTests(unittest.TestCase):
                 for module in modules:
                     self.assertFalse(any(module == item or module.startswith(item + ".") for item in forbidden))
                     if module == "src.agent_runtime" or module.startswith("src.agent_runtime."):
-                        self.assertEqual(module, "src.agent_runtime.messaging.messages")
+                        self.assertEqual(module, "src.channel.messages")
 
 
 def admit(dedup, identity):
@@ -162,12 +163,14 @@ def admit(dedup, identity):
     return True
 
 
-def test_sdk_delivery_uses_channel_worker_and_drains_before_disconnect(monkeypatch):
+def test_sdk_delivery_uses_owner_loop_and_stops_sdk(monkeypatch):
+    import asyncio
+    import pytest
     import threading
     import time
     from lark_oapi.channel.types import SendResult
     from src.channel.feishu import channel as adapter
-    from src.agent_runtime.messaging.messages import OutgoingMessage
+    from src.channel.messages import OutBoundMessage
 
     events = []
     ready = threading.Event()
@@ -191,22 +194,25 @@ def test_sdk_delivery_uses_channel_worker_and_drains_before_disconnect(monkeypat
                 raise OSError("transient failure")
             return SendResult(success=True, message_id="sent")
 
-        async def disconnect(self):
+        def stop(self):
             events.append("disconnected")
 
     monkeypatch.setattr(adapter, "FeishuSDK", SDK)
     channel = FeishuChannel(FeishuConfig("app", "secret"), "feishu")
-    channel.bind_message_listener(lambda _: True)
-    channel.start()
-    assert ready.wait(3)
-    channel.send_message(OutgoingMessage("feishu", "chat", "first"))
-    channel.send_message(OutgoingMessage("feishu", "chat", "failed"))
-    channel.send_message(OutgoingMessage("feishu", "chat", "last"))
-    channel.close()
+    channel.bind_buffer(SimpleNamespace(submit=lambda _: True))
+    async def run():
+        await channel.start()
+        assert ready.is_set()
+        assert await channel.send_message(OutBoundMessage("feishu", "chat", "first"))
+        with pytest.raises(OSError):
+            await channel.send_message(OutBoundMessage("feishu", "chat", "failed"))
+        assert await channel.send_message(OutBoundMessage("feishu", "chat", "last"))
+        await channel.close()
+    asyncio.run(run())
     assert events == [
-        ("chat", "first", None, "channel-feishu"),
-        ("chat", "failed", None, "channel-feishu"),
-        ("chat", "last", None, "channel-feishu"),
+        ("chat", "first", None, threading.current_thread().name),
+        ("chat", "failed", None, threading.current_thread().name),
+        ("chat", "last", None, threading.current_thread().name),
         "disconnected",
     ]
 
@@ -216,8 +222,8 @@ def test_inbound_preserves_sender_and_readable_mentions(tmp_path, monkeypatch):
     from lark_oapi.channel.types import Mention
     received = []
     channel = FeishuChannel(FeishuConfig("app", "secret"), "feishu")
-    channel.bind_message_listener(lambda message: received.append(message) or True)
-    channel._receive(InboundMessage(
+    channel.bind_buffer(SimpleNamespace(submit=lambda message: received.append(message) or True))
+    channel._deliver(InboundMessage(
         id="sender-mention", create_time=0, conversation=Conversation("group", "group"),
         sender=Identity("person-id", display_name="A"),
         mentions=[Mention(key="@_user_1", name="robot")],

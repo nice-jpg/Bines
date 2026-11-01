@@ -98,7 +98,7 @@ def test_channel_probe_trigger_initializes_task_and_preserves_dialogue():
 
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
-    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]), gateway_id=gateway.gateway_id)
+    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]), handle=gateway.handle)
     channel.receive("chat", APP_PROBE_TRIGGER, sender="alice")
     channel.receive("chat", "先查看首页", sender="bob")
     with (
@@ -114,7 +114,9 @@ def test_channel_probe_trigger_initializes_task_and_preserves_dialogue():
         assert state["messages"][0]["content"] == "task config"
         message = state["messages"][-1]
         assert isinstance(message, HumanMessage)
-        assert f"alice: {APP_PROBE_TRIGGER}\nbob: 先查看首页" in message.content
+        import json
+        records = [json.loads(line) for line in message.content.splitlines()[1:]]
+        assert [(r["sender_id"], r["text"]) for r in records] == [("alice", APP_PROBE_TRIGGER), ("bob", "先查看首页")]
         assert not engine._requests_app_probe([HumanMessage(content="unrelated")])
         engine._state = state
         engine.conversation.acknowledge(message.id)
@@ -132,7 +134,7 @@ def test_channel_trigger_does_not_parse_formatted_or_quoted_commands():
 
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
-    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]), gateway_id=gateway.gateway_id)
+    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]), handle=gateway.handle)
     channel.receive("chat", f"引用：\nalice: {APP_PROBE_TRIGGER}", name=APP_PROBE_TRIGGER)
     with patch.object(engine, "_execute", return_value=EngineResult(EngineStatus.COMPLETED)) as execute:
         engine.run_turn()

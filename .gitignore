@@ -6,6 +6,8 @@ resources
 
 .vscode
 deprecated
+!docs/deprecated/
+!docs/deprecated/**
 .DS_Store
 .env
 

@@ -6,12 +6,17 @@ from langgraph.types import interrupt
 from langchain_core.tools import StructuredTool
 
 from src.agent_runtime.engine import AgentEngine
-from src.application.gateway_manager import GatewayManager
+from src.agent_runtime.contracts import TaskResult
 from tests.engine_helpers import ScriptedEngine, Model
 from trainer.raw_run_adapter import PAGE_MECHANISM_DIR, RawRunSlave, TrainingEngine
 
 
 class ReportEngine(ScriptedEngine):
+    def _evaluate_result(self, state):
+        result = super()._evaluate_result(state)
+        for task_id in self.handle.mailbox.unfinished():
+            self.report(task_id, TaskResult(status="completed", summary=result.output))
+        return result
     @property
     def evaluation_state(self):
         return dict(self._state)
@@ -37,7 +42,6 @@ def test_adapter_runs_graph_and_evaluates_report():
     assert slave.eval(result) == 73
     assert evaluated == [result]
     assert result.summary[0]["type"] == "human"
-    assert not GatewayManager.instance()._registrations
 
 
 def test_debug_info_declares_existing_prompt_files():
@@ -82,7 +86,6 @@ def test_adapter_handles_repeated_human_interrupts_and_detaches_context():
         marker.reset(token)
     assert report.output == "complete"
     assert observed == [None] * 4
-    assert not GatewayManager.instance()._registrations
 
 
 def test_report_summary_omits_tool_payloads():
@@ -108,7 +111,6 @@ def test_construction_failure_releases_gateway():
     slave = RawRunSlave(engine_factory=fail, model_factory=lambda: "fake")
     with pytest.raises(ValueError, match="construction"):
         slave.run()
-    assert not GatewayManager.instance()._registrations
 
 
 def test_training_capabilities_belong_to_engine():

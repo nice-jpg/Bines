@@ -405,30 +405,28 @@ def test_abandon_only_unscored_samples(tmp_path):
 
 def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkeypatch):
     t = setup(tmp_path)
-    class FakeAgent:
-        def __init__(self, *, toolbox, **kwargs):
-            self.toolbox = toolbox
-        def close(self):
-            pass
-        def run_turn(self):
-            box = self.toolbox
-            box._page_call("page_view", {})
-            box.read_collection_guide()
-            box.screenshot()
-            box.save_merchant_profile('{"name":"Merchant"}')
-            train(box)
-            box.return_to_live_page()
-            box.collector_tap(1, 500)
-            return EngineResult(EngineStatus.COMPLETED, "Ready.")
-    monkeypatch.setattr("src.collector.core.CollectorEngine", FakeAgent)
-    manager = CollectorTrainingCoordinator(gateway_id="test", model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
+    from src.agent_runtime.contracts import AgentHandle
+    from src.agent_hypervisor.host import Host
+    from src.channel.messages import InBoundMessage
+    host = Host()
+    root = host.router.register_root()
+    host.router.deliver_user(InBoundMessage("test", "chat", "1", "start", "user"))
+    parent = host.router.register_child(root)
+    started = []
+    def start(engine):
+        started.append(engine)
+        host._workers[engine.handle.agent_id] = engine
+    monkeypatch.setattr(host, "start", start)
+    monkeypatch.setattr("src.collector.core.CollectorEngine", lambda **kwargs: SimpleNamespace(handle=kwargs["handle"]))
+    manager = CollectorTrainingCoordinator(handle=host.handle(parent), model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
     manager.history = collector_history(tmp_path / "history")
     result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
         '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({**page_fields("meituan", "visit", "merchant"), "probe": {"run_id": "probe-a"}}))))
-    assert result["verification"]["ready"]
-    assert result["collector_message"] == "Ready.", result
-    assert result["trained"], result
-    assert len(manager.history.load("meituan", run_id="probe-a")) == 2
+    assert result["status"] == "submitted"
+    child = started[0].handle.agent_id
+    assert result["subagent_id"] == child
+    assert host.router.read(child, wait=False)[0].task_id == result["task_id"]
+    assert not manager.training_registry.is_trained("visit")
 
 
 def test_ready_does_not_unlock_device_while_view_is_frozen(tmp_path):
@@ -516,7 +514,8 @@ def test_same_run_recreated_collector_keeps_all_prepared_cases(tmp_path):
 
 def test_prepare_collector_requires_runtime_run_identity(tmp_path, monkeypatch):
     box = setup(tmp_path)
-    manager = CollectorTrainingCoordinator(gateway_id="test", model="fake", mechanism=box.mechanism, event_hub=box.event_hub)
+    from gateway_helpers import GatewayHandle, RecordingChannel
+    manager = CollectorTrainingCoordinator(handle=GatewayHandle(RecordingChannel()).handle, model="fake", mechanism=box.mechanism, event_hub=box.event_hub)
     monkeypatch.setattr("src.collector.core.CollectorEngine", lambda **_: pytest.fail("must not launch collector"))
     with pytest.raises(ValueError, match="probe_run_id"):
         manager.prepare_collector("meituan", "page", '{"name":""}', '{"items":[{"name":""}]}',
@@ -629,37 +628,32 @@ def test_move_records_view_ratio_even_when_node_ratio_saturates(tmp_path, monkey
 
 def test_manager_returns_and_registers_verified_swipe_threshold(tmp_path, monkeypatch):
     initial = setup(tmp_path)
-    manager = CollectorTrainingCoordinator(gateway_id="test", model="fake", mechanism=initial.mechanism, event_hub=initial.event_hub)
-    manager.history = collector_history(tmp_path / "manager-history")
-
-    def build(*, toolbox, **kwargs):
-        box = toolbox
-        def invoke(*args, **kwargs):
-            box._page_call("page_view", {})
-            box.read_collection_guide()
-            box.screenshot()
-            box.save_merchant_profile('{"name":"Merchant"}')
-            train(box)
-            box.return_to_live_page()
-            long = json.loads(box.collector_swipe_up_long(500, 1200))
-            verify(box, "bowl")
-            box.return_to_live_page()
-            short = json.loads(box.collector_swipe_up(500, 1200))
-            verify(box, "bowl")
-            box.confirm_normal_swipes([long["operation_id"], short["operation_id"]])
-            box.return_to_live_page()
-            box.collector_tap(500, 500)
-            mark(box)
-            return EngineResult(EngineStatus.COMPLETED, "Ready.")
-        return SimpleNamespace(run_turn=invoke, close=lambda: None)
-
-    monkeypatch.setattr("src.collector.core.CollectorEngine", build)
-    result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
-        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({
-            **page_fields("meituan", "visit", "merchant"), "probe": {"run_id": "probe"}}))))
+    from src.collector.engine import CollectorEngine
+    from src.collector.training import CollectorTrainingRegistry
+    from src.agent_runtime.contracts import TaskResult
+    engine = object.__new__(CollectorEngine)
+    engine._toolbox = initial
+    engine._registry = CollectorTrainingRegistry()
+    box = initial
+    box._page_call("page_view", {})
+    box.read_collection_guide()
+    box.screenshot()
+    box.save_merchant_profile('{"name":"Merchant"}')
+    train(box)
+    box.return_to_live_page()
+    long = json.loads(box.collector_swipe_up_long(500, 1200))
+    verify(box, "bowl")
+    box.return_to_live_page()
+    short = json.loads(box.collector_swipe_up(500, 1200))
+    verify(box, "bowl")
+    box.confirm_normal_swipes([long["operation_id"], short["operation_id"]])
+    box.return_to_live_page()
+    box.collector_tap(500, 500)
+    mark(box)
+    result = engine._prepare_report(TaskResult(status="completed", summary="Ready")).data
     assert result["trained"], result
     profile = result["normal_swipe_profile"]
-    record = manager.training_registry.record_for("visit")
+    record = engine._registry.record_for(box.page_visit_id)
     assert record.change_threshold == profile["change_threshold"]
     assert record.normal_swipe_samples == profile["sample_count"] == 2
 

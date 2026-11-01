@@ -1,6 +1,8 @@
 # 单会话与对话消息块
 
-状态：**2026-10-13 已实现**。模块位于 `src/agent_runtime/conversation/`，消息契约位于同级 `messaging/`。本模块接管 Engine 原有的会话绑定与原始消息缓冲；Engine 仅拥有和使用会话对象。
+归档：2026-10-31。本文仅作历史参考；新的待实现设计见 [三层架构](../../agent-system-design.md)。
+
+状态：**历史设计，2026-10-29 已替代**。当前一个顶层 Agent 服务多个 conversation_id，子 Agent 使用父子任务队列；见 [运行时线程模型](threading-model.md)。以下保留旧单会话设计，不代表当前绑定或消息格式。
 
 ## 1. 背景和目的
 

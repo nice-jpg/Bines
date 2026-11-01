@@ -1,53 +1,40 @@
 # Feishu Channel
 
-`FeishuChannel` implements `src.channel.base.Channel`. It owns the Feishu SDK,
-connection lifecycle, text parsing, deduplication and an outgoing buffer. It has
-no reference to AgentRuntime, tools, checkpoints or agent conversation state.
+Module class responsibilities and sequence diagrams: [Channel Architecture](../Architecture.md).
 
-The application creates one LongRunningAgent and one ChannelGateway. LongRunningAgent
-accepts only `completion_driver: AgentCompletionDriver`, drives each task through
-that driver, and keeps listening after completion. The driver and underlying
-AgentRuntime do not add application worker threads. See the
-[channel architecture](../../../docs/channel-architecture.md) for ownership and lifecycle.
+FeishuChannel implements `src.channel.base.Channel`. It owns SDK lifecycle,
+text normalization and vendor-message deduplication, but no Agent or checkpoint.
 
-Gateway owns
-two private bounded queues; application code never receives queue references. Bind a message listener before `start()`. The listener returns whether
-Gateway accepted the immutable IncomingMessage. Mark an event processed only
-after acceptance. `send_message()` admits an OutgoingMessage to the channel
-buffer; SDK delivery runs on the channel worker. `close()` drains accepted
-outgoing work before disconnecting. SDK-owned network threads are additional
-to the three application worker threads.
+Before start, Host calls `bind_buffer(MessageBuffer)`. The adapter
+converts SDK events into InBoundMessage with channel_id and session_id, then
+submits them directly to that buffer on the application event loop. Foreign-loop
+SDK callbacks are marshalled onto the owner loop. Message IDs are marked processed
+only after acceptance. Channel IDs isolate deduplication across configured accounts.
 
-`talk`, operation notices, captcha prompts and final answers all enter the same
-Gateway.send_message interface. LongRunningAgent receives input through
-Gateway.receive_message. Neither tools nor LongRunningAgent operate Gateway queues
-directly, and neither calls the SDK from an agent thread.
+Gateway groups input by channel/session. BatchCoordinator delivers batches to one
+Root Agent; the adapter neither dispatches agents nor inspects their mailboxes.
+Root replies through Gateway.send. `send_message(OutBoundMessage)` awaits the SDK
+send with a 30-second timeout and returns its actual success flag. Session IDs are
+chat IDs for both direct and group chat; outgoing messages target chat_id.
 
-Gateway.request_stop closes input with Queue.shutdown(immediate=False). Accepted
-input remains available; a drained closed input raises MessageStreamClosed.
-LongRunningAgent submits its final output and calls Gateway.finish_output, which
-closes output non-immediately. Gateway drains it before closing channels. No
-control messages or sentinels travel in the business message queues.
+Application shutdown stops input first, waits for Agent workers, then closes
+the adapter. SDK stop runs through asyncio.to_thread to avoid blocking the main
+event loop. Third-party SDK internals are not part of the project thread model.
 
-Configuration uses `workspace/.env`: `FEISHU_APP_ID` / `FEISHU_APP_SECRET`, or
-`LARK_APP_ID` / `LARK_APP_SECRET`, or `APP_ID` / `APP_SECRET`.
-`FEISHU_LOG_LEVEL` defaults to `INFO`.
+Configuration uses workspace/.env: FEISHU_APP_ID / FEISHU_APP_SECRET, alternatively
+LARK_APP_ID / LARK_APP_SECRET or APP_ID / APP_SECRET. FEISHU_LOG_LEVEL defaults to INFO.
 
 ```bash
 conda activate bines
-python -m src.channel.feishu.run  # channel-only echo
-python -m src.run_agent          # queue-connected agent
+python -m src.channel.feishu.run
+python -m src.run_agent
 ```
 
-The adapter uses the public lifecycle API in installed lark-oapi 1.6.8.
-Plain text only: direct chat output targets chat_id; group output replies to
-message_id. Unsupported content stays inside the SDK boundary and is ignored.
-SDK text batching, pre-admission deduplication and age-based dropping are disabled.
-Workspace deduplication keeps the previous default Feishu message IDs; additional
-channel IDs use a separate namespace. Queues and checkpoints are in memory;
-process-crash recovery and exactly-once delivery are not provided.
+Only text is accepted. SDK text batching, pre-admission deduplication and age-based
+dropping are disabled; the project controls acceptance and grouping. Queues are
+in memory and do not provide process-crash recovery or remote exactly-once sends.
+The SDK owns global WebSocket lifecycle state; multiple Feishu accounts may require
+process isolation. Gateway itself supports distinct channel IDs.
 
-The SDK's WebSocket client owns module-global event-loop state. Multiple Feishu
-accounts in one process require a process-isolated Channel implementation; the
-current entrypoint assembles one Feishu instance. Gateway itself supports multiple
-Channel implementations with separate channel IDs and no extra agent queues.
+See [architecture](../../../docs/agent-system-design.md) and
+[threading](../../../docs/threading-model.md) for current ownership.

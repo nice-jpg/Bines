@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage
 from engine_helpers import Model
 from gateway_helpers import GatewayHandle, RecordingChannel
 from src.collector.engine import CollectorEngine
+from src.collector.training import CollectorTrainingRegistry
 from src.collector.state import CollectorAgentState
 from src.collector.toolbox import CollectorToolbox
 from src.strategy.collector.strategy import CollectorStrategy
@@ -29,9 +30,10 @@ def make_engine():
     toolbox.create_tools.return_value = []
     model = Model(replies=[AIMessage(content="trained")])
     engine = CollectorEngine(
-        model=model, toolbox=toolbox, assignment="Train this page", session_id="collector-test",
-        max_iterations=100, gateway_id=gateway.gateway_id,
+        model=model, toolbox=toolbox, session_id="collector-test",
+        max_iterations=100, handle=gateway.handle, registry=CollectorTrainingRegistry(),
     )
+    channel.receive("chat", "Train this page")
     return engine, model, channel
 
 

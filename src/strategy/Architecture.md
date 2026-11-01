@@ -1,9 +1,27 @@
 # Strategy Architecture
 
-更新：2026-10-23。本文描述当前代码。设计决策见 [General 辅助型工作流](../../docs/general-assisted-workflow-design.md)。
+更新：2026-10-29。本文描述当前代码。设计决策见 [General 辅助型工作流](../../docs/general-assisted-workflow-design.md)。
 后续修改 middleware 的职责、装配、状态或执行顺序，必须同步更新本文。
 
 ## 目录与功能归属
+
+当前通信与线程实现见 [线程模型](../../docs/threading-model.md) 和
+[三层架构](../../docs/agent-system-design.md)。
+根 AssistantEngine（继承通用 RootAgent）、ConductorEngine、CollectorEngine
+各有独立 worker 和模型历史。业务策略不直接读 Channel；父子消息通过同一收件箱在模型边界注入。
+通用运行层不再设置 DelegationMiddleware：存在未完成子任务不限制父 Agent 工具、不强制等待、
+不阻止父任务独立完成。任务依赖不从 agent 父子关系推导；工具集合保持稳定。
+自然语言结束不是隐式 report，也不直接发送给用户。
+Agent 身份不绑定 conversation；用户对话地址只在顶层处理，父子任务与报告按 task_id 关联。
+业务代码直接构造 Engine，再由作用域内 AgentSpawner.start 委托 Host 启动 Worker；运行层不保存工厂回调或业务类型表。
+自身已投递未完成任务全部显式 blocked 时，可在本轮自然结束后监听；部分 blocked 不冻结其他任务。
+已完成任务记录不在模型调用前触发跳转，后续子报告仍正常处理。新 call 不清除其他任务的阻塞标记。
+共享对象由所属组件的锁保护；CollectorAssignment 的顺序调用要求仅作用于其自身证据流程。
+
+prepare_collector 现在立即返回 subagent_id/task_id。Collector 的 report(completed) 先验收脚本、还原页面并保存历史，
+再更新训练记录和向父 Agent 报告；worker 继续监听。MerchantWorkflow.before_model 在观察到合法训练记录后
+将 phase 更新为 ready；其后的 CollectionPersistence.before_model 按当前访问的 profile 幂等初始化归档。
+CollectionPersistence 不再依赖 prepare_collector 同步返回训练结果。通用 Router 不读取 merchant state。
 
 业务 middleware 与对应策略共同放在 `src/strategy`，不再维护独立 `src/middleware` 包，也不提供旧路径转发层。Strategy 负责组合及所属状态的生命周期委托，middleware 实现约束和功能。
 
@@ -20,13 +38,14 @@
 
 ## 1. 运行层与路由
 
-`AgentEngine._build_graph` 的固定顺序：HostTrace → ModelRetry → ConversationInput → ToolError → StrategyDispatch → ToolTrace → LLMTrace。
+`AgentEngine._build_graph` 的固定顺序：HostTrace → ModelRetry → ConversationInput → ForkContext → ToolError → StrategyDispatch → ToolTrace → LLMTrace。
 
 | 模块 | 输入 → 输出 | 职责 |
 | --- | --- | --- |
 | HostTrace | graph hook → 会话追踪事件 | 运行可观测性，不决定业务完成 |
 | ModelRetry | 模型请求、可重试传输异常 → 完整模型回复或异常 | 仅重试模型，不重放设备工具 |
 | ConversationInput | 会话收件箱、历史 → HumanMessage 更新 | 在安全模型边界接收外部消息 |
+| ForkContext | 完整模型边界 state → 派生快照 | 记录可复制语义状态；仅派生时深复制，不复制锁、邮箱或父 graph 配置 |
 | StrategyDispatch | 当前 state、冻结注册表 → 生命周期更新及单一策略 hook | 选择策略，先清理未选中策略，再激活选中策略；不理解业务字段 |
 | ToolError | 模型参数、工具异常 → 结构化 ToolMessage | 在业务层前校验工具公开 schema；统一捕获参数和执行异常，框架 interrupt 继续传播 |
 | ToolTrace / LLMTrace | 工具或模型请求、结果 → 追踪事件 | 记录执行，不参与业务可达性 |

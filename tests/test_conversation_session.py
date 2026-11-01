@@ -1,16 +1,17 @@
 """Single-conversation boundaries and lossless, stable dialogue blocks."""
 from threading import Event, Thread
+import json
 
 import pytest
 from gateway_helpers import GatewayHandle, RecordingChannel
 from src.agent_runtime.conversation import ConversationSession
-from src.agent_runtime.messaging.messages import MessageStreamClosed
+from src.agent_runtime.contracts import MessageStreamClosed
 
 
 def session_pair():
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
-    return ConversationSession(gateway.gateway_id), channel, gateway
+    return ConversationSession(gateway.handle), channel, gateway
 
 
 def test_all_backlog_forms_one_block_with_speakers_mentions_and_multiline_boundaries():
@@ -18,7 +19,9 @@ def test_all_backlog_forms_one_block_with_speakers_mentions_and_multiline_bounda
     channel.receive("chat", "@robot 检查xx目录\nB: 这仍是A的正文", sender="a", name="A")
     channel.receive("chat", "已经找到了", sender="b", name="B")
     block = session.read_input(wait=False)
-    assert block.text.endswith("A: @robot 检查xx目录\n    B: 这仍是A的正文\nB: 已经找到了")
+    records = [json.loads(line) for line in block.text.splitlines()[1:]]
+    assert [record["text"] for record in records] == ["@robot 检查xx目录\nB: 这仍是A的正文", "已经找到了"]
+    assert [record["sender_id"] for record in records] == ["a", "b"]
     assert session.pending_count == 2
     assert session.read_input(wait=False) == block
     session.acknowledge(block.block_id)
@@ -26,20 +29,19 @@ def test_all_backlog_forms_one_block_with_speakers_mentions_and_multiline_bounda
     assert session.read_input(wait=False) is None
 
 
-def test_duplicate_ids_not_duplicate_text_and_mismatched_conversation_rejected(caplog):
+def test_duplicate_ids_are_scoped_to_conversation(caplog):
     session, channel, gateway = session_pair()
     channel.receive("chat", "same", "1")
     channel.receive("chat", "same", "1")
     channel.receive("chat", "same", "2")
     channel.receive("other", "wrong", "3")
     block = session.read_input(wait=False)
-    assert block.text.count("user: same") == 2
-    assert "wrong" not in block.text
-    assert "Rejected" in caplog.text
+    assert block.text.count('"text": "same"') == 2
+    assert '"session_id": "other"' in block.text
     session.acknowledge(block.block_id)
     channel.receive("chat", "same", "1")
     assert session.read_input(wait=False) is None
-    assert session.route["conversation_id"] == "chat"
+    assert {session for _, session in session.conversations} == {"chat", "other"}
 
 
 def test_new_arrivals_do_not_rewrite_unacknowledged_block():
@@ -54,7 +56,7 @@ def test_new_arrivals_do_not_rewrite_unacknowledged_block():
     session.acknowledge(first.block_id)
     second = session.read_input(wait=False)
     assert second.block_id != first.block_id
-    assert second.text.endswith("user: new")
+    assert second.source_texts == ("new",)
 
 
 def test_confirmation_can_arrive_while_an_old_block_is_unacknowledged():
@@ -68,7 +70,7 @@ def test_confirmation_can_arrive_while_an_old_block_is_unacknowledged():
     assert session.read_input(wait=False) is first
     session.acknowledge(first.block_id)
     block = session.read_input(wait=False)
-    assert block.text.endswith("user: 他说 done\nuser: 补充信息\nuser:  done ")
+    assert block.source_texts == ("他说 done", "补充信息", " done ")
     gateway.request_stop()
     with pytest.raises(MessageStreamClosed):
         session.wait_for_confirmation("done")
@@ -103,13 +105,14 @@ def test_same_names_are_disambiguated_and_absent_names_use_ids():
     channel.receive("chat", "two", sender="b", name="same")
     channel.receive("chat", "three", sender="c")
     block = session.read_input(wait=False)
-    assert block.text.endswith("same (a): one\nsame (b): two\nc: three")
+    records = [json.loads(line) for line in block.text.splitlines()[1:]]
+    assert [record["sender_id"] for record in records] == ["a", "b", "c"]
+    assert [record["sender_name"] for record in records] == ["same", "same", None]
 
 
 def test_close_reports_unacknowledged_input_without_closing_gateway(caplog):
     session, channel, gateway = session_pair()
-    with pytest.raises(RuntimeError, match="bound address"):
-        session.send_message("unbound")
+    assert session.send_message("unbound") is False
     channel.receive("chat", "pending")
     session.read_input(wait=False)
     session.close()
@@ -128,4 +131,4 @@ def test_polling_during_tools_does_not_seal_partial_dialogue():
     assert session.poll_input()
     assert session.pending_block is None
     channel.receive("chat", "second")
-    assert session.read_input(wait=False).text.endswith("user: first\nuser: second")
+    assert session.read_input(wait=False).source_texts == ("first", "second")

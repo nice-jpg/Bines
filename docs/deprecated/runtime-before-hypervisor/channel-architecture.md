@@ -1,6 +1,8 @@
 # Channel 与 GatewayManager 架构
 
-状态：**2026-10-13 已迁移实现**。本文只描述通信层；会话语义归 [conversation 模块](conversation-architecture.md)，任务执行归 [Runtime](agent-runtime-architecture.md)。
+归档：2026-10-31。本文仅作历史参考；新的待实现设计见 [三层架构](../../agent-system-design.md)。
+
+状态：**历史设计，2026-10-29 已替代**。GatewayManager/ChannelGateway 已移除，当前采用 AgentApplication、AgentHost 和 AgentRouter；见 [运行时线程模型](threading-model.md)。以下保留原通信方案作为历史记录。
 
 ## 1. 背景和边界
 

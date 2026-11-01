@@ -1,6 +1,8 @@
 # Agent Runtime 与单会话输入架构
 
-状态：**2026-10-13 已按本设计迁移实现**。Engine 拥有独立会话对象，Manager 管理多个 Gateway。本文同时说明当前不支持的会话交接与历史迁移边界。
+归档：2026-10-31。本文仅作历史参考；新的待实现设计见 [三层架构](../../agent-system-design.md)。
+
+状态：**历史设计，2026-10-29 已替代**。当前实现见 [运行时线程模型](threading-model.md) 与 [Runtime README](../../../src/agent_runtime/README.md)。以下保留 2026-10-13 的单会话假设，不作为当前接口说明。
 
 ## 1. 设计背景与边界
 
@@ -228,7 +230,7 @@ src/
     feishu/channel.py       # 飞书接口适配
 ```
 
-Runtime 根目录只保留 Worker、Coordinator、Engine 执行核心；middleware 集中框架调用边界上的行为，types 集中数据契约及中断载荷解析。messaging 与 conversation 是 Runtime 内部的通信基础子包；前者为 Channel/Gateway 提供无框架依赖的消息契约，后者保存会话状态及管理行为。根包不再聚合导出执行类，调用方直接导入定义模块，避免读取消息类型时自动装载 Engine 并形成循环依赖。历史内存调查移至 [调查记录](runtime-memory-investigation.md)。
+Runtime 根目录只保留 Worker、Coordinator、Engine 执行核心；middleware 集中框架调用边界上的行为，types 集中数据契约及中断载荷解析。messaging 与 conversation 是 Runtime 内部的通信基础子包；前者为 Channel/Gateway 提供无框架依赖的消息契约，后者保存会话状态及管理行为。根包不再聚合导出执行类，调用方直接导入定义模块，避免读取消息类型时自动装载 Engine 并形成循环依赖。历史内存调查移至 [调查记录](../../runtime-memory-investigation.md)。
 
 模块之间传递具体数据或调用窄接口。conversation 不导入业务 Engine 或 LangChain；Manager 不导入 conversation；输入 middleware 是框架专属转换位置。
 
@@ -277,4 +279,4 @@ ConductorEngine 与 CollectorEngine 显式绑定 talk 到自身发送方法；Su
 
 ### 通信消息与模型对话消息的边界
 
-`agent_runtime/messaging` 表示 channel 传输的 `IncomingMessage`、`OutgoingMessage` 及队列/关闭语义，不存放 LangChain 对话历史的读取工具。`src/agent_messages` 是独立共享模块，提供 LangChain 输入、历史消息、正文与 metadata 读取，以及工具响应类型。业务 Engine、middleware、模型适配与 runtime 均直接引用该模块；agent_messages 不依赖 runtime。两类消息在会话输入边界转换，不因名称相同而共享类型或目录。完整原根目录文件归属见 [source-layout.md](source-layout.md)。
+`agent_runtime/messaging` 表示 channel 传输的 `IncomingMessage`、`OutgoingMessage` 及队列/关闭语义，不存放 LangChain 对话历史的读取工具。`src/agent_messages` 是独立共享模块，提供 LangChain 输入、历史消息、正文与 metadata 读取，以及工具响应类型。业务 Engine、middleware、模型适配与 runtime 均直接引用该模块；agent_messages 不依赖 runtime。两类消息在会话输入边界转换，不因名称相同而共享类型或目录。完整原根目录文件归属见 [source-layout.md](../../source-layout.md)。

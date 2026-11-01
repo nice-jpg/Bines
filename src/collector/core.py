@@ -10,20 +10,13 @@ from langchain.tools import ToolRuntime
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
 
-from src.agent_runtime.types.execution import EngineResult, EngineStatus
+from src.agent_runtime.contracts import AgentHandle
 from src.collector.history import CollectorHistory
 from src.collector.toolbox import CollectorToolbox
 from src.collector.training import CollectorTrainingRegistry
-from src.collector.types import (
-    CollectorPreparationResult,
-    NormalSwipeProfile,
-    RestorationResult,
-    TrainingResult,
-)
 from src.common.utils.json import JsonObject, JsonValue, load_json
 from src.conductor.state import ConductorState, current_visit
 from src.device import DeviceOperationService
-from src.page.collection_contract import CollectionContract
 from src.page.mechanism import PageMechanism
 from src.strategy.general.declarations import requires_collection
 from src.strategy.general.state import PageVisit
@@ -46,9 +39,9 @@ class CollectorTrainingCoordinator:
         model: str | BaseChatModel,
         mechanism: PageMechanism | None = None,
         event_hub: DeviceOperationService | None = None,
-        gateway_id: str,
+        handle: AgentHandle,
     ) -> None:
-        self._gateway_id: str = gateway_id
+        self._handle = handle
         self.model: str | BaseChatModel = model
         self.mechanism: PageMechanism = mechanism if mechanism is not None else PageMechanism()
         self.event_hub: DeviceOperationService = (
@@ -113,79 +106,29 @@ class CollectorTrainingCoordinator:
                 "</collector_assignment>",
             ]
         )
-        agent: CollectorEngine = CollectorEngine(
-            model=self.model,
-            toolbox=toolbox,
-            assignment=message,
-            session_id=f"collector:{visit_id}",
-            max_iterations=self.max_iterations,
-            gateway_id=self._gateway_id,
-        )
-        invoke_error: Exception | None = None
-        collector_message: str = ""
-        try:
-            outcome: EngineResult = agent.run_turn()
-            while outcome.status == EngineStatus.CONTINUE_REQUIRED:
-                outcome = agent.continue_turn()
-            collector_message = outcome.output
-            if outcome.status != EngineStatus.COMPLETED:
-                raise RuntimeError(outcome.output)
-        except Exception as exc:
-            invoke_error = exc
-        finally:
-            agent.close()
-            restoration: RestorationResult = toolbox.restore_to_top()
-
-        verification: TrainingResult = toolbox.training_result()
-        merchant_profile: JsonObject = toolbox.merchant_profile()
-        trained: bool = bool(
-            invoke_error is None and verification["ready"] is True and restoration["restored"] is True
-        )
-        if trained:
-            try:
-                toolbox.persist_history()
-            except Exception as exc:
-                invoke_error = exc
-                trained = False
-        if trained:
-            contract: CollectionContract | None = self.mechanism.collection_contract(canonical_path)
-            if contract is None:
-                raise ValueError("Validated collector requires a collection contract")
-            self.training_registry.mark_trained(
-                visit_id,
-                canonical_path,
-                contract_fingerprint=contract.fingerprint,
-                merchant_profile=merchant_profile,
-                script_fingerprint=verification["script_fingerprint"],
-                restoration=restoration,
+        with self._handle.spawner.child() as handle:
+            engine = CollectorEngine(
+                model=self.model,
+                toolbox=toolbox,
+                handle=handle,
+                registry=self.training_registry,
+                session_id=f"collector:{visit_id}",
+                max_iterations=self.max_iterations,
             )
-            profile: NormalSwipeProfile | None = verification["normal_swipe_profile"]
-            if profile is not None:
-                self.training_registry.set_swipe_threshold(
-                    visit_id, profile["change_threshold"], profile["sample_count"]
-                )
-        else:
-            self.training_registry.mark_untrained(
-                visit_id,
-                canonical_path,
-                merchant_profile=merchant_profile,
-                script_fingerprint=verification["script_fingerprint"],
-                restoration=restoration,
-            )
-        result: CollectorPreparationResult = {
-            "ok": invoke_error is None,
-            "page_path": canonical_path,
-            "page_visit_id": visit_id,
-            "collector_message": collector_message,
-            "merchant_profile": merchant_profile,
-            "trained": trained,
-            "verification": verification,
-            "restoration": restoration,
-            "normal_swipe_profile": verification["normal_swipe_profile"],
-        }
-        if invoke_error is not None:
-            result.update({"error_type": type(invoke_error).__name__, "error": str(invoke_error)})
-        return json.dumps(result, ensure_ascii=False, sort_keys=True)
+            self._handle.spawner.start(engine)
+        child_id = handle.agent_id
+        task_id = self._handle.mailbox.call(child_id, message)
+        return json.dumps(
+            {
+                "ok": True,
+                "status": "submitted",
+                "subagent_id": child_id,
+                "task_id": task_id,
+                "page_path": canonical_path,
+                "page_visit_id": visit_id,
+            },
+            ensure_ascii=False,
+        )
 
 
 def create_collector_tools(
@@ -214,7 +157,9 @@ def create_prepare_collector_tool(manager: CollectorTrainingCoordinator) -> list
             func=manager.prepare_collector,
             name="prepare_collector",
             description=(
-                "Prepare the collector script for the current page before conductor operations. "
+                "Spawn a persistent collector worker and submit current-page training. "
+                "Returns task_id, not a training result. Coordinate shared-page changes with the collector; "
+                "use call for follow-up tasks and kill when this page's worker is no longer needed. "
                 "Inputs: page_path, page_description, merchant_schema, collection_schema. "
                 "Do not include task.md operation steps in page_description."
             ),

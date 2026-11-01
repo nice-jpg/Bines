@@ -5,7 +5,7 @@ from src.agent_runtime.middleware.communication import ConversationInputMiddlewa
 from uuid import uuid4
 from gateway_helpers import GatewayHandle
 from src.channel.base import Channel
-from src.agent_runtime.messaging.messages import IncomingMessage
+from src.channel.messages import InBoundMessage
 from engine_helpers import ScriptedEngine, Model
 from langchain_core.messages import AIMessage
 
@@ -19,8 +19,8 @@ class InputChannel(Channel):
     def channel_id(self):
         return "test"
 
-    def bind_message_listener(self, listener):
-        self.listener = listener
+    def bind_buffer(self, buffer):
+        self.listener = buffer.submit
 
     def send_message(self, message):
         self.sent.append(message)
@@ -33,7 +33,7 @@ class InputChannel(Channel):
         pass
 
     def receive(self, text, conversation="conversation"):
-        return self.listener(IncomingMessage("test", conversation, uuid4().hex, text, "user"))
+        return self.listener(InBoundMessage("test", conversation, uuid4().hex, text, "user"))
 
 
 class QueueContext:
@@ -41,7 +41,7 @@ class QueueContext:
         self.channel = InputChannel(sender)
         self.gateway = GatewayHandle(self.channel)
         self.engine = ScriptedEngine(
-            model=Model(replies=[AIMessage(content="unused")]), gateway_id=self.gateway.gateway_id
+            model=Model(replies=[AIMessage(content="unused")]), handle=self.gateway.handle
         )
 
     def receive(self, text):

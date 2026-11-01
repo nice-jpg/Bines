@@ -2,11 +2,15 @@
 
 from queue import Queue
 from threading import current_thread
+from types import SimpleNamespace
 from uuid import uuid4
 
-from src.application.gateway_manager import GatewayManager
+from src.agent_runtime.contracts import AgentHandle
+from src.agent_hypervisor.host import Host
 from src.channel.base import Channel
-from src.agent_runtime.messaging.messages import IncomingMessage
+from src.channel.messages import InBoundMessage
+
+HANDLES = []
 
 
 class RecordingChannel(Channel):
@@ -20,8 +24,8 @@ class RecordingChannel(Channel):
     def channel_id(self):
         return self._channel_id
 
-    def bind_message_listener(self, listener):
-        self.listener = listener
+    def bind_buffer(self, buffer):
+        self.listener = buffer.submit
 
     def send_message(self, message):
         self.sent.put((message, current_thread().name))
@@ -33,33 +37,37 @@ class RecordingChannel(Channel):
         self.closed = True
 
     def receive(self, chat, text, identity=None, sender="user", name=None):
-        return self.listener(IncomingMessage(self.channel_id, chat, identity or uuid4().hex, text, sender, name))
+        return self.listener(InBoundMessage(self.channel_id, chat, identity or uuid4().hex, text, sender, name))
 
     def output(self):
         message, thread = self.sent.get(timeout=5)
-        assert thread.startswith("gateway-")
         return message
 
 
 class GatewayHandle:
     def __init__(self, channel):
-        self.manager = GatewayManager.instance()
-        self.gateway_id = self.manager.create(channel)
+        self.host = Host()
+        self.agent_id = self.host.router.register_root()
+        self.handle = self.host.handle(self.agent_id)
+        self.channel = channel
+        channel.bind_buffer(SimpleNamespace(submit=self.host.router.deliver_user))
+        HANDLES.append(self)
 
     def start(self):
-        self.manager.start(self.gateway_id)
+        pass
 
     def request_stop(self):
-        self.manager.stop(self.gateway_id)
+        self.host.router.stop(self.agent_id)
 
     def finish_output(self):
-        self.manager.finish_output(self.gateway_id)
+        pass
 
     def join(self):
-        self.manager.join(self.gateway_id)
+        pass
 
     def send_message(self, message):
-        return self.manager.send_message(self.gateway_id, message)
+        self.channel.send_message(message)
+        return True
 
     def receive_messages(self, *, wait):
-        return self.manager.receive_messages(self.gateway_id, wait=wait)
+        return self.host.router.read(self.agent_id, wait=wait)

@@ -331,17 +331,8 @@ def test_prepare_collector_initializes_merchant_sheet_from_registry(tmp_path: Pa
     middleware, registry, workbook_path = _middleware(tmp_path)
     _mark_trained(registry, mechanism=middleware.service.mechanism)
 
-    result = middleware.wrap_tool_call(
-        _request("prepare_collector"),
-        lambda _request: _tool_message(
-            "prepare_collector",
-            '{"ok": true, "trained": true, "page_visit_id": "visit-a"}',
-        ),
-    )
-    payload = _payload(result)
-
-    assert payload == {"ok": True, "trained": True, "page_visit_id": "visit-a"}
-    assert result.update['probe']['visit_summaries'] == {
+    result = middleware.before_model(_request("prepare_collector").state, None)
+    assert result['probe']['visit_summaries'] == {
         "visit-a": {
             "page_path": "meituan/美食/商家",
             "merchant_profile": {"name": "商家A", "distance": "1km"},
@@ -356,12 +347,7 @@ def test_collection_summary_accumulates_new_items_for_each_page_visit(tmp_path: 
     middleware, registry, _workbook_path = _middleware(tmp_path)
     _mark_trained(registry, mechanism=middleware.service.mechanism)
     state = _request("prepare_collector").state
-    prepared_request = _request("prepare_collector")
-    prepared_request.state = state
-    prepared = middleware.wrap_tool_call(
-        prepared_request,
-        lambda _request: _tool_message("prepare_collector", '{"trained": true}'),
-    )
+    prepared = Command(update=middleware.before_model(state, None))
     _apply_state(state, prepared)
 
     for content in ("cup", "plate", "cup"):

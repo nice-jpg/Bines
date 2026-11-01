@@ -8,8 +8,8 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
 from src.agent_messages.types import read_input_messages
+from src.agent_runtime.contracts import MessageStreamClosed
 from src.agent_runtime.conversation import ConversationSession, MessageBlock
-from src.agent_runtime.messaging.messages import MessageStreamClosed
 
 
 def read_pending_input(conversation: ConversationSession, state: Mapping[str, object]) -> list[HumanMessage]:

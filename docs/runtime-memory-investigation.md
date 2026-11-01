@@ -2,7 +2,7 @@
 
 调查日期：2026-10-04，Asia/Shanghai。
 
-历史记录说明（2026-10-11）：本文保留调查时的对象名、路径和实验结论；其中通信 proxy、inbox 与 FeishuAgentRunner 的描述已不代表当前实现。当前长期运行入口为 AgentWorker，由 AgentCoordinator 调度 AgentEngine，通信架构见 [Channel 架构](channel-architecture.md)。本文的内存实验未按新架构重跑。
+历史记录说明（2026-10-11）：本文保留调查时的对象名、路径和实验结论；其中通信 proxy、inbox 与 FeishuAgentRunner 的描述已不代表当前实现。长期运行入口已改为 AgentWorker，由 AgentCoordinator 调度 AgentEngine；历史通信方案见 [归档](deprecated/runtime-before-hypervisor/channel-architecture.md)，新目标见 [三层设计](agent-system-design.md)。本文的内存实验未按新架构重跑。
 
 范围：Bines 当前工作区、bines Python 环境、VS Code 调试配置及已安装依赖源码。
 本次仅新增本文档，不修改运行代码、配置、依赖或已有采集数据；未启动真实模型请求或设备操作。

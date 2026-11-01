@@ -1,216 +1,219 @@
-from __future__ import annotations
+"""Delegation uses persistent workers, not cloned synchronous agent calls."""
 
-import sys
-import unittest
-from pathlib import Path
+import asyncio
+from threading import Event
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import pytest
+from engine_helpers import Model, ScriptedEngine
+from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+from langchain_core.tools import StructuredTool
+from test_agent_router import EchoEngine, EchoModel
 
-from src.agent_runtime.types.execution import EngineResult, EngineStatus
-from src.agent_messages.text import latest_message_text
-from src.tools.subagents.manager import FORK_BOILERPLATE_TAG, SubagentManager
-
-
-class FakeTool:
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-
-class FakeAgent:
-    def __init__(self, output_prefix: str = "done") -> None:
-        self.output_prefix = output_prefix
-
-    def invoke(self, state, config=None):
-        messages = list(state["messages"])
-        messages.append({"role": "assistant", "content": f"{self.output_prefix}:{len(state['messages'])}"})
-        return {"messages": messages, "config": config or {}}
+from src.agent_runtime.contracts import AgentHandle
+from src.agent_hypervisor.host import Host
+from src.channel.messages import InBoundMessage
+from src.agent_runtime.contracts import TaskResult
+from src.agent_runtime.types.execution import EngineStatus
 
 
-class SubagentManagerTests(unittest.TestCase):
-    def make_manager(self, **kwargs) -> SubagentManager:
-        from unittest.mock import patch
-        create_graph = kwargs.get("create_agent_factory", lambda **_: FakeAgent())
-        class FakeEngine:
-            def __init__(self, *, record, messages, prompt, model, gateway_id):
-                self.graph = create_graph(model=model, tools=record.tools, system_prompt=prompt, name=record.name)
-                self.history = {"messages": messages}
-            def run_turn(self):
-                self.history = self.graph.invoke(self.history)
-                return EngineResult(EngineStatus.COMPLETED, latest_message_text(self.history))
-            def close(self):
-                pass
-        factory = patch("src.tools.subagents.manager.SubagentEngine", FakeEngine)
-        factory.start()
-        self.addCleanup(factory.stop)
-        from gateway_helpers import GatewayHandle, RecordingChannel
-        return SubagentManager(
-            gateway_id=GatewayHandle(RecordingChannel()).gateway_id,
-            model="model",
-            parent_context_provider=kwargs.get("parent_context_provider", lambda: []),
-            tool_factory=kwargs.get(
-                "tool_factory",
-                lambda: [
-                    FakeTool("notify_user"),
-                    FakeTool("authenticate_captcha"),
-                    FakeTool("captcha_authenticated"),
-                    FakeTool("think"),
-                    FakeTool("query_manual"),
-                    FakeTool("tap"),
-                    FakeTool("uiautomate"),
-                    FakeTool("append_excel_rows"),
+def fixture():
+    host = Host()
+    root = host.router.register_root()
+    host.router.deliver_user(InBoundMessage("test", "chat", "1", "task", "user"))
+    child = host.router.register_child(root)
+    return host, root, child
+
+
+def test_active_child_does_not_block_parent_business_tools():
+    host, root, child = fixture()
+    host.router.call(root, child, "work")
+    called = []
+
+    def independent_work() -> str:
+        """Perform work independent of the child."""
+        called.append(True)
+        return "done"
+
+    model = Model(
+        replies=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "independent_work",
+                        "args": {},
+                        "id": "work",
+                    }
                 ],
             ),
-            system_prompt="system",
-        )
+            AIMessage(content="done"),
+        ]
+    )
+    engine = ScriptedEngine(
+        model=model, handle=host.handle(root), tools=[StructuredTool.from_function(independent_work)]
+    )
+    try:
+        assert engine.run_turn().status == EngineStatus.COMPLETED
+        assert called == [True]
+    finally:
+        engine.close()
 
-    def test_spawn_creates_independent_and_delegated_subagents(self) -> None:
-        manager = self.make_manager()
 
-        independent = manager.spawn_subagent("solver", "independent", "Solve a standalone issue.")
-        delegated = manager.spawn_subagent("merchant", "delegated", "Collect current merchant.")
-
-        self.assertIn('id="subagent-1"', independent)
-        self.assertIn('type="independent"', independent)
-        self.assertIn('id="subagent-2"', delegated)
-        self.assertIn('type="delegated"', delegated)
-
-    def test_spawn_rejects_invalid_inputs_and_unknown_tools(self) -> None:
-        manager = self.make_manager()
-
-        self.assertIn('code="invalid_agent_type"', manager.spawn_subagent("x", "nested", "task"))
-        self.assertIn('code="missing_instructions"', manager.spawn_subagent("x", "independent", " "))
-        self.assertIn(
-            'code="unknown_tool"',
-            manager.spawn_subagent("x", "independent", "task", tool_names="missing_tool"),
-        )
-        self.assertIn('id="subagent-', manager.spawn_subagent("x", "independent", "task", tool_names="spawn_subagent"))
-
-    def test_spawn_keeps_forbidden_subagent_tool_schemas_in_child_tool_set(self) -> None:
-        manager = self.make_manager(
-            tool_factory=lambda: [
-                FakeTool("notify_user"),
-                FakeTool("authenticate_captcha"),
-                FakeTool("captcha_authenticated"),
-                FakeTool("think"),
-                FakeTool("query_manual"),
-                FakeTool("tap"),
-                FakeTool("spawn_subagent"),
-                FakeTool("call_subagent"),
-                FakeTool("kill_subagent"),
+def test_active_child_does_not_bypass_parent_result_validation():
+    host, root, child = fixture()
+    host.router.call(root, child, "work")
+    engine = ScriptedEngine(
+        model=Model(
+            replies=[
+                AIMessage(
+                    content='{"resolved": false, "summary": "unfinished", "result": {}, "next_action": "continue"}'
+                )
             ]
-        )
-
-        manager.spawn_subagent("solver", "independent", "Solve independently.")
-
-        tool_names = [tool.name for tool in manager._records["subagent-1"].tools]
-        self.assertEqual(
-            tool_names,
-            [
-                "notify_user",
-                "authenticate_captcha",
-                "captcha_authenticated",
-                "think",
-                "query_manual",
-                "tap",
-                "spawn_subagent",
-                "call_subagent",
-                "kill_subagent",
-            ],
-        )
-        spawn_tool = next(tool for tool in manager._records["subagent-1"].tools if tool.name == "spawn_subagent")
-        self.assertIn("subagent_delegation_forbidden", spawn_tool.func("x", "delegated", "task"))
-
-    def test_explicit_tool_names_auto_include_required_reasoning_tools(self) -> None:
-        manager = self.make_manager()
-
-        manager.spawn_subagent("merchant", "delegated", "Collect merchant.", tool_names="tap,uiautomate")
-
-        tool_names = [tool.name for tool in manager._records["subagent-1"].tools]
-        self.assertNotIn("notify_user", tool_names)
-        self.assertIn("authenticate_captcha", tool_names)
-        self.assertIn("captcha_authenticated", tool_names)
-        self.assertIn("think", tool_names)
-        self.assertNotIn("query_manual", tool_names)
-        self.assertIn("tap", tool_names)
-        self.assertIn("uiautomate", tool_names)
-
-    def test_independent_subagent_preserves_its_own_history(self) -> None:
-        manager = self.make_manager()
-        manager.spawn_subagent("solver", "independent", "Solve independently.")
-
-        first = manager.call_subagent("subagent-1", "first task")
-        second = manager.call_subagent("subagent-1", "second task")
-
-        self.assertIn("done:1", first)
-        self.assertIn("done:3", second)
-        self.assertEqual(len(manager._records["subagent-1"].messages), 4)
-
-    def test_delegated_subagent_uses_parent_context_copy_without_writeback(self) -> None:
-        parent_messages = [{"role": "user", "content": "parent context"}]
-        seen_messages = []
-        captured_create_agent_kwargs = []
-
-        def create_agent_factory(**_):
-            captured_create_agent_kwargs.append(_)
-
-            class CapturingAgent:
-                def invoke(self, state, config=None):
-                    seen_messages.append(list(state["messages"]))
-                    state["messages"].append({"role": "assistant", "content": "delegated done"})
-                    return state
-
-            return CapturingAgent()
-
-        manager = self.make_manager(
-            parent_context_provider=lambda: parent_messages,
-            create_agent_factory=create_agent_factory,
-        )
-        manager.spawn_subagent("merchant", "delegated", "Collect merchant.")
-
-        result = manager.call_subagent("subagent-1", "collect current merchant")
-
-        self.assertIn("delegated done", result)
-        self.assertEqual(parent_messages, [{"role": "user", "content": "parent context"}])
-        self.assertEqual(manager._records["subagent-1"].messages, [])
-        self.assertEqual(seen_messages[0][0]["content"], "parent context")
-        self.assertIn(FORK_BOILERPLATE_TAG, seen_messages[0][-1]["content"])
-        self.assertIn("Collect merchant.", seen_messages[0][-1]["content"])
-        self.assertIn("collect current merchant", seen_messages[0][-1]["content"])
-        self.assertEqual(captured_create_agent_kwargs[0]["system_prompt"], "system")
-
-    def test_independent_subagent_keeps_rules_in_system_prompt(self) -> None:
-        captured_create_agent_kwargs = []
-
-        def create_agent_factory(**kwargs):
-            captured_create_agent_kwargs.append(kwargs)
-            return FakeAgent()
-
-        manager = self.make_manager(create_agent_factory=create_agent_factory)
-        manager.spawn_subagent("solver", "independent", "Solve independently.")
-        manager.call_subagent("subagent-1", "first task")
-
-        self.assertIn("Subagent rules:", captured_create_agent_kwargs[0]["system_prompt"])
-        self.assertIn("Solve independently.", captured_create_agent_kwargs[0]["system_prompt"])
-
-    def test_kill_subagent_removes_registry_entry(self) -> None:
-        manager = self.make_manager()
-        manager.spawn_subagent("solver", "independent", "Solve independently.")
-
-        self.assertIn(">killed<", manager.kill_subagent("subagent-1"))
-        self.assertIn('code="subagent_not_found"', manager.call_subagent("subagent-1", "task"))
-
-    def test_call_subagent_returns_busy_error_when_another_call_is_active(self) -> None:
-        manager = self.make_manager()
-        manager.spawn_subagent("solver", "independent", "Solve independently.")
-
-        manager._lock.acquire()
-        try:
-            result = manager.call_subagent("subagent-1", "task")
-        finally:
-            manager._lock.release()
-
-        self.assertIn('code="subagent_busy"', result)
+        ),
+        handle=host.handle(root),
+        structured=True,
+    )
+    try:
+        assert engine.run_turn().status == EngineStatus.CONTINUE_REQUIRED
+    finally:
+        engine.close()
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_parent_worker_progresses_while_child_worker_is_busy():
+    child_busy, release_child, parent_worked = Event(), Event(), Event()
+
+    def child_work() -> str:
+        """Hold independent child work open until the parent has progressed."""
+        child_busy.set()
+        assert release_child.wait(5)
+        return "child work done"
+
+    def parent_work() -> str:
+        """Perform work while the child is still busy."""
+        assert child_busy.is_set() and not release_child.is_set()
+        parent_worked.set()
+        return "parent work done"
+
+    class BusyModel(EchoModel):
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+            last = messages[-1]
+            if last.type == "human":
+                return ChatResult(
+                    generations=[
+                        ChatGeneration(
+                            message=AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "child_work",
+                                        "args": {},
+                                        "id": "busy",
+                                    }
+                                ],
+                            )
+                        )
+                    ]
+                )
+            if isinstance(last, ToolMessage) and last.name == "child_work":
+                assignment = next(m for m in reversed(messages) if m.type == "human")
+                return super()._generate([assignment], **kwargs)
+            return super()._generate(messages, **kwargs)
+
+    class BusyEngine(EchoEngine):
+        def _create_tools(self):
+            return [StructuredTool.from_function(child_work)]
+
+    host = Host()
+    root = host.register_root()
+    parent = ScriptedEngine(
+        handle=root,
+        model=Model(
+            replies=[
+                AIMessage(content="", tool_calls=[{"name": "parent_work", "args": {}, "id": "independent"}]),
+                AIMessage(content="done"),
+            ]
+        ),
+        tools=[StructuredTool.from_function(parent_work)],
+    )
+    host.start(parent)
+    try:
+        with host.child(root.agent_id) as child:
+            host.start(BusyEngine(model=BusyModel(), handle=child))
+        host.router.call(root.agent_id, child.agent_id, "child task")
+        assert child_busy.wait(3)
+        host.router.deliver_user(InBoundMessage("test", "chat", "work", "independent task", "user"))
+        assert parent_worked.wait(3)
+    finally:
+        release_child.set()
+        asyncio.run(host.close())
+
+
+def received(router, agent_id):
+    messages = router.read(agent_id, wait=False)
+    router.acknowledge(agent_id, tuple(message.message_id for message in messages))
+    return messages
+
+
+def test_blocked_task_yields_and_parent_can_follow_up():
+    host, root, child = fixture()
+    task = host.router.call(root, child, "work")
+    received(host.router, child)
+    host.router.report(child, task, TaskResult(status="blocked", summary="Need clarification"))
+    assert host.router.tasks_blocked(child)
+    followup = host.router.call(root, child, "clarification")
+    assert received(host.router, child)[0].task_id == followup
+    assert not host.router.tasks_blocked(child)
+    assert host.router.unfinished(child) == [task, followup]
+    host.router.report(child, followup, TaskResult(status="completed", summary="follow-up done"))
+    assert host.router.tasks_blocked(child)  # New calls do not silently clear the original blocker.
+
+
+def test_parent_cannot_bypass_direct_child_relationship():
+    host, root, child = fixture()
+    grandchild = host.router.register_child(child)
+    with pytest.raises(PermissionError):
+        host.router.call(root, grandchild, "bypass")
+
+
+def test_stop_reports_cancellation_to_parent():
+    host, root, child = fixture()
+    task = host.router.call(root, child, "work")
+    host.router.read(root, wait=False)
+    host.router.stop(child)
+    report = host.router.read(root, wait=False)[0]
+    assert report.task_id == task and report.result.status == "failed"
+    assert not host.router.unfinished(child)
+
+
+def test_parent_can_report_independent_completion_while_child_is_running():
+    from test_agent_router import EchoEngine
+
+    host, root, child = fixture()
+    task = host.router.call(root, child, "work")
+    received(host.router, child)
+    grandchild = host.router.register_child(child)
+    host.router.call(child, grandchild, "subtask")
+    engine = object.__new__(EchoEngine)
+    engine.handle = host.handle(child)
+    assert engine.report(task, TaskResult(status="completed", summary="own work complete"))
+    assert not host.router.tasks_reported(grandchild)
+
+
+def test_completed_parent_still_processes_later_child_report():
+    host, root, child = fixture()
+    task = host.router.call(root, child, "own work")
+    received(host.router, child)
+    grandchild = host.router.register_child(child)
+    subtask = host.router.call(child, grandchild, "background work")
+    received(host.router, grandchild)
+    host.router.report(child, task, TaskResult(status="completed", summary="done"))
+    host.router.report(grandchild, subtask, TaskResult(status="completed", summary="background result"))
+    model = Model(replies=[AIMessage(content="Processed background result")])
+    engine = ScriptedEngine(model=model, handle=host.handle(child))
+    try:
+        assert engine.run_turn().status == EngineStatus.COMPLETED
+        assert len(model.seen) == 1
+        assert "background result" in model.seen[0][-1].content
+    finally:
+        engine.close()

@@ -220,10 +220,11 @@ def test_retraining_clears_current_evidence_but_retains_historical_completion(tm
 
     result = office.wrap_tool_call(request("prepare_collector", current), train)
     assert result.update["merchant"]["phase"] == "ready"
-    assert "visit-current" in result.update["probe"]["visit_summaries"]
     assert result.update["merchant"]["evidence"]["initialized"] is False
-    assert result.update["probe"]["completed_merchants"][current["general"]["visit"]["path"]] == ["商家A"]
     apply(current, result)
+    apply(current, Command(update=office.before_model(current, None)))
+    assert "visit-current" in current["probe"]["visit_summaries"]
+    assert current["probe"]["completed_merchants"][current["general"]["visit"]["path"]] == ["商家A"]
     assert not persistence.service.completion(current).done
 
 
@@ -464,6 +465,7 @@ def test_typo_confirmation_training_and_collection_use_observed_profile(tmp_path
         return message("prepare_collector")
 
     apply(current, merchant.wrap_tool_call(request("prepare_collector", current), train))
+    apply(current, Command(update=merchant.before_model(current, None)))
     assert current["merchant"]["phase"] == "ready"
     assert current["probe"]["current_merchant"] == "商家A"
     assert persistence.service.training_error(current) == ""

@@ -8,6 +8,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
 from langchain.tools import ToolRuntime
 from langchain_core.messages import BaseMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from src.agent_messages.text import message_content
@@ -38,6 +39,20 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ConductorState]):
 
     def create_tools(self) -> list[StructuredTool]:
         return [create_tool(self.is_done)]
+
+    def before_model(self, state: ConductorState, runtime: Runtime[None]) -> dict[str, object] | None:
+        if self.service.training_error(state):
+            return None
+        visit_id = current_visit(state).get("visit_id", "")
+        record = self.service.training_registry.record_for(visit_id)
+        summary = state["probe"].get("visit_summaries", {}).get(visit_id)
+        if record is None or (summary is not None and summary["merchant_profile"] == record.merchant_profile):
+            return None
+        step = self.service.initialize(state)
+        return dict(complete_update(state, step.update)) if step.update else None
+
+    async def abefore_model(self, state: ConductorState, runtime: Runtime[None]) -> dict[str, object] | None:
+        return self.before_model(state, runtime)
 
     def is_done(self, runtime: ToolRuntime[None, ConductorState]) -> Command[str]:
         """Check completion only on likely end-of-list evidence, not after ordinary swipes.
@@ -96,8 +111,6 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ConductorState]):
             return result
         invocation: ToolInvocation = ToolInvocation.from_request(request)
         tool_name: str = invocation.name
-        if tool_name == "prepare_collector":
-            return self._initialize_trained_merchant(request, result)
         if tool_name not in COLLECTION_XML_TOOL_NAMES:
             return result
         if result.status == "error":
@@ -157,14 +170,3 @@ class CollectionPersistenceMiddleware(AgentMiddleware[ConductorState]):
             if step.update
             else result
         )
-
-    def _initialize_trained_merchant(self, request: ToolCallRequest, result: ToolResult) -> ToolResult:
-        if not isinstance(result, ToolMessage) or result.status == "error":
-            return result
-        state: ConductorState = ToolInvocation.from_request(request).state
-        if not self.service.training_registry.is_trained(
-            str(current_visit(state).get("visit_id") or ""), str(current_visit(state).get("path") or "")
-        ):
-            return result
-        step: CollectionStepResult = self.service.initialize(state)
-        return Command(update={**complete_update(state, step.update), "messages": [result]})

@@ -6,6 +6,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
 from src.agent_messages.types import InputMessage
+from src.agent_runtime.contracts import AgentHandle, TaskResult
 from src.agent_runtime.engine import AgentEngine
 from src.agent_runtime.strategy.registration import StrategyRegistration
 from src.agent_runtime.strategy.state import StrategyInput
@@ -16,6 +17,7 @@ from src.tools.communication.tools import create_talk_tool
 
 from .state import CollectorAgentState
 from .toolbox import CollectorToolbox
+from .training import CollectorTrainingRegistry
 
 
 class CollectorEngine(AgentEngine[CollectorAgentState]):
@@ -24,22 +26,63 @@ class CollectorEngine(AgentEngine[CollectorAgentState]):
         *,
         model: str | BaseChatModel,
         toolbox: CollectorToolbox,
-        assignment: str,
         session_id: str,
         max_iterations: int,
-        gateway_id: str,
+        handle: AgentHandle,
+        registry: CollectorTrainingRegistry,
     ) -> None:
         self._toolbox: CollectorToolbox = toolbox
-        self._assignment: str = assignment
+        self._registry = registry
         super().__init__(
             model=model,
-            gateway_id=gateway_id,
+            handle=handle,
             session_id=session_id,
             max_iterations=max_iterations,
         )
 
-    def _create_initial_messages(self) -> Sequence[InputMessage]:
-        return [{"role": "user", "content": self._assignment}]
+    def _prepare_report(self, result: TaskResult) -> TaskResult:
+        if result.status not in {"completed", "failed"}:
+            return result
+        toolbox = self._toolbox
+        restoration = toolbox.restore_to_top()
+        verification = toolbox.training_result()
+        profile = toolbox.merchant_profile()
+        trained = result.status == "completed" and verification["ready"] and restoration["restored"]
+        if result.status == "completed" and not trained:
+            raise ValueError("Training and page restoration must pass before reporting completion")
+        if trained:
+            contract = toolbox.mechanism.collection_contract(toolbox.page_path)
+            if contract is None:
+                raise ValueError("Validated collector requires a collection contract")
+            toolbox.persist_history()
+            self._registry.mark_trained(
+                toolbox.page_visit_id,
+                toolbox.page_path,
+                contract_fingerprint=contract.fingerprint,
+                merchant_profile=profile,
+                script_fingerprint=verification["script_fingerprint"],
+                restoration=restoration,
+            )
+            swipe = verification["normal_swipe_profile"]
+            if swipe is not None:
+                self._registry.set_swipe_threshold(
+                    toolbox.page_visit_id, swipe["change_threshold"], swipe["sample_count"]
+                )
+        else:
+            self._registry.mark_untrained(toolbox.page_visit_id, toolbox.page_path)
+        return result.model_copy(
+            update={
+                "data": {
+                    "trained": trained,
+                    "page_path": toolbox.page_path,
+                    "page_visit_id": toolbox.page_visit_id,
+                    "verification": verification,
+                    "restoration": restoration,
+                    "merchant_profile": profile,
+                    "normal_swipe_profile": verification["normal_swipe_profile"],
+                }
+            }
+        )
 
     def _name(self) -> str:
         return "collector"

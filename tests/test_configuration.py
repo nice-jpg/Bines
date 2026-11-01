@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from src.application.trace import trace_client
+from src.common.tracing import trace_client
 from src.configuration.errors import ConfigurationError, ConfigurationKeyError
 from src.configuration.loader import legacy_configuration, load_configuration, parse_configuration
 from src.configuration.locking import ReadWriteLock
@@ -265,7 +265,7 @@ def test_trace_injection_uses_snapshot_not_environment(monkeypatch, configuratio
         }
     )
     constructor = Mock()
-    monkeypatch.setattr("src.application.trace.NTraceClient", constructor)
+    monkeypatch.setattr("src.common.tracing.NTraceClient", constructor)
     monkeypatch.setenv("NTRACE_ENABLED", "true")
     monkeypatch.setenv("NTRACE_SERVER_URL", "https://wrong.example.test")
     first = trace_client()

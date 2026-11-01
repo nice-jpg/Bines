@@ -50,7 +50,7 @@ def test_child_assignments_merge_into_parent_tool_call(sink):
 
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
-    parent = ScriptedEngine(name="conductor", tools=[collect], gateway_id=gateway.gateway_id,
+    parent = ScriptedEngine(name="conductor", tools=[collect], handle=gateway.handle,
         model=Model(replies=[AIMessage(content="", tool_calls=[{"id": "c", "name": "collect", "args": {}}]),
                              AIMessage(content="done")]))
     parent._trace.client = sink
@@ -69,7 +69,7 @@ def test_child_assignments_merge_into_parent_tool_call(sink):
 def test_continuation_and_recovery_retain_binding(sink, resume, internal):
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
-    agent = engine(sink, gateway_id=gateway.gateway_id,
+    agent = engine(sink, handle=gateway.handle,
                    initial_messages=[{"role": "user", "content": "assignment"}] if internal else [])
     if not internal:
         channel.receive("one", "start")
@@ -90,7 +90,7 @@ def test_continuation_and_recovery_retain_binding(sink, resume, internal):
 def test_user_turns_in_same_session_start_distinct_roots(sink):
     channel = RecordingChannel()
     gateway = GatewayHandle(channel)
-    agent = engine(sink, gateway_id=gateway.gateway_id)
+    agent = engine(sink, handle=gateway.handle)
     ids = []
     for text in ("first", "second"):
         channel.receive("one", text)

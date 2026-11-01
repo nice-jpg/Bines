@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 from collections.abc import Callable, Mapping, Sequence
-from contextvars import Context
 from dataclasses import dataclass, field
 from pathlib import Path
 from threading import current_thread, main_thread
@@ -13,15 +13,14 @@ from typing import Any
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from src.application.trace import trace_client
-from src.configuration.manager import ConfigurationManager
-from src.conductor.engine import ConductorEngine
-from src.agent_runtime.coordinator import AgentCoordinator
+
+from src.agent_hypervisor.host import Host
+from src.channel.messages import InBoundMessage
 from src.agent_runtime.types.execution import EngineResult, EngineStatus, InterruptKind
-from src.application.gateway_manager import GatewayManager
-from src.channel.base import Channel, MessageListener
-from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
 from src.application.model import close_model
+from src.common.tracing import trace_client
+from src.conductor.engine import ConductorEngine
+from src.configuration.manager import ConfigurationManager
 from src.prompts import conductor_prompt
 
 try:
@@ -60,35 +59,6 @@ class TrainingEngine(ConductorEngine):
     def evaluation_state(self) -> Mapping[str, object]:
         # A training report is read after execution; Coordinator never reads graph state.
         return dict(self._state)
-
-
-class TrainingChannel(Channel):
-    def __init__(self, notifier: Callable[[str], None], session_id: str) -> None:
-        self._notifier = notifier
-        self._session_id = session_id
-        self._listener: MessageListener | None = None
-
-    @property
-    def channel_id(self) -> str:
-        return "training"
-
-    def bind_message_listener(self, listener: MessageListener) -> None:
-        self._listener = listener
-
-    def submit(self, text: str) -> None:
-        if self._listener is None or not self._listener(
-            IncomingMessage("training", self._session_id, uuid4().hex, text, "trainer")
-        ):
-            raise RuntimeError("Training input was not accepted")
-
-    def send_message(self, message: OutgoingMessage) -> None:
-        self._notifier(message.text)
-
-    def start(self) -> None:
-        pass
-
-    def close(self) -> None:
-        pass
 
 
 Evaluator = Callable[[RunResult], int | dict[str, Any]]
@@ -139,43 +109,53 @@ class RawRunSlave:
         trace_client()
         factory = self._engine_factory or self._prompt_reloader()
         notifier = self._notifier_factory()
-        channel = TrainingChannel(notifier, self.session_id)
-        manager = GatewayManager.instance()
-        gateway_id = manager.create(channel)
-        coordinator = None
+        host = Host()
+        parent_id = host.router.register_root()
+        host.router.deliver_user(
+            InBoundMessage("training", self.session_id, uuid4().hex, self.task_message, "trainer")
+        )
+        host.router.read(parent_id, wait=False)
         model = None
         try:
             model = self._model_factory()
-            engine = factory(model=model, gateway_id=gateway_id, max_iterations=self.max_iterations)
-            coordinator = AgentCoordinator(engine)
-            manager.start(gateway_id)
-            channel.submit(self.task_message)
-            result = _call_in_detached_context(coordinator.run)
-            while result.status == EngineStatus.INTERRUPTED:
-                token = "done" if result.interrupt_kind == InterruptKind.HUMAN else "继续"
-                user_input = self._human_input_provider(result).strip()
-                if user_input != token:
-                    if self.print_result:
-                        print(f"[HITL] Input ignored; enter {token!r} to resume.")
-                    continue
-                channel.submit(user_input)
-                result = _call_in_detached_context(coordinator.run)
-            report = RunResult(result.output, engine.evaluation_state)
+            with host.child(parent_id) as handle:
+                engine = factory(model=model, handle=handle, max_iterations=self.max_iterations)
+                host.start(engine)
+            child_id = handle.agent_id
+            host.router.call(parent_id, child_id, self.task_message)
+            output = ""
+            finished = False
+            while not finished:
+                for message in host.router.read(parent_id, wait=True):
+                    if message.result is None:
+                        continue
+                    notifier(message.result.summary)
+                    if message.result.status in {"completed", "failed"}:
+                        output = message.result.summary
+                        finished = True
+                    elif message.result.status == "blocked":
+                        raw_kind = message.result.data.get("interrupt_kind")
+                        kind = (
+                            InterruptKind(raw_kind) if isinstance(raw_kind, str) else InterruptKind.EXECUTION
+                        )
+                        prompt = EngineResult(EngineStatus.INTERRUPTED, message.result.summary, kind)
+                        response = self._human_input_provider(prompt)
+                        if raw_kind is not None:
+                            token = "done" if kind == InterruptKind.HUMAN else "继续"
+                            while response.strip() != token:
+                                response = self._human_input_provider(prompt)
+                        host.router.call(parent_id, child_id, response)
+            host.kill(parent_id, child_id)
+            report = RunResult(output, engine.evaluation_state)
             report.summary = self._summary(report)
             return report
         finally:
-            manager.stop(gateway_id)
             try:
-                if coordinator is not None:
-                    _call_in_detached_context(coordinator.close)
+                asyncio.run(host.close())
             finally:
-                manager.finish_output(gateway_id)
-                manager.join(gateway_id)
-                try:
-                    if model is not None:
-                        close_model(model)
-                finally:
-                    manager.release(gateway_id)
+                host.router.release(parent_id)
+                if model is not None:
+                    close_model(model)
 
     def eval(self, result: RunResult) -> int | dict[str, Any]:
         """Delegate scoring to the evaluator defined by raw_run."""
@@ -303,17 +283,6 @@ def _read_human_input(result: EngineResult) -> str:
             "HITL input is unavailable; provide RawRunSlave(human_input_provider=...) "
             "for non-interactive execution"
         ) from exc
-
-
-def _call_in_detached_context(
-    function: Callable[..., RunResult],
-    /,
-    *args: Any,
-    **kwargs: Any,
-) -> RunResult:
-    """Run an independent slave without inheriting a parent graph task."""
-
-    return Context().run(function, *args, **kwargs)
 
 
 # Importable instance for:

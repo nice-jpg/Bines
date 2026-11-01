@@ -73,7 +73,7 @@ def test_engine_registers_arbitrary_non_page_strategy_and_preserves_checkpoint()
     from gateway_helpers import GatewayHandle, RecordingChannel
 
     handle = GatewayHandle(RecordingChannel("review"))
-    engine = ReviewEngine(model=Model(replies=[AIMessage(content="done")]), gateway_id=handle.gateway_id)
+    engine = ReviewEngine(model=Model(replies=[AIMessage(content="done")]), handle=handle.handle)
     config = {"configurable": {"thread_id": "review"}}
     first = engine.agent.invoke(
         {"messages": [HumanMessage(content="first")], "active_strategy": "review"}, config=config

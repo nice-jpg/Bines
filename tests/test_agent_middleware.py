@@ -32,7 +32,7 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
         self.addCleanup(replacement.stop)
 
         agent = importlib.import_module("src.conductor.engine")
-        agent.ConductorEngine(model="model", gateway_id="test")
+        agent.ConductorEngine(model="model", handle="test")
 
         middleware_names = [type(middleware).__name__ for middleware in captured["middleware"]]
         self.assertEqual(
@@ -41,13 +41,14 @@ class AgentMiddlewareWiringTests(unittest.TestCase):
                 "HostTraceMiddleware",
                 "ModelRetryMiddleware",
                 "ConversationInputMiddleware",
+                "ForkContext",
                 "ToolErrorMiddleware",
                 "StrategyDispatchMiddleware",
                 "ToolTraceMiddleware",
                 "LLMTraceMiddleware",
             ],
         )
-        dispatcher = captured["middleware"][4]
+        dispatcher = captured["middleware"][5]
         general = dispatcher._resolve_strategy(read_conductor_state({"messages": []}))
         layers = {type(layer).__name__: layer for layer in general.middlewares}
         hitl = layers["CaptchaHumanInTheLoopMiddleware"]

@@ -12,7 +12,7 @@
 - `CollectorValidationSession` 统一管理冻结快照、基准、评分和回归失效状态。
 - 页面快照、训练结果、脚本结果、采集状态、完成判断和持久化结果已有明确类型。
 - `DeviceError` 通过显式 `as_dict()` 保持工具错误 JSON；工具回调结果统一为 `ToolMessage | Command[str]`。
-- 长期运行入口为 `LongRunningAgent`，仅接受 `completion_driver: AgentCompletionDriver`；Driver 负责单项任务持续推进，Runtime 负责图执行。通信能力通过 `AgentExecutionContext` 注入，队列及关闭由 ChannelGateway 封装，详见 [Channel 架构](channel-architecture.md)。
+- 历史重构时的长期运行入口为 `LongRunningAgent`，仅接受 `completion_driver: AgentCompletionDriver`；Driver 负责单项任务持续推进，Runtime 负责图执行。通信能力通过 `AgentExecutionContext` 注入，队列及关闭由 ChannelGateway 封装，详见 [历史 Channel 架构](deprecated/runtime-before-hypervisor/channel-architecture.md)。这些接口已过时，新目标见 [三层设计](agent-system-design.md)。
 - 飞书事件解析使用 SDK 具体字段；WebSocket 使用 `ClientConnection` 和 `State`。
 - 页面上下文、手册、历史消息压缩、探测完成结果及子代理调用已补充具体类型；手册 metadata 常量有统一归属。
 - Codex WebSocket 事件、响应项和用量字段在适配边界进行验证。

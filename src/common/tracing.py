@@ -1,4 +1,4 @@
-"""Inject explicit Bines settings into nTrace without its environment fallbacks."""
+"""Shared trace-client configuration, independent of application assembly."""
 
 import math
 from functools import lru_cache

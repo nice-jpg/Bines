@@ -1,11 +1,9 @@
 """Minimal transport interface; implementations own their SDK lifecycle."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 
-from src.agent_runtime.messaging.messages import IncomingMessage, OutgoingMessage
-
-type MessageListener = Callable[[IncomingMessage], bool]
+from src.channel.buffer import MessageBuffer
+from src.channel.messages import OutBoundMessage
 
 
 class Channel(ABC):
@@ -15,17 +13,17 @@ class Channel(ABC):
         """Stable channel identity for this transport."""
 
     @abstractmethod
-    def bind_message_listener(self, listener: MessageListener) -> None:
-        """Bind before startup. False means the message was not accepted."""
+    def bind_buffer(self, buffer: MessageBuffer) -> None:
+        """Bind the external input buffer before startup."""
 
     @abstractmethod
-    def send_message(self, message: OutgoingMessage) -> None:
-        """Enqueue for transport delivery, or raise if admission fails."""
+    async def send_message(self, message: OutBoundMessage) -> bool:
+        """Deliver one message, retaining its conversation address."""
 
     @abstractmethod
-    def start(self) -> None:
-        """Start the owned worker without blocking the caller."""
+    async def start(self) -> None:
+        """Start transport on the application's event loop."""
 
     @abstractmethod
-    def close(self) -> None:
-        """Drain accepted outgoing messages and stop the owned worker."""
+    async def close(self) -> None:
+        """Stop transport without closing the application's event loop."""

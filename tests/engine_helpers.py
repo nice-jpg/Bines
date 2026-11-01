@@ -22,7 +22,7 @@ class Model(BaseChatModel):
     def bind_tools(self, tools, **kwargs):
         return self
 
-    def _generate(self, messages, **kwargs):
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         index = len(self.seen)
         self.seen.append(messages)
         if self.on_call:
@@ -47,16 +47,16 @@ class ScriptedEngine(ConductorEngine):
         middleware=(),
         initial_messages=(),
         session_id="test",
-        gateway_id=None,
+        handle=None,
         structured=False,
         max_iterations=1000,
         name="test",
         system_prompt="base",
     ):
-        if gateway_id is None:
+        if handle is None:
             from gateway_helpers import GatewayHandle, RecordingChannel
             self.test_channel = RecordingChannel("test")
-            gateway_id = GatewayHandle(self.test_channel).gateway_id
+            handle = GatewayHandle(self.test_channel).handle
         self.initial_messages = list(initial_messages)
         self._test_tools = tools
         self._test_middlewares = middleware
@@ -66,7 +66,7 @@ class ScriptedEngine(ConductorEngine):
         AgentEngine.__init__(
             self,
             model=model,
-            gateway_id=gateway_id,
+            handle=handle,
             session_id=session_id,
             max_iterations=max_iterations,
         )
