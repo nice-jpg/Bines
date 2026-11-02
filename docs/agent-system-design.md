@@ -55,10 +55,12 @@ BatchCoordinator 将领取批次交给 Root 邮箱后才 commit；异常时 rele
 Root 邮箱按 batch_id 去重。邮箱满时协调器等待容量通知，不忙轮询，也不丢弃已领取输入。
 批次自身就是一个结构化 mail，入箱会唤醒 Root；不另外发送无内容的提醒。
 
-Root 的 `reply(channel_id, session_id, message)` 只允许发送至 Gateway 已接收过的地址。
-Root 派发工具 `call(subagent_id, task, source_batch_ids)` 验证批次来自自身历史，将来源作为不透明
-origin 元数据保存于任务；后续报告携带相同 origin。Router 不解释 Channel 地址，Root 不按最近一条消息猜测回信目标。
-其他 Agent 仅有父子 call/report，不拥有 Gateway 发送权限。
+Root 的 `reply(task_id, message)` 按任务管理器保存的来源回复；task_id 为空时回复当前外部输入。
+Root 派发 `call(subagent_id, task_id, task)` 时，当前输入地址自动保存到任务的内部 origin，
+同主题补充或返工沿用原地址。报告不将该元数据展示给模型；Root 必须先回复，再验收移除任务。
+其他 Agent 仅有父子通信，不拥有 Gateway 发送权限，也不接收发送者或 Channel 信息。
+Root 在一个模型轮次内不会切换到另一个外部会话地址；异会话批次等待当前轮次结束，
+同会话补充和子报告仍可在模型边界注入，避免无地址正文与隐式回复目标错位。
 
 ## 身份、投递与任务
 
@@ -68,14 +70,26 @@ Host 维护 Worker 生命周期，MailboxRouter 维护父子关系、队列和�
 
 | 操作 | 语义 |
 | --- | --- |
-| `call(subagent_id, task)` | 仅投递到直接子 Agent，立即返回 task_id，不等待执行结束 |
+| `call(subagent_id, task_id, task)` | task_id 为父 Agent 提供的短主题；投递给直接子 Agent，立即返回，不等待执行结束 |
 | `report(task_id, result)` | 仅任务接收者向原调用者报告；可多次 progress/blocked |
+| `accept_report(task_id)` | 父 Agent 核验已收到的最终报告后移除任务；不通过时使用原主题 call 返工 |
 | `spawn_subagent(agent_type)` | 创建并启动独立 Worker，不自动发送任务 |
 | `kill(subagent_id)` | 只允许直接父销毁子树，在安全边界停止并等待退出 |
 
 接收分两次确认：Router.read 只将 mail 移至 received；ConversationSession 成功暂存消息块后
 显式 ACK，停止传输重试；消息写入 checkpoint 后，Session 才移除本地 pending。
-因此模型失败不会丢失已经接收但尚未注入的输入。重投保持相同 task_id/mail ID，重复接收不重复加入历史。
+因此模型失败不会丢失已经接收但尚未注入的输入。重投保持相同内部关联 ID/mail ID，重复接收不重复加入历史。
+
+模型输入只包含任务主题、正文或报告结果；外部输入的 task_id 为空。Agent ID、mail ID、sequence、
+batch ID、channel/session 和 origin 都由内部信封管理，不拼入子 Agent 的 HumanMessage。
+spawn 返回的 subagent_id 仍用于父 Agent 指定工具调用目标，不随正文传播给子 Agent。
+
+每个邮箱拥有一个 runtime 定义的 TaskManager，分别保存 received 和 sent，所有修改在 Router 锁内完成。
+call 登记父方 sent，子方接收并 ACK 后登记 received；progress/blocked 更新对应状态。
+子 Agent 成功发送最终 report 后删除 received，父方收到报告后将 sent 标记为 awaiting_review。
+只有 accept_report 才删除父方 sent 及传输关联记录。验收前同主题 call 会重新激活任务，
+最终报告后的返工使用新的内部关联 ID，避免旧报告误匹配新版本。活动主题不能被改派给另一个子 Agent。
+不同 Agent 以及同一 Agent 的 received/sent 两个方向可使用相同主题，不共享记录。
 
 30 秒未 ACK 则重投，最多 3 次。耗尽后发送 delivery_unknown notice，不把未知接收状态误判为业务失败；
 迟到 ACK 和最终报告仍可接受。ACK 释放重投命令 payload。DeliveryMonitor 按最近 deadline 等待，无固定轮询。
@@ -90,12 +104,13 @@ stateDiagram-v2
   Running --> Running: progress
   Running --> Blocked: blocked
   Blocked --> Running: progress
-  Running --> Terminal: completed / failed / cancelled
-  Blocked --> Terminal: completed / failed / cancelled
-  Terminal --> Terminal: identical terminal report
+  Running --> AwaitingReview: final report / child removes received
+  Blocked --> AwaitingReview: final report / child removes received
+  AwaitingReview --> Running: call with revision / same topic
+  AwaitingReview --> [*]: accept_report / parent removes sent
 ```
 
-终态冲突被拒绝；传输层相同终态重复报告幂等。任务完成不停止 Worker，Worker 继续等待新任务。
+验收前冲突的最终报告被拒绝；传输层相同最终报告重复发送幂等。任务完成不停止 Worker，Worker 继续等待新任务。
 存在未完成子任务不会冻结父 Agent 工具；业务依赖必须显式表达，不从父子关系自动推导。
 
 ## 独立执行与派生
@@ -112,6 +127,12 @@ Collector 的可变训练资源通过专用构造路径提供，不冒充可安�
 
 专用 Engine 仍由业务显式构造，通过 `handle.spawner.child()` 申请身份，`start(engine)` 启动。
 AgentSpawner 位于 hypervisor/host.py，仅封装父身份作用域和生命周期；不持有业务类型表。
+
+Conductor 不再提供 prepare_collector。它通过 spawn_subagent("collector") 创建当前已确认页面的专用子 Agent，
+再通过普通 call 派发任务。构造时从隐藏 graph state 读取页面/访问/探测身份，从 PAGE.md 严格读取两个 schema；
+这些内部参数不由模型重复传递。Collector 只加载 PAGE.md，不接收 task.md 操作流程。
+构造与派发分开：新 Worker 没有任务时等待邮箱。Collector 的完成报告仍执行业务证据验收与页面还原，
+Conductor 根据报告核验后调用 accept_report。训练状态更新由现有模型边界 middleware 感知。
 
 ```mermaid
 classDiagram
@@ -132,6 +153,8 @@ classDiagram
   }
   class AgentSpawner
   class ForkContext
+  class TaskManager
+  class TaskRecord
   Host --> RootAgent
   RootAgent --|> AgentEngine
   Host --> AgentWorker
@@ -145,6 +168,8 @@ classDiagram
   Mailbox --> MailboxPort
   AuthenticatedMailboxPort ..|> MailboxPort
   AuthenticatedMailboxPort --> MailboxRouter
+  MailboxRouter *-- TaskManager : per agent
+  TaskManager *-- TaskRecord : received / sent
   AgentSpawner ..|> SpawnPort
   AgentSpawner --> Host
 ```

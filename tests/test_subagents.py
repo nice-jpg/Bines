@@ -27,7 +27,7 @@ def fixture():
 
 def test_active_child_does_not_block_parent_business_tools():
     host, root, child = fixture()
-    host.router.call(root, child, "work")
+    host.router.call(root, child, "work", "work")
     called = []
 
     def independent_work() -> str:
@@ -62,7 +62,7 @@ def test_active_child_does_not_block_parent_business_tools():
 
 def test_active_child_does_not_bypass_parent_result_validation():
     host, root, child = fixture()
-    host.router.call(root, child, "work")
+    host.router.call(root, child, "work", "work")
     engine = ScriptedEngine(
         model=Model(
             replies=[
@@ -140,7 +140,7 @@ def test_parent_worker_progresses_while_child_worker_is_busy():
     try:
         with host.child(root.agent_id) as child:
             host.start(BusyEngine(model=BusyModel(), handle=child))
-        host.router.call(root.agent_id, child.agent_id, "child task")
+        host.router.call(root.agent_id, child.agent_id, "child task", "child task")
         assert child_busy.wait(3)
         host.router.deliver_user(InBoundMessage("test", "chat", "work", "independent task", "user"))
         assert parent_worked.wait(3)
@@ -157,11 +157,11 @@ def received(router, agent_id):
 
 def test_blocked_task_yields_and_parent_can_follow_up():
     host, root, child = fixture()
-    task = host.router.call(root, child, "work")
+    task = host.router.call(root, child, "work", "work")
     received(host.router, child)
     host.router.report(child, task, TaskResult(status="blocked", summary="Need clarification"))
     assert host.router.tasks_blocked(child)
-    followup = host.router.call(root, child, "clarification")
+    followup = host.router.call(root, child, "clarification", "clarification")
     assert received(host.router, child)[0].task_id == followup
     assert not host.router.tasks_blocked(child)
     assert host.router.unfinished(child) == [task, followup]
@@ -173,12 +173,12 @@ def test_parent_cannot_bypass_direct_child_relationship():
     host, root, child = fixture()
     grandchild = host.router.register_child(child)
     with pytest.raises(PermissionError):
-        host.router.call(root, grandchild, "bypass")
+        host.router.call(root, grandchild, "bypass", "bypass")
 
 
 def test_stop_reports_cancellation_to_parent():
     host, root, child = fixture()
-    task = host.router.call(root, child, "work")
+    task = host.router.call(root, child, "work", "work")
     host.router.read(root, wait=False)
     host.router.stop(child)
     report = host.router.read(root, wait=False)[0]
@@ -190,10 +190,10 @@ def test_parent_can_report_independent_completion_while_child_is_running():
     from test_agent_router import EchoEngine
 
     host, root, child = fixture()
-    task = host.router.call(root, child, "work")
+    task = host.router.call(root, child, "work", "work")
     received(host.router, child)
     grandchild = host.router.register_child(child)
-    host.router.call(child, grandchild, "subtask")
+    host.router.call(child, grandchild, "subtask", "subtask")
     engine = object.__new__(EchoEngine)
     engine.handle = host.handle(child)
     assert engine.report(task, TaskResult(status="completed", summary="own work complete"))
@@ -202,10 +202,10 @@ def test_parent_can_report_independent_completion_while_child_is_running():
 
 def test_completed_parent_still_processes_later_child_report():
     host, root, child = fixture()
-    task = host.router.call(root, child, "own work")
+    task = host.router.call(root, child, "own work", "own work")
     received(host.router, child)
     grandchild = host.router.register_child(child)
-    subtask = host.router.call(child, grandchild, "background work")
+    subtask = host.router.call(child, grandchild, "background work", "background work")
     received(host.router, grandchild)
     host.router.report(child, task, TaskResult(status="completed", summary="done"))
     host.router.report(grandchild, subtask, TaskResult(status="completed", summary="background result"))

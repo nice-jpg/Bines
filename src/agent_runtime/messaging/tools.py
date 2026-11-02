@@ -17,6 +17,7 @@ def communication_tools(engine: AgentEngine) -> list[BaseTool]:
             engine.spawn_subagent,
             engine.call,
             engine.report,
+            engine.accept_report,
             engine.kill,
         )
     ]

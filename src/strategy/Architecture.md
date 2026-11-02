@@ -18,10 +18,19 @@ Agent 身份不绑定 conversation；用户对话地址只在顶层处理，父�
 已完成任务记录不在模型调用前触发跳转，后续子报告仍正常处理。新 call 不清除其他任务的阻塞标记。
 共享对象由所属组件的锁保护；CollectorAssignment 的顺序调用要求仅作用于其自身证据流程。
 
-prepare_collector 现在立即返回 subagent_id/task_id。Collector 的 report(completed) 先验收脚本、还原页面并保存历史，
+prepare_collector 已删除。Conductor 使用 spawn_subagent("collector") 绑定当前确认页面，再通过 call 派发任务。
+Collector 的 report(completed) 先验收脚本、还原页面并保存历史，
 再更新训练记录和向父 Agent 报告；worker 继续监听。MerchantWorkflow.before_model 在观察到合法训练记录后
 将 phase 更新为 ready；其后的 CollectionPersistence.before_model 按当前访问的 profile 幂等初始化归档。
-CollectionPersistence 不再依赖 prepare_collector 同步返回训练结果。通用 Router 不读取 merchant state。
+Conductor 核验报告后通过 accept_report 关闭委派任务，不再由专用工具同步返回训练结果。
+MerchantWorkflow 不拦截通用 spawn/call/report/accept_report；collector 构造自身验证页面资源。
+通用 Router 不读取 merchant state。
+
+探测启动不再依赖输入文本匹配。Conductor 根据用户或父 Agent 的任务语义调用固定工具
+`start_app_probe`；该工具通过 Command 原子初始化 probe、general、merchant 和 general 策略，
+并以配对 ToolMessage 返回配置及环境上下文。模型决定是否启动，工具负责确定性初始化，
+不额外调用分类模型或增加 middleware。已有 run_id 时重复调用不重置访问、训练或采集进度。
+普通输入和通信补充消息只沿用已有状态，不隐式创建探测任务。
 
 业务 middleware 与对应策略共同放在 `src/strategy`，不再维护独立 `src/middleware` 包，也不提供旧路径转发层。Strategy 负责组合及所属状态的生命周期委托，middleware 实现约束和功能。
 
@@ -129,7 +138,7 @@ typed tool metadata + 已通过 schema 校验的 justification → 危险调用�
 只保留确认商家页内部的训练版本、滑动证据、入口点击额度及恢复导航约束。训练前禁止产品动作，观察、沟通和带理由的恢复仍可用。
 导航获准进入候选后，下一轮路由 General，不再继承来源商家的限制。恢复不建立全局回访义务。
 `get_probe_progress`、危险关闭等非商品动作不应承担训练前置条件；它们由相应独立模块判断。
-before_model 只在训练版本失效时更新状态，不发送阶段说明或操作指令。商家操作协议由 conductor 基础 prompt 和页面 task.md 提供，训练结果由 prepare_collector 的工具结果提供。
+before_model 在训练就绪或版本失效时更新状态，不发送阶段说明或操作指令。商家操作协议由 conductor 基础 prompt 和页面 task.md 提供，训练结果由 collector 的 report 提供。
 
 ### CollectorAssignmentMiddleware
 校验 collector 的独立任务身份并关闭并行 tool calls；不处理 conductor 页面策略或全局生命周期。

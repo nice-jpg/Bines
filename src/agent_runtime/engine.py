@@ -135,10 +135,14 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
                 ),
             )
 
-    def call(self, subagent_id: str, task: str) -> dict[str, str]:
+    def call(self, subagent_id: str, task_id: str, task: str) -> dict[str, str]:
         """Send a task or follow-up to your direct child without waiting for its result."""
-        task_id = self.handle.mailbox.call(subagent_id, task)
-        return {"task_id": task_id, "subagent_id": subagent_id}
+        topic = self.handle.mailbox.call(subagent_id, task_id, task)
+        return {"task_id": topic}
+
+    def accept_report(self, task_id: str) -> bool:
+        """Accept a child's final report after verification and remove the delegated task."""
+        return self.handle.mailbox.accept_report(task_id)
 
     def spawn_subagent(self, agent_type: str) -> dict[str, str]:
         """Fork a general child with independent context; submit work separately with call."""
@@ -428,6 +432,7 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
         return self._finish_turn()
 
     def _finish_turn(self) -> EngineResult:
+        self._conversation.finish_turn()
         pending: list[HumanMessage] = read_pending_input(self._conversation, self._state)
         if self._conversation.input_closed:
             return self._stopped()
@@ -515,16 +520,22 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
 
 
 AGENT_COMMUNICATION_PROMPT = """
-You are a persistent agent. User envelopes identify session_id; task/report envelopes identify
-task_id and sender_id. Agent identity is independent of user conversations.
-Process messages in sequence order, including messages arriving during execution.
-Use call(subagent_id, task) only for your direct children; it returns immediately with a task_id.
+You are a persistent agent. Messages contain only task_id, task text and any reported result.
+An empty task_id denotes external user input. Routing identities are managed internally.
+Process messages in order, including messages arriving during execution.
+Use call(subagent_id, task_id, task) only for direct children. Choose a short descriptive task topic
+as task_id, unique among your active delegated tasks. Reuse that topic for clarification or revision.
+The call returns immediately; do not generate technical UUIDs as task topics.
 Results arrive later as report messages. Never fabricate a child result or repeat a task just to poll.
 Delegation does not suspend you or disable your tools. Continue independent work while children run.
 Parent-child identity does not imply a task dependency. Report your own task based on its actual outcome,
 not on whether every child has finished. Do not fabricate results when your task really needs a child result.
 Use report(task_id, result) for your own assigned tasks: progress/blocked keeps a task open;
-completed/failed closes it. Natural-language final text does not deliver a result to your parent.
+completed/failed/cancelled removes your received task after the report is delivered.
+Natural-language final text does not deliver a result to your parent.
+When a child reports a final result, verify it. Call accept_report(task_id) only after verification;
+otherwise call the same child with the same task_id and specific revision instructions.
+Your delegated task stays open until you accept it. Receiving a report does not mean accepting it.
 Use blocked only when that task cannot proceed; explain the actual dependency or required input.
 When no work can proceed, end this turn and listen. Other runnable tasks may still continue.
 After reporting completed work, handle other pending work or return to listening. You remain alive.

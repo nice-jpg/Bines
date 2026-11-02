@@ -20,7 +20,7 @@ class ToolsRegistryTests(unittest.TestCase):
     def test_collect_tools_includes_thinking_tool(self) -> None:
         tool_names = [tool.name for tool in conductor_tools()]
 
-        self.assertNotIn("spawn_subagent", tool_names)
+        self.assertIn("spawn_subagent", tool_names)
         self.assertNotIn("call_subagent", tool_names)
         self.assertNotIn("kill_subagent", tool_names)
         self.assertNotIn("query_manual", tool_names)
@@ -41,7 +41,8 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertIn("close_package", tool_names)
         self.assertIn("swipe_up_long", tool_names)
         self.assertNotIn("swipe_to_random", tool_names)
-        self.assertIn("prepare_collector", tool_names)
+        self.assertNotIn("prepare_collector", tool_names)
+        self.assertIn("spawn_subagent", tool_names)
         self.assertNotIn("create_excel_sheet", tool_names)
         self.assertNotIn("create_excel_file", tool_names)
         self.assertNotIn("rename_excel_sheet", tool_names)
@@ -73,10 +74,10 @@ class ToolsRegistryTests(unittest.TestCase):
         self.assertEqual(set(schemas["navigate_back"]["properties"]), {"next_path", "recovery_reason"})
         self.assertNotIn("runtime", schemas["navigate_to"]["properties"])
         self.assertEqual(
-            set(schemas["prepare_collector"]["properties"]),
-            {"page_path", "page_description", "merchant_schema", "collection_schema"},
+            set(schemas["spawn_subagent"]["properties"]),
+            {"agent_type"},
         )
-        self.assertNotIn("runtime", schemas["prepare_collector"]["properties"])
+        self.assertNotIn("runtime", schemas["spawn_subagent"]["properties"])
 
     def test_collect_tools_can_include_subagent_tools_for_main_agent(self) -> None:
         from engine_helpers import ScriptedEngine, Model
@@ -113,7 +114,7 @@ class ToolsRegistryTests(unittest.TestCase):
     def test_notifications_are_limited_to_probe_lifecycle_milestones(self) -> None:
         tools = {tool.name: tool for tool in conductor_tools()}
 
-        for name in ("run_package", "prepare_collector", "close_package"):
+        for name in ("run_package", "close_package"):
             self.assertIn(EXTERNAL_OPERATION_POLICY_METADATA_KEY, tools[name].metadata or {})
         for name in (
             "tap_in_page",

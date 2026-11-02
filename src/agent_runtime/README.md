@@ -12,6 +12,7 @@ Runtime 只负责独立 Agent 的运行，不管理 Channel、Root 或业务类�
 | worker.py | 每个 Agent 一个线程及事件循环，任务结束后继续监听 |
 | contracts.py | AgentHandle、MailboxToken、通信及派生端口的类型契约 |
 | mailbox.py | 持有 token 的本地通信门面，不暴露 Router 或队列 |
+| tasks.py | 每个 Agent 的 received/sent 任务管理器，区分最终报告与父方验收 |
 | conversation/ | 暂存 mail、稳定消息块、历史和 checkpoint 消费确认 |
 | fork.py | 记录安全模型边界，派生时复制语义 state |
 | messaging/tools.py | 固定的 spawn_subagent、call、report、kill 工具 |
@@ -44,7 +45,11 @@ ForkContext 在工具执行前保存已完整配对的消息边界；实际派�
 
 ## 通信
 
-call 入箱后立即返回 task_id；report 可返回 progress、blocked、completed、failed、cancelled。
+call(subagent_id, task_id, task) 入箱后立即返回。task_id 是父 Agent 提供的简短任务主题，
+技术关联 ID 只保存在内部；模型消息不包含发送者、Channel、批次或 sequence。
+外部输入 task_id 为空。report 可返回 progress、blocked、completed、failed、cancelled。
+最终报告成功投递后，子方移除 received；父方收到后保留 awaiting_review，核验通过才 accept_report。
+不通过时以同一主题 call 提交修订要求，重新登记子方任务。失败投递不能删除任务。
 Worker 完成任务后仍监听。kill 才销毁子树。MailboxPort 的实现由 Hypervisor 提供，Runtime 不导入实现。
 
 ConversationSession 将 mail 暂存后 ACK；输入在 checkpoint 历史出现后才从本地 pending 移除。

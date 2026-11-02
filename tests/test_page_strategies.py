@@ -78,7 +78,7 @@ def test_arrival_accepts_conclusion_without_observation(tmp_path, asynchronous):
         controller.confirm_page(read_conductor_state(current), "stale-candidate", True, "confirm")
     assert (
         controller.wrap_tool_call(
-            request("prepare_collector", current), lambda r: message("prepare_collector")
+            request("is_done", current), lambda r: message("is_done")
         ).status
         == "error"
     )
@@ -176,7 +176,7 @@ def test_general_does_not_preempt_collection_resource_validation(tmp_path):
     general, _ = strategies(persistence.service)
     current = state("meituan")
     called = []
-    for name in ("prepare_collector", "is_done", "collect_continuously"):
+    for name in ("spawn_subagent", "is_done", "collect_continuously"):
         assert general.wrap_tool_call(request(name, current), lambda r: message(name)).status == "success"
     result = general.wrap_tool_call(
         request("swipe_up", current), lambda r: called.append(r) or message("swipe_up")
@@ -214,15 +214,14 @@ def test_retraining_clears_current_evidence_but_retains_historical_completion(tm
     current.setdefault("probe", {})["current_merchant"] = "商家A"
     current.setdefault("probe", {})["completed_merchants"] = {current["general"]["visit"]["path"]: ["商家A"]}
 
-    def train(r):
-        _mark_trained(registry, mechanism=persistence.service.mechanism, page_visit_id="visit-current")
-        return message("prepare_collector")
-
-    result = office.wrap_tool_call(request("prepare_collector", current), train)
-    assert result.update["merchant"]["phase"] == "ready"
-    assert result.update["merchant"]["evidence"]["initialized"] is False
-    apply(current, result)
+    # Spawning invalidates the registry; the model-boundary workflow observes it.
+    registry.mark_untrained("visit-current", current["general"]["visit"]["path"])
     apply(current, Command(update=office.before_model(current, None)))
+    assert current["merchant"]["phase"] == "awaiting_training"
+    assert current["merchant"]["evidence"]["initialized"] is False
+    _mark_trained(registry, mechanism=persistence.service.mechanism, page_visit_id="visit-current")
+    apply(current, Command(update=office.before_model(current, None)))
+    assert current["merchant"]["phase"] == "ready"
     assert "visit-current" in current["probe"]["visit_summaries"]
     assert current["probe"]["completed_merchants"][current["general"]["visit"]["path"]] == ["商家A"]
     assert not persistence.service.completion(current).done
@@ -462,9 +461,9 @@ def test_typo_confirmation_training_and_collection_use_observed_profile(tmp_path
 
     def train(r):
         _mark_trained(registry, mechanism=persistence.service.mechanism, page_visit_id=visit_id)
-        return message("prepare_collector")
+        return message("spawn_subagent")
 
-    apply(current, merchant.wrap_tool_call(request("prepare_collector", current), train))
+    merchant.wrap_tool_call(request("spawn_subagent", current), train)
     apply(current, Command(update=merchant.before_model(current, None)))
     assert current["merchant"]["phase"] == "ready"
     assert current["probe"]["current_merchant"] == "商家A"

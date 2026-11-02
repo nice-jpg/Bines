@@ -5,6 +5,7 @@ import logging
 from uuid import uuid4
 
 from src.agent_runtime.contracts import AgentHandle, AgentMessage, MessageStreamClosed, TaskResult
+from src.common.utils.json import JsonObject
 
 from .message_block import MessageBlock
 
@@ -22,6 +23,12 @@ class ConversationSession:
         self._confirmations: set[str] = set()
         self._closed: bool = False
         self._input_closed: bool = False
+        self.current_origin: JsonObject = {}
+        self._external_active = False
+
+    def finish_turn(self) -> None:
+        """Allow the next external conversation only after the current model turn."""
+        self._external_active = False
 
     @property
     def input_closed(self) -> bool:
@@ -110,6 +117,12 @@ class ConversationSession:
                 if not self._backlog:
                     raise
             if self._backlog:
+                first = self._backlog[0]
+                if first.kind == "user" and self._external_active and (
+                    first.channel_id != self.current_origin.get("channel_id")
+                    or first.session_id != self.current_origin.get("session_id")
+                ):
+                    return None
                 if self._backlog[0].batch_id is not None:
                     members = [self._backlog.pop(0)]
                 else:
@@ -162,32 +175,20 @@ class ConversationSession:
             logger.warning("Conversation closed with %d unacknowledged messages", self.pending_count)
 
     def _build_block(self, messages: list[AgentMessage]) -> MessageBlock:
-        lines: list[str] = [
-            "Process these messages in sequence order. Keep conversation and task identities separate:"
-        ]
+        lines: list[str] = ["Process these messages in order:"]
         for message in messages:
             record = {
-                "sequence": message.sequence,
-                "kind": message.kind,
-                "sender_id": message.sender_id,
                 "task_id": message.task_id,
-                "task_status": message.result.status
-                if message.result
-                else ("submitted" if message.kind == "task" else None),
                 "text": message.text,
             }
-            if message.session_id is not None:
-                record["session_id"] = message.session_id
             if message.result is not None:
                 record["result"] = message.result.model_dump()
-            if message.origin:
-                record["origin"] = message.origin
-            if message.channel_id is not None:
-                record["channel_id"] = message.channel_id
-            if message.batch_id is not None:
-                record["batch_id"] = message.batch_id
-            if message.kind == "user":
-                record["sender_name"] = message.sender_name
+            if message.kind == "user" and message.channel_id is not None:
+                self._external_active = True
+                self.current_origin = {
+                    "channel_id": message.channel_id,
+                    "session_id": message.session_id,
+                }
             lines.append(json.dumps(record, ensure_ascii=False))
         return MessageBlock(
             f"conversation:{messages[0].batch_id or uuid4().hex}",

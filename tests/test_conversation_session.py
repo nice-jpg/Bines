@@ -21,7 +21,7 @@ def test_all_backlog_forms_one_block_with_speakers_mentions_and_multiline_bounda
     block = session.read_input(wait=False)
     records = [json.loads(line) for line in block.text.splitlines()[1:]]
     assert [record["text"] for record in records] == ["@robot 检查xx目录\nB: 这仍是A的正文", "已经找到了"]
-    assert [record["sender_id"] for record in records] == ["a", "b"]
+    assert all(set(record) == {"task_id", "text"} for record in records)
     assert session.pending_count == 2
     assert session.read_input(wait=False) == block
     session.acknowledge(block.block_id)
@@ -37,7 +37,7 @@ def test_duplicate_ids_are_scoped_to_conversation(caplog):
     channel.receive("other", "wrong", "3")
     block = session.read_input(wait=False)
     assert block.text.count('"text": "same"') == 2
-    assert '"session_id": "other"' in block.text
+    assert '"session_id"' not in block.text
     session.acknowledge(block.block_id)
     channel.receive("chat", "same", "1")
     assert session.read_input(wait=False) is None
@@ -106,8 +106,8 @@ def test_same_names_are_disambiguated_and_absent_names_use_ids():
     channel.receive("chat", "three", sender="c")
     block = session.read_input(wait=False)
     records = [json.loads(line) for line in block.text.splitlines()[1:]]
-    assert [record["sender_id"] for record in records] == ["a", "b", "c"]
-    assert [record["sender_name"] for record in records] == ["same", "same", None]
+    assert [record["text"] for record in records] == ["one", "two", "three"]
+    assert all(set(record) == {"task_id", "text"} for record in records)
 
 
 def test_close_reports_unacknowledged_input_without_closing_gateway(caplog):

@@ -89,8 +89,6 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
         visit: PageVisit | None = call.state["general"].get("visit")
         if visit is None or not is_merchant_visit(visit):
             return reject(request, "invalid_strategy_state", "A confirmed merchant visit is required.")
-        if call.name == "prepare_collector":
-            return None
         error: str = (
             self._training_error(call.state, call.state["merchant"])
             if call.state["merchant"].get("phase") != MERCHANT_AWAITING_TRAINING
@@ -100,6 +98,8 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
             "think",
             "talk",
             "call",
+            "spawn_subagent",
+            "accept_report",
             "report",
             "kill",
             "authenticate_captcha",
@@ -151,7 +151,7 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
 
     def _record_workflow_result(self, request: ToolCallRequest, result: ToolResult) -> ToolResult:
         call: ToolInvocation = ToolInvocation.from_request(request)
-        if call.name not in SWIPES | {"prepare_collector", "tap_in_page"}:
+        if call.name not in SWIPES | {"tap_in_page"}:
             return result
         if unconfirmed_arrival(call.state["general"]) is not None:
             return result
@@ -163,16 +163,7 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
         )
         updated: MerchantState = merged["merchant"].copy()
         update: ConductorUpdate = {}
-        if call.name == "prepare_collector":
-            update = self._invalidate(merged, merged["merchant"])
-            updated = merge_fields(merged, update)["merchant"]
-            if not self.service.training_error(call.state) and tool_succeeded(result):
-                updated.update(
-                    phase=MERCHANT_READY,
-                    training_version=self.service.training_version(call.state),
-                    entry_taps=0,
-                )
-        elif call.name in SWIPES:
+        if call.name in SWIPES:
             # Evidence emitted by persistence proves a successful traversal; an early yield does not.
             if updated.get("evidence", {}).get("initialized") and updated.get("phase") != MERCHANT_COMPLETED:
                 updated["phase"] = MERCHANT_TRAVERSING

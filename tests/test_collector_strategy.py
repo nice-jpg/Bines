@@ -28,6 +28,8 @@ def make_engine():
     toolbox.page_visit_id = "visit"
     toolbox.run_id = "run"
     toolbox.create_tools.return_value = []
+    toolbox.mechanism = Mock()
+    toolbox.mechanism.query_page_doc.return_value = "page description"
     model = Model(replies=[AIMessage(content="trained")])
     engine = CollectorEngine(
         model=model, toolbox=toolbox, session_id="collector-test",

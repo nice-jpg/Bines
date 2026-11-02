@@ -15,7 +15,7 @@ import src.agent_runtime.engine  # noqa: F401
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import nTrace
-import src.collector.core as _collector_dependency_preload  # noqa: E402,F401
+import src.collector.delegation as _collector_dependency_preload  # noqa: E402,F401
 import src.conductor.engine as _agent_dependency_preload  # noqa: E402,F401
 
 

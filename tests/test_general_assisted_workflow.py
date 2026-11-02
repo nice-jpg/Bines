@@ -39,7 +39,7 @@ def test_pending_blocks_actions_until_confirmation_then_mismatch_allows_navigati
     candidate = current["general"]["arrival"]["candidate_id"]
     assert current_visit(current)["visit_id"] == ""
     assert current["active_strategy"] == "general"
-    for name in ("swipe_up", "tap_in_page", "close_package", "prepare_collector", "navigate_back"):
+    for name in ("swipe_up", "tap_in_page", "close_package", "is_done", "navigate_back"):
         called = []
 
         async def handler(call):

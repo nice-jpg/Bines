@@ -15,9 +15,9 @@ from uuid import uuid4
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.agent_hypervisor.host import Host
-from src.channel.messages import InBoundMessage
 from src.agent_runtime.types.execution import EngineResult, EngineStatus, InterruptKind
 from src.application.model import close_model
+from src.channel.messages import InBoundMessage
 from src.common.tracing import trace_client
 from src.conductor.engine import ConductorEngine
 from src.configuration.manager import ConfigurationManager
@@ -122,16 +122,19 @@ class RawRunSlave:
                 engine = factory(model=model, handle=handle, max_iterations=self.max_iterations)
                 host.start(engine)
             child_id = handle.agent_id
-            host.router.call(parent_id, child_id, self.task_message)
+            host.router.call(parent_id, child_id, "应用探测", self.task_message)
             output = ""
             finished = False
             while not finished:
-                for message in host.router.read(parent_id, wait=True):
+                messages = host.router.read(parent_id, wait=True)
+                host.router.acknowledge(parent_id, tuple(message.message_id for message in messages))
+                for message in messages:
                     if message.result is None:
                         continue
                     notifier(message.result.summary)
                     if message.result.status in {"completed", "failed"}:
                         output = message.result.summary
+                        host.router.accept_report(parent_id, message.task_id)
                         finished = True
                     elif message.result.status == "blocked":
                         raw_kind = message.result.data.get("interrupt_kind")
@@ -144,7 +147,7 @@ class RawRunSlave:
                             token = "done" if kind == InterruptKind.HUMAN else "继续"
                             while response.strip() != token:
                                 response = self._human_input_provider(prompt)
-                        host.router.call(parent_id, child_id, response)
+                        host.router.call(parent_id, child_id, "应用探测", response)
             host.kill(parent_id, child_id)
             report = RunResult(output, engine.evaluation_state)
             report.summary = self._summary(report)

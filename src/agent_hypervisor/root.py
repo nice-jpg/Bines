@@ -10,7 +10,6 @@ from src.agent_runtime.contracts import AgentHandle
 from src.agent_runtime.engine import AgentEngine
 from src.channel.gateway import Gateway
 from src.channel.messages import OutBoundMessage
-from src.common.utils.json import JsonObject
 from src.tools.shared.factory import create_tool
 
 
@@ -32,14 +31,14 @@ class RootAgent(AgentEngine):
     def _system_prompt(self) -> str:
         return """You manage conversations across the configured communication channels.
 All conversations share this model context, but their message lists and replies stay separate.
-Read session_id on user messages and task_id on reports; process events in sequence order.
-Only you can reply to a channel using reply(channel_id, session_id, message). Never infer a reply address
-from the last message when handling a result for another conversation.
+External inputs have an empty task_id; reports use the short topic assigned by you.
+Only you can reply externally with reply(task_id, message). Use an empty task_id for the current
+external input; use the delegated topic for its progress or result, even after another user input arrives.
+Reply before accept_report removes the task's routing record. Never copy technical routing IDs into tasks.
 You have no device or collection tools. Delegate work with spawn_subagent and call.
 Children are not bound to conversations. Reuse a child for later work from any conversation.
-Keep the task_id returned by each call associated with its originating conversation in your history.
-Pass source_batch_ids when calling a child. Reports carry verified origin.sources;
-use those channel_id/session_id addresses rather than the most recent conversation.
+Choose distinct short topics for distinct active tasks. The runtime retains each task's original reply
+address automatically; same-topic follow-up calls preserve it. Routing metadata is not model input.
 Preserve the original task text,
 especially exact command phrases; send extra guidance as a subsequent call if necessary.
 Keep individual tasks separate. Continue handling other conversations while children work.
@@ -52,37 +51,24 @@ Return to listening after sending replies or delegations; never perform business
     def _create_tools(self) -> Sequence[BaseTool]:
         return [create_tool(self.reply)]
 
-    def call(self, subagent_id: str, task: str, source_batch_ids: list[str]) -> dict[str, str]:
-        """Delegate with explicit source batch IDs; reports retain these reply addresses."""
-        sources = {
-            message.batch_id: message
-            for messages in self.conversation.conversations.values()
-            for message in messages
-            if message.batch_id is not None
-        }
-        if self._can_reply and not source_batch_ids:
-            raise ValueError("Root delegation requires source_batch_ids from received input")
-        if any(identity not in sources for identity in source_batch_ids):
-            raise ValueError("Unknown source batch")
-        origin: JsonObject = {
-            "sources": [
-                {
-                    "batch_id": identity,
-                    "channel_id": sources[identity].channel_id,
-                    "session_id": sources[identity].session_id,
-                }
-                for identity in dict.fromkeys(source_batch_ids)
-            ]
-        }
-        task_id = self.handle.mailbox.call(subagent_id, task, origin)
-        return {"task_id": task_id, "subagent_id": subagent_id}
+    def call(self, subagent_id: str, task_id: str, task: str) -> dict[str, str]:
+        """Delegate a short task topic; its reply address is managed internally."""
+        origin = self.conversation.current_origin
+        if self._can_reply and not origin:
+            raise ValueError("Receive user input before delegating channel work")
+        topic = self.handle.mailbox.call(subagent_id, task_id, task, origin)
+        return {"task_id": topic}
 
-    def reply(self, channel_id: str, session_id: str, message: str) -> bool:
-        """Reply to a received conversation and return the channel's delivery status."""
+    def reply(self, task_id: str, message: str) -> bool:
+        """Reply to a task's source; an empty topic targets the current external input."""
         if not self._can_reply:
             raise PermissionError("Only the channel root may send external replies")
         if get_ident() == self._gateway_thread:
             raise RuntimeError("Synchronous reply cannot block the channel loop")
+        origin = self.handle.mailbox.task_origin(task_id) if task_id else self.conversation.current_origin
+        channel_id, session_id = origin.get("channel_id"), origin.get("session_id")
+        if not isinstance(channel_id, str) or not isinstance(session_id, str):
+            raise ValueError("No external reply address is associated with this task")
         future = asyncio.run_coroutine_threadsafe(
             self._gateway.send(OutBoundMessage(channel_id, session_id, message)), self._gateway_loop
         )

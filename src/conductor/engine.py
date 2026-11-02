@@ -8,16 +8,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from typing import Final
 
+from langchain.tools import ToolRuntime
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import BaseMessage
 from langchain_core.tools import BaseTool
 
-from src.agent_messages.text import latest_message_text, message_content
+from src.agent_messages.text import latest_message_text
 from src.agent_messages.types import GraphInput, InputMessage
 from src.agent_runtime.contracts import AgentHandle
-from src.agent_runtime.conversation import MessageBlock
 from src.agent_runtime.engine import AgentEngine
 from src.agent_runtime.strategy.base import Strategy
 from src.agent_runtime.strategy.registration import StrategyRegistration
@@ -28,12 +26,11 @@ from src.conductor.state import (
     ConductorFields,
     ConductorInput,
     ConductorState,
-    initial_probe_state,
     read_conductor_fields,
 )
 from src.device import DeviceOperationService
 from src.page.mechanism import PageMechanism
-from src.prompts import CONDUCTOR_PROMPT, build_initial_messages, build_probe_task_spec
+from src.prompts import CONDUCTOR_PROMPT
 from src.strategy.general.captcha import (
     CaptchaHumanInTheLoopMiddleware,
     create_captcha_human_in_the_loop_middleware,
@@ -60,27 +57,10 @@ from src.tools.device.operations import create_conductor_event_hub_tools
 from src.tools.device.pages import create_page_tools
 from src.tools.notifications.service import OperationNoticeTool
 from src.tools.page_notes.tools import create_page_notes_tool
+from src.tools.probe import create_start_probe_tool
 from src.tools.progress import create_progress_tool
 from src.tools.reasoning.tools import create_thinking_tool
 from src.tools.workbooks.excel import CollectionWorkbookSink
-
-APP_PROBE_TRIGGER: Final[str] = "执行应用探测任务"
-
-
-def messages_request_app_probe(messages: Sequence[InputMessage]) -> bool:
-    """Recognize the conductor's exact application-probe trigger."""
-
-    for message in messages:
-        content: object = message.get("content") if isinstance(message, Mapping) else message_content(message)
-        if isinstance(content, str) and content == APP_PROBE_TRIGGER:
-            return True
-    return False
-
-
-def build_app_probe_messages() -> list[Mapping[str, str]]:
-    """Build the conductor's application-probe task context."""
-
-    return [{"role": "user", "content": content} for content in build_initial_messages()]
 
 
 class ConductorEngine(AgentEngine[ConductorState]):
@@ -113,6 +93,16 @@ class ConductorEngine(AgentEngine[ConductorState]):
     def _system_prompt(self) -> str:
         return CONDUCTOR_PROMPT
 
+    def spawn_subagent(self, agent_type: str, runtime: ToolRuntime[None, ConductorState]) -> dict[str, str]:
+        """Spawn a collector for the confirmed current page, or fork a general child. Submit work with call."""
+        if agent_type == "general":
+            return super().spawn_subagent(agent_type)
+        if agent_type != "collector":
+            raise ValueError(f"Unsupported child type: {agent_type}")
+        child_id = self._collector_training.spawn(runtime.state)
+        self.send_message("Begin probing the current merchant.")
+        return {"subagent_id": child_id}
+
     def _evaluate_result(self, state: Mapping[str, object]) -> EngineResult:
         response: AgentResponse | None = AgentResponse.parse(latest_message_text(state))
         if response is None:
@@ -126,41 +116,10 @@ class ConductorEngine(AgentEngine[ConductorState]):
             )
         return EngineResult(EngineStatus.CONTINUE_REQUIRED)
 
-    def _prepare_messages(self, turn_messages: list[InputMessage]) -> list[InputMessage]:
-        if self._requests_app_probe(turn_messages):
-            return [*(dict(message) for message in build_app_probe_messages()), *turn_messages]
-        return turn_messages
-
     def _input_state(self, messages: list[InputMessage]) -> GraphInput:
-        if self._requests_app_probe(messages):
-            state: ConductorInput = {
-                "active_strategy": GENERAL,
-                "general": initial_general_state(),
-                "merchant": initial_merchant_state(),
-                "probe": {
-                    **initial_probe_state(build_probe_task_spec().target_leaf_paths).get("probe", {}),
-                    "package_name": build_probe_task_spec().package_name,
-                },
-                "messages": messages,
-            }
-            return state
         fields: ConductorFields = read_conductor_fields(self._state)
-        state = {"messages": messages, "probe": fields["probe"], "active_strategy": fields["active_strategy"]}
+        state: ConductorInput = {"messages": messages, "probe": fields["probe"], "active_strategy": fields["active_strategy"]}
         return state
-
-    def _requests_app_probe(self, messages: Sequence[InputMessage]) -> bool:
-        if messages_request_app_probe(messages):
-            return True
-        block: MessageBlock | None = self.conversation.pending_block
-        if block is None or APP_PROBE_TRIGGER not in block.source_texts:
-            return False
-        # Match original input only for this batch, never parse rendered dialogue
-        # or reuse an unacknowledged command for an unrelated turn.
-        for message in messages:
-            identity: object = message.id if isinstance(message, BaseMessage) else message.get("id")
-            if identity == block.block_id:
-                return True
-        return False
 
     def _resume_payload(self, kind: str, user_input: JsonValue) -> JsonObject:
         message: str = "Human captcha authentication completed." if user_input is None else str(user_input)
@@ -173,7 +132,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
             notifier=self._notifier, device_operations=event_hub
         )
         mechanism: PageMechanism = PageMechanism()
-        from src.collector.core import CollectorTrainingCoordinator, create_prepare_collector_tool
+        from src.collector.delegation import CollectorTrainingCoordinator
 
         collector_manager: CollectorTrainingCoordinator = CollectorTrainingCoordinator(
             model=self._model,
@@ -181,6 +140,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
             event_hub=event_hub,
             handle=self.handle,
         )
+        self._collector_training = collector_manager
         collection_service: CollectionService = CollectionService(
             mechanism, collector_manager.training_registry, CollectionWorkbookSink(), event_hub
         )
@@ -192,6 +152,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
         )
         page_visit: PageVisitMiddleware = PageVisitMiddleware(mechanism, frozenset({GENERAL, MERCHANT}))
         registered_tools: list[BaseTool] = [
+            create_start_probe_tool(),
             create_confirm_page_tool(page_visit),
             *create_captcha_tools(captcha),
             create_thinking_tool(),
@@ -200,7 +161,6 @@ class ConductorEngine(AgentEngine[ConductorState]):
             *create_conductor_event_hub_tools(event_hub),
             *create_page_tools(event_hub.page_bridge),
             *create_navigation_tools(event_hub=event_hub),
-            *create_prepare_collector_tool(collector_manager),
             *collection_persistence.create_tools(),
             continuous_collection.create_tool(),
             create_progress_tool(),

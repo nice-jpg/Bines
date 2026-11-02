@@ -15,7 +15,7 @@ import pytest
 from src.collector.toolbox import CollectorToolbox
 from page_helpers import collector_history
 from src.collector.history import CollectorHistory
-from src.collector.core import CollectorTrainingCoordinator
+from src.collector.delegation import CollectorTrainingCoordinator
 from page_helpers import page_mechanism
 from src.page.mechanism import PageMechanism
 from src.device.services.page.bridge import PageBridge
@@ -403,7 +403,7 @@ def test_abandon_only_unscored_samples(tmp_path):
     assert not t.validation.cases
 
 
-def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkeypatch):
+def test_collector_spawn_does_not_submit_work(tmp_path, monkeypatch):
     t = setup(tmp_path)
     from src.agent_runtime.contracts import AgentHandle
     from src.agent_hypervisor.host import Host
@@ -417,15 +417,16 @@ def test_prepare_collector_uses_verified_results_not_final_text(tmp_path, monkey
         started.append(engine)
         host._workers[engine.handle.agent_id] = engine
     monkeypatch.setattr(host, "start", start)
-    monkeypatch.setattr("src.collector.core.CollectorEngine", lambda **kwargs: SimpleNamespace(handle=kwargs["handle"]))
+    monkeypatch.setattr("src.collector.delegation.CollectorEngine", lambda **kwargs: SimpleNamespace(handle=kwargs["handle"]))
     manager = CollectorTrainingCoordinator(handle=host.handle(parent), model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
     manager.history = collector_history(tmp_path / "history")
-    result = json.loads(manager.prepare_collector("meituan", "page", '{"name":""}',
-        '{"items":[{"name":""}]}', SimpleNamespace(context=None, state=read_conductor_state({**page_fields("meituan", "visit", "merchant"), "probe": {"run_id": "probe-a"}}))))
-    assert result["status"] == "submitted"
+    monkeypatch.setattr(t.mechanism, "read_schema", lambda path, heading: {"name": ""} if heading == "Merchant Schema" else {"items": [{"name": ""}]})
+    result = manager.spawn(read_conductor_state({**page_fields("meituan", "visit", "merchant"), "probe": {"run_id": "probe-a"}}))
     child = started[0].handle.agent_id
-    assert result["subagent_id"] == child
-    assert host.router.read(child, wait=False)[0].task_id == result["task_id"]
+    assert result == child
+    assert host.router.read(child, wait=False) == []
+    task_id = host.handle(parent).mailbox.call(child, "测试采集脚本", "Validate this page")
+    assert host.router.read(child, wait=False)[0].task_id == task_id
     assert not manager.training_registry.is_trained("visit")
 
 
@@ -512,14 +513,13 @@ def test_same_run_recreated_collector_keeps_all_prepared_cases(tmp_path):
     assert report["summary"]["failed_count"] == 0
 
 
-def test_prepare_collector_requires_runtime_run_identity(tmp_path, monkeypatch):
+def test_collector_spawn_requires_runtime_run_identity(tmp_path, monkeypatch):
     box = setup(tmp_path)
     from gateway_helpers import GatewayHandle, RecordingChannel
     manager = CollectorTrainingCoordinator(handle=GatewayHandle(RecordingChannel()).handle, model="fake", mechanism=box.mechanism, event_hub=box.event_hub)
-    monkeypatch.setattr("src.collector.core.CollectorEngine", lambda **_: pytest.fail("must not launch collector"))
+    monkeypatch.setattr("src.collector.delegation.CollectorEngine", lambda **_: pytest.fail("must not launch collector"))
     with pytest.raises(ValueError, match="probe_run_id"):
-        manager.prepare_collector("meituan", "page", '{"name":""}', '{"items":[{"name":""}]}',
-            SimpleNamespace(state=read_conductor_state(page_fields("meituan", "visit", "merchant"))))
+        manager.spawn(read_conductor_state(page_fields("meituan", "visit", "merchant")))
 
 
 def test_contract_reuse_is_noop_and_repair_requires_evidence(tmp_path):

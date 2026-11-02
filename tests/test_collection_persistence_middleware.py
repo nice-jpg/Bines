@@ -44,7 +44,7 @@ def _request(
 
 
 def _tool_message(tool_name: str, content: str = "cup") -> ToolMessage:
-    if tool_name == "prepare_collector":
+    if tool_name == "spawn_subagent":
         return ToolMessage(content=content, tool_call_id=f"{tool_name}-1", name=tool_name)
     bridge = PageBridge(lambda: f'<hierarchy><node text="{content}" class="android.widget.Button" bounds="[0,200][1000,1800]"/></hierarchy>')
     view, _ = bridge.refresh()
@@ -327,11 +327,11 @@ def test_is_done_tool_hides_tool_runtime_argument(tmp_path: Path) -> None:
     assert "runtime" not in schema.get("properties", {})
 
 
-def test_prepare_collector_initializes_merchant_sheet_from_registry(tmp_path: Path) -> None:
+def test_spawn_subagent_initializes_merchant_sheet_from_registry(tmp_path: Path) -> None:
     middleware, registry, workbook_path = _middleware(tmp_path)
     _mark_trained(registry, mechanism=middleware.service.mechanism)
 
-    result = middleware.before_model(_request("prepare_collector").state, None)
+    result = middleware.before_model(_request("spawn_subagent").state, None)
     assert result['probe']['visit_summaries'] == {
         "visit-a": {
             "page_path": "meituan/美食/商家",
@@ -346,7 +346,7 @@ def test_prepare_collector_initializes_merchant_sheet_from_registry(tmp_path: Pa
 def test_collection_summary_accumulates_new_items_for_each_page_visit(tmp_path: Path) -> None:
     middleware, registry, _workbook_path = _middleware(tmp_path)
     _mark_trained(registry, mechanism=middleware.service.mechanism)
-    state = _request("prepare_collector").state
+    state = _request("spawn_subagent").state
     prepared = Command(update=middleware.before_model(state, None))
     _apply_state(state, prepared)
 

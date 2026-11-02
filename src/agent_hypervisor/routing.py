@@ -1,7 +1,6 @@
 """Thread-safe, parent-child mailboxes with explicit task correlation."""
 
 import asyncio
-import json
 from concurrent.futures import Future, InvalidStateError
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -13,6 +12,7 @@ from uuid import uuid4
 
 from src.agent_runtime.contracts import AgentMessage, MailboxToken, MessageStreamClosed, TaskResult
 from src.agent_runtime.mailbox import Mailbox
+from src.agent_runtime.tasks import TaskManager, TaskRecord, validate_task_topic
 from src.channel.messages import ChannelBatch, InBoundMessage
 from src.common.utils.json import JsonObject
 
@@ -29,12 +29,15 @@ class _Mailbox:
     queued: set[str] = field(default_factory=set)
     received: dict[str, AgentMessage] = field(default_factory=dict)
     acknowledged: set[str] = field(default_factory=set)
+    tasks: TaskManager = field(default_factory=TaskManager)
 
 
 @dataclass
 class _Task:
     caller: str
     callee: str
+    topic: str
+    instruction: str
     completed: bool = False
     delivered: bool = False
     blocked: bool = False
@@ -66,22 +69,7 @@ class MailboxRouter:
                 raise PermissionError("Only a root accepts external batches")
             if batch.batch_id in self._batches:
                 return True
-            payload = json.dumps(
-                {
-                    "batch_id": batch.batch_id,
-                    "channel_id": batch.address.channel_id,
-                    "session_id": batch.address.session_id,
-                    "messages": [
-                        {
-                            "message_id": message.message_id,
-                            "sender_id": message.sender_id,
-                            "text": message.text,
-                        }
-                        for message in batch.messages
-                    ],
-                },
-                ensure_ascii=False,
-            )
+            payload = "\n\n".join(message.text for message in batch.messages)
             envelope = AgentMessage(
                 batch.batch_id,
                 next(self._sequence),
@@ -141,10 +129,17 @@ class MailboxRouter:
                     raise ValueError("Cannot acknowledge an unreceived message")
                 mailbox.acknowledged.add(message_id)
                 if message.kind == "task":
-                    task = self._tasks[message.task_id]
+                    task = self._tasks[message.correlation_id]
                     task.delivered = True
                     task.delivery_unknown = False
                     task.command = None
+                    mailbox.tasks.receive(TaskRecord(
+                        task.topic, message.correlation_id, task.caller, task.instruction, deepcopy(task.origin)
+                    ))
+                elif message.kind == "report" and message.result is not None:
+                    record = mailbox.tasks.sent.get(message.task_id)
+                    if record is not None and record.correlation_id == message.correlation_id:
+                        mailbox.tasks.receive_report(message.task_id, message.result)
 
     def retry_expired(self) -> None:
         with self._lock:
@@ -166,7 +161,8 @@ class MailboxRouter:
                     None,
                     "notice",
                     "Task delivery was not acknowledged; execution status is unknown.",
-                    task_id,
+                    task.topic,
+                    correlation_id=task_id,
                 )
                 if self._put(self._open(task.caller), notice):
                     task.delivery_unknown = True
@@ -244,15 +240,28 @@ class MailboxRouter:
             root.conversations.add(message.session_id)
             return True
 
-    def call(self, sender_id: str, child_id: str, task: str, origin: JsonObject | None = None) -> str:
+    def call(self, sender_id: str, child_id: str, task_id: str, task: str, origin: JsonObject | None = None) -> str:
         if not task.strip():
             raise ValueError("Task must not be empty")
+        topic = validate_task_topic(task_id)
         with self._lock:
-            self._open(sender_id)
+            parent = self._open(sender_id)
             child = self._open(child_id)
             if child.parent_id != sender_id:
                 raise PermissionError("Tasks may only be sent to a direct child")
-            task_id = uuid4().hex
+            existing = parent.tasks.sent.get(topic)
+            if existing is not None and existing.peer_id != child_id:
+                raise ValueError("Task topic already belongs to a different child")
+            if existing is not None:
+                previous = self._tasks[existing.correlation_id]
+                if previous.completed and existing.status != "awaiting_review":
+                    raise ValueError("Receive the final report before requesting a revision")
+                origin = existing.origin
+                # Same-topic clarification keeps the current assignment; a rejected final
+                # report starts a new delivery revision without accepting the old result.
+                correlation = uuid4().hex if previous.completed else existing.correlation_id
+            else:
+                correlation = uuid4().hex
             message = AgentMessage(
                 uuid4().hex,
                 next(self._sequence),
@@ -261,20 +270,28 @@ class MailboxRouter:
                 None,
                 "task",
                 task,
-                task_id,
+                topic,
+                correlation_id=correlation,
             )
             if not self._put(child, message):
                 raise MessageStreamClosed("Child inbox is full or closed")
-            self._tasks[task_id] = _Task(
-                sender_id, child_id, command=message, deadline=monotonic() + 30, origin=deepcopy(origin or {})
+            self._tasks[correlation] = _Task(
+                sender_id, child_id, topic, task, command=message, deadline=monotonic() + 30, origin=deepcopy(origin or {})
             )
+            if existing is not None and existing.correlation_id != correlation:
+                del self._tasks[existing.correlation_id]
+            parent.tasks.sent[topic] = TaskRecord(topic, correlation, child_id, task, deepcopy(origin or {}))
             self._notify(self._delivery_waiters)
-            return task_id
+            return topic
 
     def report(self, sender_id: str, task_id: str, result: TaskResult) -> bool:
         with self._lock:
-            self._open(sender_id)
-            task = self._tasks.get(task_id)
+            mailbox = self._open(sender_id)
+            record = mailbox.tasks.received.get(task_id)
+            correlation = record.correlation_id if record is not None else next(
+                (key for key, value in self._tasks.items() if value.callee == sender_id and value.topic == task_id), ""
+            )
+            task = self._tasks.get(correlation)
             if task is None or task.callee != sender_id or not task.delivered:
                 raise PermissionError("Only the recipient of a delivered task may report it")
             if task.completed:
@@ -293,6 +310,7 @@ class MailboxRouter:
                 task_id,
                 result.model_copy(deep=True),
                 origin=deepcopy(task.origin),
+                correlation_id=correlation,
             )
             if not self._put(parent, message):
                 return False
@@ -300,30 +318,34 @@ class MailboxRouter:
             if task.completed:
                 task.terminal = result.model_copy(deep=True)
             task.blocked = result.status == "blocked"
+            mailbox.tasks.report(task_id, result)
             return True
+
+    def accept_report(self, agent_id: str, task_id: str) -> bool:
+        with self._lock:
+            mailbox = self._open(agent_id)
+            record = mailbox.tasks.accept(task_id)
+            self._tasks.pop(record.correlation_id, None)
+            return True
+
+    def task_origin(self, agent_id: str, task_id: str) -> JsonObject:
+        with self._lock:
+            return deepcopy(self._open(agent_id).tasks.sent[task_id].origin)
 
     def tasks_blocked(self, agent_id: str) -> bool:
         """Whether all delivered, unfinished tasks explicitly report being blocked."""
         with self._lock:
-            tasks = [
-                task
-                for task in self._tasks.values()
-                if task.callee == agent_id and task.delivered and not task.completed
-            ]
-            return bool(tasks) and all(task.blocked for task in tasks)
+            tasks = self._open(agent_id).tasks.received.values()
+            return bool(tasks) and all(task.status == "blocked" for task in tasks)
 
     def tasks_reported(self, agent_id: str) -> bool:
         with self._lock:
-            tasks = [task for task in self._tasks.values() if task.callee == agent_id and task.delivered]
-            return bool(tasks) and all(task.completed for task in tasks)
+            tasks = self._open(agent_id).tasks
+            return tasks.has_reported and not tasks.received
 
     def unfinished(self, agent_id: str) -> list[str]:
         with self._lock:
-            return [
-                key
-                for key, task in self._tasks.items()
-                if task.callee == agent_id and task.delivered and not task.completed
-            ]
+            return list(self._agents[agent_id].tasks.received)
 
     def children(self, agent_id: str) -> list[str]:
         with self._lock:
@@ -374,11 +396,14 @@ class MailboxRouter:
                                 None,
                                 "report",
                                 result.summary,
-                                task_id,
+                                task.topic,
                                 result,
+                                origin=deepcopy(task.origin),
+                                correlation_id=task_id,
                             ),
                         )
                     task.completed = True
+            mailbox.tasks.received.clear()
             mailbox.closed = True
             mailbox.queue.shutdown(immediate=True)
             self._wake(mailbox)
@@ -442,11 +467,17 @@ class AuthenticatedMailboxPort:
     def acknowledge(self, token: MailboxToken, message_ids: tuple[str, ...]) -> None:
         self._router.acknowledge(self._router.authenticate(token), message_ids)
 
-    def call(self, token: MailboxToken, child_id: str, task: str, origin: JsonObject) -> str:
-        return self._router.call(self._router.authenticate(token), child_id, task, origin)
+    def call(self, token: MailboxToken, child_id: str, task_id: str, task: str, origin: JsonObject) -> str:
+        return self._router.call(self._router.authenticate(token), child_id, task_id, task, origin)
 
-    async def acall(self, token: MailboxToken, child_id: str, task: str, origin: JsonObject) -> str:
-        return self.call(token, child_id, task, origin)
+    async def acall(self, token: MailboxToken, child_id: str, task_id: str, task: str, origin: JsonObject) -> str:
+        return self.call(token, child_id, task_id, task, origin)
+
+    def accept_report(self, token: MailboxToken, task_id: str) -> bool:
+        return self._router.accept_report(self._router.authenticate(token), task_id)
+
+    def task_origin(self, token: MailboxToken, task_id: str) -> JsonObject:
+        return self._router.task_origin(self._router.authenticate(token), task_id)
 
     def report(self, token: MailboxToken, task_id: str, result: TaskResult) -> bool:
         return self._router.report(self._router.authenticate(token), task_id, result)

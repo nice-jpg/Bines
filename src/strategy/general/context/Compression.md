@@ -55,7 +55,7 @@ page_view, page_catalog, page_read, page_node, select_aaid, node_update_ratio, v
 
 `_remove_tool_call_turns` 删除包含过期 ID 的整条 AIMessage（含文本和所有同轮调用），
 并删除这一 AIMessage 所有调用 ID 对应的 ToolMessage。混合多工具轮次也整体删除，
-因此结果可能少于 3 组。其余工具（含 prepare_collector、is_done、collect_continuously、
+因此结果可能少于 3 组。其余工具（含 spawn_subagent、call、report、accept_report、is_done、collect_continuously、
 think、package、captcha、未知工具）在展开块中保留，但块折叠后同样只剩占位。
 
 普通 SystemMessage、没有工具调用的 AIMessage 不参与该限额；system 角色本身既不意味着

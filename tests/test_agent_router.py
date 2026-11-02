@@ -39,7 +39,7 @@ def test_parent_child_permissions_and_task_correlation():
     router, root = setup_router()
     a = router.register_child(root)
     b = router.register_child(root)
-    task = router.call(root, a, "work")
+    task = router.call(root, a, "work", "work")
     completed = TaskResult(status="completed", summary="done")
     with pytest.raises(PermissionError):
         router.report(a, task, completed)
@@ -47,7 +47,7 @@ def test_parent_child_permissions_and_task_correlation():
     assert received[0].task_id == task
     router.acknowledge(a, tuple(message.message_id for message in received))
     with pytest.raises(PermissionError):
-        router.call(a, b, "wrong")
+        router.call(a, b, "wrong", "wrong")
     with pytest.raises(PermissionError):
         router.report(b, task, completed)
     assert router.report(a, task, completed)
@@ -193,7 +193,7 @@ def test_child_owns_thread_and_survives_two_completed_tasks():
         for text in ("first", "second"):
             host.router.deliver_user(InBoundMessage("test", text, text, text, "user"))
             assert host.router.read(parent, wait=False)[0].session_id == text
-            task = host.router.call(parent, child, text)
+            task = host.router.call(parent, child, text, text)
             report = host.router.read(parent, wait=True)[0]
             assert report.task_id == task
             assert report.result.status == "completed"

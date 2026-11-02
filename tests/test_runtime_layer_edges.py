@@ -38,25 +38,28 @@ def test_root_validates_batch_origins_and_reports_preserve_address() -> None:
         root = RootAgent(model=EchoModel(), handle=host.register_root())
         gateway = Gateway([ChannelStub("test")])
         root.bind_gateway(gateway)
+        child_id = host.router.register_child(root.handle.agent_id)
+        child = host.router.mailbox(child_id)
         for session in ("first", "latest"):
             gateway.buffer.submit(InBoundMessage("test", session, session, session, "user"))
             batch = await gateway.take_batch()
             host.router.deliver_batch(root.handle.agent_id, batch)
             gateway.commit_batch(batch.batch_id)
-        root.conversation.poll_input()
-        first = root.conversation.conversations[("test", "first")][0]
-        child_id = host.router.register_child(root.handle.agent_id)
-        child = host.router.mailbox(child_id)
+            root.conversation.finish_turn()
+            block = root.conversation.read_input(wait=False)
+            if session == "first":
+                task_id = root.call(child_id, "work", "work")["task_id"]
+            root.conversation.acknowledge(block.block_id)
         with pytest.raises(ValueError):
-            root.call(child_id, "bad", ["unseen"])
-        task_id = root.call(child_id, "work", [first.batch_id])["task_id"]
+            root.call(child_id, "", "bad")
         mail = child.read(wait=False)
         child.acknowledge(mail)
         from src.agent_runtime.contracts import TaskResult
 
         child.report(task_id, TaskResult(status="completed", summary="done"))
         report = host.router.read(root.handle.agent_id, wait=False)[0]
-        assert report.origin["sources"][0]["session_id"] == "first"
+        assert report.origin["session_id"] == "first"
+        assert root.handle.mailbox.task_origin(task_id)["session_id"] == "first"
         root.close()
         host.router.stop(child_id)
         host.router.release(child_id)

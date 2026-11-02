@@ -87,12 +87,12 @@ def test_agent_id_is_not_a_mailbox_credential() -> None:
     child = router.register_child(root)
     port = AuthenticatedMailboxPort(router)
     with pytest.raises(PermissionError):
-        port.call(MailboxToken(root), child, "forged", {})
+        port.call(MailboxToken(root), child, "forged", "forged", {})
     mailbox = router.mailbox(root)
-    assert mailbox.call(child, "authorized")
+    assert mailbox.call(child, "authorized", "authorized")
     router.stop(root)
     with pytest.raises(MessageStreamClosed):
-        mailbox.call(child, "revoked")
+        mailbox.call(child, "revoked", "revoked")
 
 
 def test_retransmission_keeps_task_identity_and_requires_explicit_ack(
@@ -104,7 +104,7 @@ def test_retransmission_keeps_task_identity_and_requires_explicit_ack(
     parent = router.register_root()
     child = router.register_child(parent)
     mailbox = router.mailbox(child)
-    task_id = router.mailbox(parent).call(child, "work")
+    task_id = router.mailbox(parent).call(child, "work", "work")
     original = mailbox.read(wait=False)
     assert not mailbox.unfinished()
     clock[0] = 31
@@ -132,7 +132,7 @@ def test_unacknowledged_task_reports_unknown_not_failure(monkeypatch: pytest.Mon
     router = MailboxRouter()
     parent = router.register_root()
     child = router.register_child(parent)
-    task_id = router.call(parent, child, "work")
+    task_id = router.call(parent, child, "work", "work")
     for _ in range(4):
         clock[0] += 31
         router.retry_expired()
@@ -180,7 +180,7 @@ def test_general_fork_owns_graph_checkpoint_tools_and_mailbox() -> None:
             root._fork_context._state["messages"][0].content = "changed"
             assert child._state["messages"][0].content == "context"
             with pytest.raises(PermissionError):
-                child.reply("test", "chat", "must not escape")
+                child.reply("", "must not escape")
         finally:
             await host.close()
             root.close()

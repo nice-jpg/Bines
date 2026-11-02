@@ -12,7 +12,8 @@ baselines for the resulting states and passing full regression, collector calls
 swipe from this visit are required. Random jumps and historical cases cannot
 supply swipe samples. The threshold is `min(1, max(ratios) + 0.05)`.
 
-`prepare_collector` returns `normal_swipe_profile` with `change_threshold`,
+Spawn a collector with `spawn_subagent("collector")`, then submit work using `call`.
+The collector's completion report returns `normal_swipe_profile` with `change_threshold`,
 `sample_count`, `actions`, and a warning if the threshold saturates at 1. Pass the
 exact threshold back to the tool. A missing profile disables only the automatic
 loop. Changed scripts or contracts require fresh validation.

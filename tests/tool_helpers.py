@@ -8,4 +8,5 @@ def conductor_tools():
     from gateway_helpers import GatewayHandle, RecordingChannel
     engine.handle = GatewayHandle(RecordingChannel()).handle
     engine._notifier = lambda message: None
-    return list(engine._create_tools())
+    from src.agent_runtime.messaging.tools import communication_tools
+    return [*engine._create_tools(), *communication_tools(engine)]

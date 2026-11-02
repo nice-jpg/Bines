@@ -51,19 +51,18 @@ class ReplyModel(EchoModel):
         if isinstance(messages[-1], ToolMessage):
             reply = AIMessage(content="Not sent implicitly.")
         else:
-            handled = {call["id"] for m in messages if isinstance(m, AIMessage) for call in m.tool_calls}
-            records = [json.loads(line) for m in messages if m.type == "human" for line in m.content.splitlines()[1:]]
-            records = [record for record in records if str(record["sequence"]) not in handled]
+            latest = next(m for m in reversed(messages) if m.type == "human")
+            records = [json.loads(line) for line in latest.content.splitlines()[1:]]
             reply = AIMessage(
                 content="",
                 tool_calls=[
                     {
-                        "id": str(record["sequence"]),
+                        "id": f"reply-{len(messages)}-{index}",
                         "name": "reply",
                         "type": "tool_call",
-                        "args": {"channel_id": record["channel_id"], "session_id": record["session_id"], "message": json.loads(record["text"])["messages"][0]["text"]},
+                        "args": {"task_id": record["task_id"], "message": record["text"]},
                     }
-                    for record in records
+                    for index, record in enumerate(records)
                 ],
             )
         return ChatResult(generations=[ChatGeneration(message=reply)])
@@ -149,7 +148,7 @@ def test_root_delegates_and_relays_child_report_to_original_conversation():
                             "args": {
                                 "subagent_id": spawned["subagent_id"],
                                 "task": "delegated task",
-                                "source_batch_ids": [origin["batch_id"]],
+                                "task_id": origin["text"],
                             },
                             "id": "call",
                         }
@@ -158,7 +157,7 @@ def test_root_delegates_and_relays_child_report_to_original_conversation():
                     calls = []
             else:
                 record = json.loads(last.content.splitlines()[-1])
-                if record["kind"] == "user":
+                if not record["task_id"]:
                     previous_spawn = next(
                         (m for m in messages if isinstance(m, ToolMessage) and m.name == "spawn_subagent"),
                         None,
@@ -179,32 +178,17 @@ def test_root_delegates_and_relays_child_report_to_original_conversation():
                                 "args": {
                                     "subagent_id": json.loads(previous_spawn.content)["subagent_id"],
                                     "task": "delegated task",
-                                    "source_batch_ids": [record["batch_id"]],
+                                    "task_id": record["text"],
                                 },
                                 "id": "reuse",
                             }
                         ]
                 else:
-                    # Resolve the report to its originating call, not the latest user input.
-                    call_index = next(
-                        i
-                        for i, m in enumerate(messages)
-                        if isinstance(m, ToolMessage)
-                        and m.name == "call"
-                        and json.loads(m.content)["task_id"] == record["task_id"]
-                    )
-                    user_records = [
-                        json.loads(m.content.splitlines()[-1])
-                        for m in messages[:call_index]
-                        if m.type == "human"
-                    ]
-                    origin = next(r for r in reversed(user_records) if r["kind"] == "user")
                     calls = [
                         {
                             "name": "reply",
                             "args": {
-                                "channel_id": origin["channel_id"],
-                                "session_id": origin["session_id"],
+                                "task_id": record["task_id"],
                                 "message": record["result"]["summary"],
                             },
                             "id": "reply",

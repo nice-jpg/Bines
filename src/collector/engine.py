@@ -75,7 +75,6 @@ class CollectorEngine(AgentEngine[CollectorAgentState]):
                 "data": {
                     "trained": trained,
                     "page_path": toolbox.page_path,
-                    "page_visit_id": toolbox.page_visit_id,
                     "verification": verification,
                     "restoration": restoration,
                     "merchant_profile": profile,
@@ -88,7 +87,7 @@ class CollectorEngine(AgentEngine[CollectorAgentState]):
         return "collector"
 
     def _system_prompt(self) -> str:
-        return COLLECTOR_PROMPT
+        return COLLECTOR_PROMPT + "\n" + self._toolbox.mechanism.query_page_doc(self._toolbox.page_path)
 
     def _create_tools(self) -> Sequence[BaseTool]:
         return [*self._toolbox.create_tools(), create_talk_tool(self.send_message)]

@@ -10,11 +10,11 @@ from tests.tool_helpers import conductor_tools
 def test_conductor_assembly_has_no_duplicate_or_legacy_tools():
     names = [tool.name for tool in conductor_tools()]
     assert len(names) == len(set(names))
-    assert {"talk", "prepare_collector", "is_done", "collect_continuously", "get_probe_progress"} <= set(
+    assert {"talk", "spawn_subagent", "call", "accept_report", "is_done", "collect_continuously", "get_probe_progress"} <= set(
         names
     )
     assert "authorize_probe_completion" not in names
-    assert not {"notify_user", "query_manual", "tap", "swipe_back"} & set(names)
+    assert not {"prepare_collector", "notify_user", "query_manual", "tap", "swipe_back"} & set(names)
 
 
 def test_base_engine_does_not_inject_talk_and_allows_custom_name():
@@ -59,7 +59,7 @@ def test_custom_communication_tool_executes_through_engine_capability():
     router = gateway.host.router
     router.read(parent, wait=False)
     child = router.register_child(parent)
-    task = router.call(parent, child, "start")
+    task = router.call(parent, child, "start", "start")
     model = Model(
         replies=[
             AIMessage(

@@ -1,142 +1,90 @@
-from __future__ import annotations
+"""Probe startup is an explicit model decision, not input string matching."""
 
-import sys
-import tempfile
-import unittest
-from pathlib import Path
-from datetime import date
+from types import SimpleNamespace
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from langchain_core.messages import AIMessage, ToolMessage
 
-from src.conductor.engine import (
-    APP_PROBE_TRIGGER,
-    build_app_probe_messages,
-    messages_request_app_probe,
-)
-
-from src.prompts import build_probe_task_spec
+from engine_helpers import Model, ScriptedEngine, run_engine
+from src.conductor.state import initial_fields
+from src.prompts.initial_message import ProbeTaskSpec
+from src.tools.probe import create_start_probe_tool
 
 
-class AppProbeTaskTests(unittest.TestCase):
-    def test_app_probe_trigger_requires_exact_match(self) -> None:
-        self.assertTrue(messages_request_app_probe([{"role": "user", "content": APP_PROBE_TRIGGER}]))
-        self.assertFalse(messages_request_app_probe([{"role": "user", "content": f" {APP_PROBE_TRIGGER}"}]))
-        self.assertFalse(messages_request_app_probe([{"role": "user", "content": f"{APP_PROBE_TRIGGER} "}]))
-        self.assertFalse(messages_request_app_probe([{"role": "user", "content": f"{APP_PROBE_TRIGGER}。"}]))
-        self.assertFalse(messages_request_app_probe([{"role": "user", "content": "普通聊天"}]))
+def test_config_builds_absolute_leaf_paths(tmp_path):
+    from src.prompts import build_probe_task_spec
 
-    def test_messages_request_app_probe_uses_only_plain_exact_current_text(self) -> None:
-        self.assertTrue(messages_request_app_probe([{"role": "user", "content": APP_PROBE_TRIGGER}]))
-        self.assertFalse(
-            messages_request_app_probe(
-                [{"role": "user", "content": f"<feishu_message><text>{APP_PROBE_TRIGGER}</text></feishu_message>"}]
-            )
-        )
-        self.assertFalse(messages_request_app_probe([{"role": "user", "content": f"{APP_PROBE_TRIGGER} "}]))
-
-    def test_build_app_probe_messages_wraps_existing_initial_context(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            workspace = Path(tmp_dir)
-            (workspace / "config.xml").write_text(
-                """
-<package name="com.sankuai.meituan">
-    <city name="安徽省宿州市">
-        <args>
-            <address name="万成哈弗国际A区1栋"/>
-            <range size="1000"/>
-        </args>
-        <subpage name="美食"/>
-    </city>
-</package>
-""",
-                encoding="utf-8",
-            )
-
-            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
-                with patch("src.prompts.initial_message.date") as clock:
-                    clock.today.return_value = date.fromisoformat("2026-06-22")
-                    messages = build_app_probe_messages()
-
-        self.assertEqual(len(messages), 2)
-        self.assertIn("<environment_context>", messages[0]["content"])
-        self.assertIn("<config_context>", messages[1]["content"])
-        self.assertIn("- 应用包名：com.sankuai.meituan", messages[1]["content"])
-
-    def test_probe_task_spec_builds_absolute_leaf_paths(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            workspace = Path(tmp_dir)
-            (workspace / "config.xml").write_text(
-                """
-<package name="com.sankuai.meituan">
-    <city name="安徽省宿州市">
-        <args><address name="A"/><range size="1"/></args>
-        <subpage name="外卖"><leaf name="美食"/></subpage>
-    </city>
-</package>
-""",
-                encoding="utf-8",
-            )
-
-            with patch("src.prompts.initial_message.WORKSPACE_ROOT", workspace):
-                spec = build_probe_task_spec()
-
-        self.assertEqual(spec.package_name, "com.sankuai.meituan")
-        self.assertEqual(spec.target_leaf_paths, ("meituan/外卖/美食",))
+    (tmp_path / "config.xml").write_text(
+        '<package name="com.sankuai.meituan"><city name="宿州">'
+        '<args><address name="A"/><range size="1000"/></args>'
+        '<subpage name="外卖"><leaf name="美食"/></subpage></city></package>',
+        encoding="utf-8",
+    )
+    with patch("src.prompts.initial_message.WORKSPACE_ROOT", tmp_path):
+        spec = build_probe_task_spec()
+    assert spec.package_name == "com.sankuai.meituan"
+    assert spec.target_leaf_paths == ("meituan/外卖/美食",)
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_config_context_keeps_environment_and_collection_requirements(tmp_path):
+    from src.prompts import build_initial_messages
+
+    (tmp_path / "config.xml").write_text(
+        '<package name="com.sankuai.meituan"><city name="宿州">'
+        '<args><address name="A"/><range size="1000"/></args>'
+        '<subpage name="美食"/></city></package>', encoding="utf-8",
+    )
+    with patch("src.prompts.initial_message.WORKSPACE_ROOT", tmp_path):
+        environment, config = build_initial_messages()
+    assert "<environment_context>" in environment
+    assert "com.sankuai.meituan" in config
+    assert "1000米" in config
 
 
-def test_channel_probe_trigger_initializes_task_and_preserves_dialogue():
-    from langchain_core.messages import AIMessage, HumanMessage
-    from engine_helpers import Model, ScriptedEngine
-    from gateway_helpers import GatewayHandle, RecordingChannel
-    from src.agent_runtime.types.execution import EngineResult, EngineStatus
-    from src.prompts.initial_message import ProbeTaskSpec
-
-    channel = RecordingChannel()
-    gateway = GatewayHandle(channel)
-    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]), handle=gateway.handle)
-    channel.receive("chat", APP_PROBE_TRIGGER, sender="alice")
-    channel.receive("chat", "先查看首页", sender="bob")
+def test_start_probe_initializes_state_and_returns_configuration():
+    tool = create_start_probe_tool()
     with (
-        patch("src.conductor.engine.build_probe_task_spec", return_value=ProbeTaskSpec("app", ("app/home",))),
-        patch("src.conductor.engine.build_app_probe_messages", return_value=[{"role": "user", "content": "task config"}]),
-        patch.object(engine, "_execute", return_value=EngineResult(EngineStatus.COMPLETED)) as execute,
+        patch("src.tools.probe.build_probe_task_spec", return_value=ProbeTaskSpec("app", ("app/food",))),
+        patch("src.tools.probe.build_initial_messages", return_value=["environment", "configuration"]),
     ):
-        engine.run_turn()
-        state = execute.call_args.args[0]
-        assert state["probe"]["run_id"]
-        assert state["probe"]["package_name"] == "app"
-        assert state["probe"]["target_leaf_paths"] == ["app/home"]
-        assert state["messages"][0]["content"] == "task config"
-        message = state["messages"][-1]
-        assert isinstance(message, HumanMessage)
-        import json
-        records = [json.loads(line) for line in message.content.splitlines()[1:]]
-        assert [(r["sender_id"], r["text"]) for r in records] == [("alice", APP_PROBE_TRIGGER), ("bob", "先查看首页")]
-        assert not engine._requests_app_probe([HumanMessage(content="unrelated")])
-        engine._state = state
-        engine.conversation.acknowledge(message.id)
-        channel.receive("chat", "继续查看")
-        engine.run_turn()
-        assert execute.call_args.args[0]["probe"]["run_id"] == state["probe"]["run_id"]
+        result = tool.func(runtime=SimpleNamespace(state=initial_fields(), tool_call_id="start"))
+    assert result.update["probe"]["run_id"]
+    assert result.update["probe"]["package_name"] == "app"
+    assert result.update["probe"]["target_leaf_paths"] == ["app/food"]
+    message = result.update["messages"][0]
+    assert message.tool_call_id == "start"
+    assert message.content == "environment\n\nconfiguration"
+    assert tool.tool_call_schema.model_json_schema()["properties"] == {}
+
+
+def test_repeated_start_preserves_progress():
+    state = initial_fields()
+    state["probe"] = {"run_id": "existing", "completed_merchants": {"app/food": ["shop"]}}
+    with patch("src.tools.probe.build_probe_task_spec") as config:
+        result = create_start_probe_tool().func(runtime=SimpleNamespace(state=state, tool_call_id="repeat"))
+    config.assert_not_called()
+    assert set(result.update) == {"messages"}
+    assert state["probe"]["completed_merchants"] == {"app/food": ["shop"]}
+
+
+def test_model_can_start_probe_from_natural_language():
+    model = Model(replies=[
+        AIMessage(content="", tool_calls=[{"name": "start_app_probe", "args": {}, "id": "start"}]),
+        AIMessage(content="configured"),
+    ])
+    engine = ScriptedEngine(model=model, tools=[create_start_probe_tool()])
+    with (
+        patch("src.tools.probe.build_probe_task_spec", return_value=ProbeTaskSpec("app", ("app/food",))),
+        patch("src.tools.probe.build_initial_messages", return_value=["configured task"]),
+    ):
+        run_engine(engine, [{"role": "user", "content": "帮我看看附近的外卖商家并采集商品"}])
+    assert engine._state["probe"]["run_id"]
+    assert any(isinstance(m, ToolMessage) and m.content == "configured task" for m in model.seen[-1])
     engine.close()
 
 
-def test_channel_trigger_does_not_parse_formatted_or_quoted_commands():
-    from langchain_core.messages import AIMessage
-    from engine_helpers import Model, ScriptedEngine
-    from gateway_helpers import GatewayHandle, RecordingChannel
-    from src.agent_runtime.types.execution import EngineResult, EngineStatus
-
-    channel = RecordingChannel()
-    gateway = GatewayHandle(channel)
-    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]), handle=gateway.handle)
-    channel.receive("chat", f"引用：\nalice: {APP_PROBE_TRIGGER}", name=APP_PROBE_TRIGGER)
-    with patch.object(engine, "_execute", return_value=EngineResult(EngineStatus.COMPLETED)) as execute:
-        engine.run_turn()
-        assert execute.call_args.args[0]["probe"] == {}
+def test_old_trigger_without_model_tool_call_does_not_start_probe():
+    engine = ScriptedEngine(model=Model(replies=[AIMessage(content="discuss only")]))
+    run_engine(engine, [{"role": "user", "content": "执行应用探测任务"}])
+    assert engine._state["probe"] == {}
     engine.close()

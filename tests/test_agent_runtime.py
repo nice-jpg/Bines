@@ -41,7 +41,7 @@ def test_engine_exposes_only_execution_methods():
     methods = {
         name for name, value in AgentEngine.__dict__.items() if callable(value) and not name.startswith("_")
     }
-    assert methods == {"run_turn", "continue_turn", "resume_turn", "arun_turn", "acontinue_turn", "aresume_turn", "close", "send_message", "call", "report", "kill", "spawn_subagent", "report_interruption"}
+    assert methods == {"run_turn", "continue_turn", "resume_turn", "arun_turn", "acontinue_turn", "aresume_turn", "close", "send_message", "call", "report", "kill", "spawn_subagent", "report_interruption", "accept_report"}
     for method in {"run_turn", "continue_turn", "resume_turn", "close"}:
         assert list(inspect.signature(getattr(AgentEngine, method)).parameters) == ["self"]
 
@@ -97,21 +97,17 @@ def test_worker_propagates_exception_after_cleanup():
     coordinator.close.assert_called_once()
 
 
-def test_probe_preparation_only_uses_current_messages(monkeypatch):
-    import src.conductor.engine as module
-
-    monkeypatch.setattr(
-        module, "build_app_probe_messages", lambda: [{"role": "user", "content": "environment"}]
-    )
+def test_probe_input_is_preserved_without_implicit_start():
     engine = ScriptedEngine(model=Model(replies=[AIMessage(content="ok")]))
     assert (
         engine._prepare_messages([{"role": "user", "content": "执行应用探测任务"}])[0]["content"]
-        == "environment"
+        == "执行应用探测任务"
     )
     assert engine._prepare_messages([{"role": "user", "content": "normal"}]) == [
         {"role": "user", "content": "normal"}
     ]
-    assert engine._input_state([{"role": "user", "content": "执行应用探测任务"}])["probe"]["run_id"]
+    assert engine._input_state([{"role": "user", "content": "执行应用探测任务"}])["probe"] == {}
+    engine.close()
 
 
 def test_conductor_preserves_human_payload():

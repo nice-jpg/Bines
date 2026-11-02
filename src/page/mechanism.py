@@ -79,6 +79,18 @@ class PageMechanism:
     def query_task_doc(self, current_path: str) -> str:
         return self._query_doc(current_path, "task.md", "task_doc")
 
+    def read_schema(self, current_path: str, heading: str) -> JsonObject:
+        """Read a named PAGE.md schema without relying on model-provided JSON."""
+        content = self.manual_path(current_path).read_text(encoding="utf-8")
+        section = re.search(r"^## " + re.escape(heading) + r"\s*\n(.*?)(?=^## |\Z)", content, re.M | re.S)
+        block = re.search(r"```json\s*\n(.*?)\n```", section.group(1), re.S) if section else None
+        if block is None:
+            raise ValueError(f"PAGE.md must define {heading} as a JSON object")
+        value = load_json(block.group(1))
+        if not isinstance(value, dict):
+            raise ValueError(f"{heading} must be a JSON object")
+        return value
+
     def load_manual_bundle(self, current_path: str) -> str:
         """Strictly load PAGE.md followed by task.md for one canonical page."""
 

@@ -16,7 +16,7 @@ from src.strategy.general.state import PageArrival
 
 OBSERVATION_TOOLS: Final[frozenset[str]] = frozenset({tool["name"] for tool in PAGE_TOOLS} | {"screenshot"})
 NAVIGATION_TOOLS: Final[frozenset[str]] = frozenset({"run_package", "navigate_to", "navigate_back"})
-MERCHANT_TOOLS: Final[frozenset[str]] = frozenset({"prepare_collector", "collect_continuously", "is_done"})
+MERCHANT_TOOLS: Final[frozenset[str]] = frozenset({"collect_continuously", "is_done"})
 PAGE_OPERATIONS: Final[frozenset[str]] = (
     OBSERVATION_TOOLS
     | NAVIGATION_TOOLS

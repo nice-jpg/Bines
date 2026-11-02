@@ -22,11 +22,17 @@ class Mailbox:
     def acknowledge(self, messages: list[AgentMessage]) -> None:
         self._port.acknowledge(self._token, tuple(message.message_id for message in messages))
 
-    def call(self, child_id: str, task: str, origin: JsonObject | None = None) -> str:
-        return self._port.call(self._token, child_id, task, origin or {})
+    def call(self, child_id: str, task_id: str, task: str, origin: JsonObject | None = None) -> str:
+        return self._port.call(self._token, child_id, task_id, task, origin or {})
 
-    async def acall(self, child_id: str, task: str) -> str:
-        return await self._port.acall(self._token, child_id, task, {})
+    async def acall(self, child_id: str, task_id: str, task: str) -> str:
+        return await self._port.acall(self._token, child_id, task_id, task, {})
+
+    def accept_report(self, task_id: str) -> bool:
+        return self._port.accept_report(self._token, task_id)
+
+    def task_origin(self, task_id: str) -> JsonObject:
+        return self._port.task_origin(self._token, task_id)
 
     def report(self, task_id: str, result: TaskResult) -> bool:
         return self._port.report(self._token, task_id, result)

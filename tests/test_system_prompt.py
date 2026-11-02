@@ -20,10 +20,10 @@ class SystemPromptTests(unittest.TestCase):
             CONDUCTOR_PROMPT,
         )
         self.assertNotIn("Page docs:", CONDUCTOR_PROMPT)
-        self.assertIn("Collector: prepare_collector", CONDUCTOR_PROMPT)
+        self.assertIn("Collector: spawn_subagent", CONDUCTOR_PROMPT)
         self.assertNotIn("query_manual", CONDUCTOR_PROMPT)
         self.assertNotIn("Excel", CONDUCTOR_PROMPT)
-        self.assertNotIn("spawn_subagent", CONDUCTOR_PROMPT)
+        self.assertNotIn("prepare_collector", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_requires_explicit_navigation_and_runtime_manuals(self) -> None:
         self.assertIn("Only after confirm_page accepts your conclusion", CONDUCTOR_PROMPT)
@@ -33,8 +33,8 @@ class SystemPromptTests(unittest.TestCase):
         self.assertIn("Use tap_in_page only", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_to", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_back", CONDUCTOR_PROMPT)
-        self.assertIn("Each merchant visit requires prepare_collector", CONDUCTOR_PROMPT)
-        self.assertIn("Do not delegate task.md operation steps", CONDUCTOR_PROMPT)
+        self.assertIn("Each merchant visit requires a page-bound collector", CONDUCTOR_PROMPT)
+        self.assertIn("without task.md operation steps", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_forbids_direct_collection(self) -> None:
         self.assertIn("Do not collect merchant/product fields directly", CONDUCTOR_PROMPT)

@@ -385,7 +385,7 @@ def _page_activity_description(
                 )
             elif call.name.startswith("swipe_"):
                 intent = f"scrolled using {call.name}"
-            elif call.name == "prepare_collector":
+            elif call.name == "spawn_subagent" and call.args.get("agent_type") == "collector":
                 intent = "requested collection-script validation"
             elif call.name == "is_done":
                 intent = "checked collection completion"
