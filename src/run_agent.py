@@ -11,7 +11,8 @@ from langchain_core.language_models import BaseChatModel
 
 from src.agent_hypervisor.host import Host
 from src.application.assistant import AssistantEngine
-from src.channel.feishu import FeishuChannel, load_feishu_config
+# from src.channel.feishu import FeishuChannel, load_feishu_config
+from src.channel.qq import QQChannel, load_qq_config
 from src.common.tracing import trace_client
 from src.configuration import get_model_instance
 from src.configuration.manager import ConfigurationManager
@@ -30,7 +31,8 @@ def main() -> None:
     args: argparse.Namespace = build_parser().parse_args()
     ConfigurationManager.initialize()
     trace_client()
-    channel: FeishuChannel = FeishuChannel(load_feishu_config(), "feishu")
+    # channel: FeishuChannel = FeishuChannel(load_feishu_config(), "feishu")
+    channel: QQChannel = QQChannel(load_qq_config(), "qq")
     model: BaseChatModel | None = None
     try:
         model = get_model_instance()
