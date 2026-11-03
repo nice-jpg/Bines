@@ -15,7 +15,7 @@ Runtime 只负责独立 Agent 的运行，不管理 Channel、Root 或业务类�
 | tasks.py | 每个 Agent 的 received/sent 任务管理器，区分最终报告与父方验收 |
 | conversation/ | 暂存 mail、稳定消息块、历史和 checkpoint 消费确认 |
 | fork.py | 记录安全模型边界，派生时复制语义 state |
-| messaging/tools.py | 固定的 spawn_subagent、call、report、kill 工具 |
+| messaging/tools.py | 固定的 spawn_subagent、list_subagents、call、report、accept_report、kill 工具 |
 | middleware/ | 消息注入、模型重试、工具异常与追踪 |
 | strategy/ | 按 state.active_strategy 路由业务策略 |
 
@@ -38,6 +38,14 @@ Host 统一负责通信服务和 Worker 生命周期，不再提供独立 AgentA
 异步执行在该 config 的独立 Task context 中完成；不继承父 graph task/checkpoint namespace。
 invoke/ainvoke 使用 durability="exit"。Worker 使用异步 Coordinator 路径，空闲时 await Mailbox.receive。
 父子不共享消息历史，父任务不会因为子任务未结束而自动被禁用工具。
+
+模型本轮返回后，Engine 先处理已到达的消息；若仍有委派任务且没有最终报告等待验收，
+返回 WAITING 而非 CONTINUE_REQUIRED。Coordinator 结束本轮，Worker 下一轮阻塞监听同一邮箱，
+不调用模型轮询。新任务、进展或最终报告均可唤醒；最终报告进入验收流程，不自动清除任务。
+同步入口使用阻塞读取，异步 Worker 使用 await receive。监听不表示任务完成，也不限制本轮工具。
+
+list_subagents 只查询当前 Agent 的存活直接子 Agent，返回类型及任务主题/状态，不暴露通信地址。
+验收任务后子 Agent 仍保留；父 Agent 根据后续用途复用或 kill。页面绑定 collector 仅可复用在同一访问中。
 
 固定 middleware 顺序：HostTrace → ModelRetry → ConversationInput → ForkContext → ToolError →
 StrategyDispatch → ToolTrace → LLMTrace。没有业务策略的 Engine 不注册 StrategyDispatch。

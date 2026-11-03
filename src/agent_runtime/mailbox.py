@@ -49,5 +49,11 @@ class Mailbox:
     def tasks_reported(self) -> bool:
         return self._port.tasks_reported(self._token)
 
+    def awaiting_reports(self) -> bool:
+        return self._port.awaiting_reports(self._token)
+
+    def list_subagents(self) -> list[JsonObject]:
+        return self._port.list_subagents(self._token)
+
     def stop(self) -> None:
         self._port.stop(self._token)

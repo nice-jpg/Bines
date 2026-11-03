@@ -103,6 +103,7 @@ class Host:
                 if identity not in self._identities:
                     raise ValueError("Agent identity is not owned by this host")
                 worker = AgentWorker(AgentCoordinator(engine))
+                self.router.set_agent_type(identity, engine.agent_type)
                 self._workers[identity] = worker
                 worker.start()
             except BaseException:

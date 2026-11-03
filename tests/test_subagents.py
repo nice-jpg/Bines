@@ -54,13 +54,13 @@ def test_active_child_does_not_block_parent_business_tools():
         model=model, handle=host.handle(root), tools=[StructuredTool.from_function(independent_work)]
     )
     try:
-        assert engine.run_turn().status == EngineStatus.COMPLETED
+        assert engine.run_turn().status == EngineStatus.WAITING
         assert called == [True]
     finally:
         engine.close()
 
 
-def test_active_child_does_not_bypass_parent_result_validation():
+def test_pending_delegation_yields_instead_of_repeating_unresolved_output():
     host, root, child = fixture()
     host.router.call(root, child, "work", "work")
     engine = ScriptedEngine(
@@ -75,9 +75,32 @@ def test_active_child_does_not_bypass_parent_result_validation():
         structured=True,
     )
     try:
-        assert engine.run_turn().status == EngineStatus.CONTINUE_REQUIRED
+        assert engine.run_turn().status == EngineStatus.WAITING
     finally:
         engine.close()
+
+
+def test_waiting_engine_blocks_without_model_calls_and_wakes_on_report():
+    async def run():
+        host, root, child = fixture()
+        host.router.call(root, child, "work", "work")
+        receiver = host.router.mailbox(child)
+        receiver.acknowledge(receiver.read(wait=False))
+        model = Model(replies=[AIMessage(content="waiting"), AIMessage(content="review result")])
+        engine = ScriptedEngine(model=model, handle=host.handle(root), structured=True)
+        try:
+            assert (await engine.arun_turn()).status == EngineStatus.WAITING
+            waiting = asyncio.create_task(engine.arun_turn())
+            await asyncio.sleep(0.02)
+            assert not waiting.done()
+            assert len(model.seen) == 1
+            receiver.report("work", TaskResult(status="completed", summary="ready"))
+            # Final reports must be evaluated, not silently returned to listening.
+            assert (await asyncio.wait_for(waiting, 2)).status == EngineStatus.CONTINUE_REQUIRED
+            assert len(model.seen) == 2
+        finally:
+            engine.close()
+    asyncio.run(run())
 
 
 def test_parent_worker_progresses_while_child_worker_is_busy():

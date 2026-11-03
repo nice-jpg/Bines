@@ -74,6 +74,29 @@ def test_topic_collision_cannot_retarget_an_active_task() -> None:
             router.call(parent, second, topic, "task")
 
 
+def test_subagent_query_is_parent_scoped_and_retains_idle_children() -> None:
+    router = MailboxRouter()
+    parent = router.register_root()
+    child = router.register_child(parent)
+    grandchild = router.register_child(child)
+    router.set_agent_type(child, "collector")
+    router.set_agent_type(grandchild, "general")
+    sender, receiver = router.mailbox(parent), router.mailbox(child)
+    assert sender.list_subagents() == [{"subagent_id": child, "agent_type": "collector", "tasks": []}]
+    sender.call(child, "验证", "Verify")
+    assert sender.awaiting_reports()
+    receiver.acknowledge(receiver.read(wait=False))
+    receiver.report("验证", TaskResult(status="completed", summary="ready"))
+    sender.acknowledge(sender.read(wait=False))
+    assert not sender.awaiting_reports()
+    assert sender.list_subagents()[0]["tasks"] == [{"task_id": "验证", "status": "awaiting_review"}]
+    sender.accept_report("验证")
+    assert sender.list_subagents()[0]["tasks"] == []
+    assert not sender.awaiting_reports()
+    router.stop(child)
+    assert sender.list_subagents() == []
+
+
 def test_failed_report_delivery_does_not_delete_received_task(monkeypatch: pytest.MonkeyPatch) -> None:
     router = MailboxRouter()
     parent = router.register_root()

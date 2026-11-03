@@ -10,6 +10,10 @@
 包含 Coordinator、Engine、ConversationSession 和 Mailbox。同步工具由执行线程池承载，图中合并表示。
 Codex 模型继续使用自身传输线程；多个 Engine 共享同一模型时共享该传输对象，而不是每个 Agent 创建一份。
 
+委派后本轮返回且仍待回复时，Engine 返回 WAITING，Coordinator 结束本轮。
+同一个 Worker 在下一轮 await Mailbox.receive，等待任意新邮件，不创建轮询线程或持续调用模型。
+最终报告待验收时不进入该等待分支；父 Agent 继续核验，随后决定保留或销毁子 Agent。
+
 ```mermaid
 flowchart TB
   subgraph Main[主线程]

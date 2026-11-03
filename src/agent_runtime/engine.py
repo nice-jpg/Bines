@@ -23,7 +23,7 @@ from src.agent_messages.types import GraphInput, InputMessage
 from src.agent_runtime.contracts import MessageStreamClosed
 from src.agent_runtime.conversation import ConversationSession, MessageBlock
 from src.common.tracing import trace_client
-from src.common.utils.json import JsonValue
+from src.common.utils.json import JsonObject, JsonValue
 from src.common.utils.validation import is_string_mapping
 
 from .contracts import AgentHandle, TaskResult
@@ -137,12 +137,23 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
 
     def call(self, subagent_id: str, task_id: str, task: str) -> dict[str, str]:
         """Send a task or follow-up to your direct child without waiting for its result."""
-        topic = self.handle.mailbox.call(subagent_id, task_id, task)
+        binding = self._trace.ensure_binding()
+        topic = self.handle.mailbox.call(subagent_id, task_id, task, origin={
+            "ntrace": {"trace_id": binding.trace_id, "span_id": self._trace.latest_host_span_id}
+        })
         return {"task_id": topic}
 
     def accept_report(self, task_id: str) -> bool:
-        """Accept a child's final report after verification and remove the delegated task."""
+        """Accept a verified final report. Then retain the child for useful future work, or kill it if no longer needed."""
         return self.handle.mailbox.accept_report(task_id)
+
+    @property
+    def agent_type(self) -> str:
+        return self._name()
+
+    def list_subagents(self) -> list[JsonObject]:
+        """List your living direct children, their agent types and current tasks. Check for reuse before spawning."""
+        return self.handle.mailbox.list_subagents()
 
     def spawn_subagent(self, agent_type: str) -> dict[str, str]:
         """Fork a general child with independent context; submit work separately with call."""
@@ -361,19 +372,7 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
         self, input: GraphInput | Command[str] | None, *, source: ExecutionSource, config: RunnableConfig
     ) -> EngineResult:
         """Run and recover within the execution context established by _execute."""
-        continuing: bool = source in {ExecutionSource.CONTINUATION, ExecutionSource.RESUME}
-        binding: TraceBinding | None = self._trace.current_binding
-        missing_binding: bool = continuing and (binding is None or binding.session_id != self._checkpoint_id)
-        if missing_binding:
-            # Never let a recovery with lost identity attach to an unrelated active agent.
-            logging.getLogger(__name__).warning(
-                "Trace binding missing during %s; starting an isolated recovery trace", source
-            )
-        self._trace.update(
-            session_id=self._checkpoint_id,
-            resume=continuing,
-            user_input_boundary=source == ExecutionSource.USER_TASK or missing_binding,
-        )
+        self._update_trace(source)
         try:
             raw: object = self.agent.invoke(input, config=config, durability="exit")  # pyright: ignore[reportUnknownMemberType]
             if not is_string_mapping(raw):
@@ -392,6 +391,39 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
             return self._failed(kind, config)
         return self._finish_turn()
 
+    def _update_trace(self, source: ExecutionSource) -> None:
+        """Keep a session trace across user turns and internal mailbox exchanges."""
+        messages = self._conversation.pending_messages if source == ExecutionSource.USER_TASK else ()
+        user_boundary = any(message.kind == "user" for message in messages)
+        parent_trace_id = None
+        parent_span_id = None
+        for message in messages:
+            reference = message.origin.get("ntrace") if message.kind == "task" else None
+            if isinstance(reference, dict):
+                trace_id, span_id = reference.get("trace_id"), reference.get("span_id")
+                if type(trace_id) is int and trace_id > 0:
+                    parent_trace_id = trace_id
+                    parent_span_id = span_id if type(span_id) is int else None
+                    break
+        continuing = source in {ExecutionSource.CONTINUATION, ExecutionSource.RESUME}
+        binding: TraceBinding | None = self._trace.current_binding
+        missing_binding: bool = continuing and (binding is None or binding.session_id != self._checkpoint_id)
+        if missing_binding:
+            # Never let a recovery with lost identity attach to an unrelated active agent.
+            logging.getLogger(__name__).warning(
+                "Trace binding missing during %s; starting an isolated recovery trace", source
+            )
+        self._trace.update(
+            session_id=self._checkpoint_id,
+            resume=continuing or (
+                source == ExecutionSource.USER_TASK
+                and (parent_trace_id is None or (binding is not None and binding.parent_trace_id == parent_trace_id))
+            ),
+            user_input_boundary=user_boundary or missing_binding,
+            parent_trace_id=parent_trace_id,
+            parent_span_id=parent_span_id,
+        )
+
     async def _aexecute(
         self, input: GraphInput | Command[str] | None, *, source: ExecutionSource
     ) -> EngineResult:
@@ -407,11 +439,7 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
     async def _aexecute_turn(
         self, input: GraphInput | Command[str] | None, *, source: ExecutionSource, config: RunnableConfig
     ) -> EngineResult:
-        self._trace.update(
-            session_id=self._checkpoint_id,
-            resume=source in {ExecutionSource.CONTINUATION, ExecutionSource.RESUME},
-            user_input_boundary=source == ExecutionSource.USER_TASK,
-        )
+        self._update_trace(source)
         try:
             raw = await self.agent.ainvoke(input, config=config, durability="exit")
             if not is_string_mapping(raw):
@@ -448,6 +476,9 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
             self._execution.continuation_reason = "new_input"
             self._execution.status = EngineStatus.CONTINUE_REQUIRED
             return EngineResult(EngineStatus.CONTINUE_REQUIRED)
+        if self.handle.mailbox.awaiting_reports():
+            self._execution.status = EngineStatus.WAITING
+            return EngineResult(EngineStatus.WAITING)
         waiting = self.handle.mailbox.tasks_blocked()
         reported = self.handle.mailbox.tasks_reported()
         result: EngineResult = (
@@ -520,16 +551,16 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
 
 
 AGENT_COMMUNICATION_PROMPT = """
-You are a persistent agent. Messages contain only task_id, task text and any reported result.
-An empty task_id denotes external user input. Routing identities are managed internally.
+Messages contain task_id, task text and any reported result.
+An empty task_id denotes external user input.
 Process messages in order, including messages arriving during execution.
 Use call(subagent_id, task_id, task) only for direct children. Choose a short descriptive task topic
 as task_id, unique among your active delegated tasks. Reuse that topic for clarification or revision.
 The call returns immediately; do not generate technical UUIDs as task topics.
 Results arrive later as report messages. Never fabricate a child result or repeat a task just to poll.
-Delegation does not suspend you or disable your tools. Continue independent work while children run.
-Parent-child identity does not imply a task dependency. Report your own task based on its actual outcome,
-not on whether every child has finished. Do not fabricate results when your task really needs a child result.
+Continue independent work while children run. When you need their results and have no other work,
+end your turn and listen for messages. Do not repeatedly announce that you are waiting.
+Report your own task based on its actual outcome; do not fabricate missing child results.
 Use report(task_id, result) for your own assigned tasks: progress/blocked keeps a task open;
 completed/failed/cancelled removes your received task after the report is delivered.
 Natural-language final text does not deliver a result to your parent.
@@ -539,6 +570,8 @@ Your delegated task stays open until you accept it. Receiving a report does not 
 Use blocked only when that task cannot proceed; explain the actual dependency or required input.
 When no work can proceed, end this turn and listen. Other runnable tasks may still continue.
 After reporting completed work, handle other pending work or return to listening. You remain alive.
-Only kill stops a child. Do not kill an agent merely because one task has completed.
+Before spawning, use list_subagents to find a suitable existing child and prefer reuse.
+After accepting a report, decide the child's next role: retain it if useful for later work,
+otherwise call kill. Task acceptance does not stop the child. Reuse only within its supported scope.
 Children have no channel access. Their reports reach their parent, which may relay them upward.
 """

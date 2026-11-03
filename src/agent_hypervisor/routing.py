@@ -20,6 +20,7 @@ from src.common.utils.json import JsonObject
 @dataclass
 class _Mailbox:
     parent_id: str | None
+    agent_type: str = ""
     queue: Queue[AgentMessage] = field(default_factory=lambda: Queue(maxsize=1024))
     consumer: Lock = field(default_factory=Lock)
     closed: bool = False
@@ -271,6 +272,7 @@ class MailboxRouter:
                 "task",
                 task,
                 topic,
+                origin=deepcopy(origin or {}),
                 correlation_id=correlation,
             )
             if not self._put(child, message):
@@ -342,6 +344,31 @@ class MailboxRouter:
         with self._lock:
             tasks = self._open(agent_id).tasks
             return tasks.has_reported and not tasks.received
+
+    def awaiting_reports(self, agent_id: str) -> bool:
+        with self._lock:
+            tasks = self._open(agent_id).tasks.sent.values()
+            return bool(tasks) and all(task.status != "awaiting_review" for task in tasks)
+
+    def set_agent_type(self, agent_id: str, agent_type: str) -> None:
+        with self._lock:
+            self._open(agent_id).agent_type = agent_type
+
+    def list_subagents(self, agent_id: str) -> list[JsonObject]:
+        with self._lock:
+            parent = self._open(agent_id)
+            return [
+                {
+                    "subagent_id": identity,
+                    "agent_type": child.agent_type,
+                    "tasks": [
+                        {"task_id": task.task_id, "status": task.status}
+                        for task in parent.tasks.sent.values() if task.peer_id == identity
+                    ],
+                }
+                for identity, child in self._agents.items()
+                if child.parent_id == agent_id and not child.closed
+            ]
 
     def unfinished(self, agent_id: str) -> list[str]:
         with self._lock:
@@ -493,6 +520,12 @@ class AuthenticatedMailboxPort:
 
     def tasks_reported(self, token: MailboxToken) -> bool:
         return self._router.tasks_reported(self._router.authenticate(token))
+
+    def awaiting_reports(self, token: MailboxToken) -> bool:
+        return self._router.awaiting_reports(self._router.authenticate(token))
+
+    def list_subagents(self, token: MailboxToken) -> list[JsonObject]:
+        return self._router.list_subagents(self._router.authenticate(token))
 
     def stop(self, token: MailboxToken) -> None:
         with self._router._lock:

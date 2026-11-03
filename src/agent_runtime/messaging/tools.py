@@ -15,6 +15,7 @@ def communication_tools(engine: AgentEngine) -> list[BaseTool]:
         create_tool(func)
         for func in (
             engine.spawn_subagent,
+            engine.list_subagents,
             engine.call,
             engine.report,
             engine.accept_report,

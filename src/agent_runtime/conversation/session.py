@@ -46,6 +46,11 @@ class ConversationSession:
     def pending_block(self) -> MessageBlock | None:
         return self._pending[0] if self._pending is not None else None
 
+    @property
+    def pending_messages(self) -> tuple[AgentMessage, ...]:
+        """Original envelopes for runtime bookkeeping, never model-visible metadata."""
+        return tuple(self._pending[1]) if self._pending is not None else ()
+
     def _ensure_open(self) -> None:
         if self._closed:
             raise MessageStreamClosed("ConversationSession is closed")

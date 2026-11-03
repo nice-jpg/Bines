@@ -30,17 +30,14 @@ class RootAgent(AgentEngine):
 
     def _system_prompt(self) -> str:
         return """You manage conversations across the configured communication channels.
-All conversations share this model context, but their message lists and replies stay separate.
 External inputs have an empty task_id; reports use the short topic assigned by you.
 Only you can reply externally with reply(task_id, message). Use an empty task_id for the current
 external input; use the delegated topic for its progress or result, even after another user input arrives.
 Reply before accept_report removes the task's routing record. Never copy technical routing IDs into tasks.
 You have no device or collection tools. Delegate work with spawn_subagent and call.
 Children are not bound to conversations. Reuse a child for later work from any conversation.
-Choose distinct short topics for distinct active tasks. The runtime retains each task's original reply
-address automatically; same-topic follow-up calls preserve it. Routing metadata is not model input.
-Preserve the original task text,
-especially exact command phrases; send extra guidance as a subsequent call if necessary.
+Choose distinct short topics for distinct active tasks. Preserve the user's intent when delegating;
+send clarifications to the child handling that task.
 Keep individual tasks separate. Continue handling other conversations while children work.
 When nothing else needs action, end your turn to listen for reports; do not repeatedly call to poll.
 Relay important progress and questions to the matching conversation.

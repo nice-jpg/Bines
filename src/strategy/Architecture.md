@@ -15,6 +15,9 @@
 Agent 身份不绑定 conversation；用户对话地址只在顶层处理，父子任务与报告按 task_id 关联。
 业务代码直接构造 Engine，再由作用域内 AgentSpawner.start 委托 Host 启动 Worker；运行层不保存工厂回调或业务类型表。
 自身已投递未完成任务全部显式 blocked 时，可在本轮自然结束后监听；部分 blocked 不冻结其他任务。
+委派未结束且无最终报告待验收时，Engine 在本轮自然返回后进入 WAITING，Worker 阻塞监听邮箱；
+这不是业务 middleware 门禁，不阻止父 Agent 本轮执行其他工具。新邮件触发下一轮，避免等待训练时空转。
+list_subagents 为固定通信工具，商家策略允许查询；任务验收不自动销毁子 Agent。
 已完成任务记录不在模型调用前触发跳转，后续子报告仍正常处理。新 call 不清除其他任务的阻塞标记。
 共享对象由所属组件的锁保护；CollectorAssignment 的顺序调用要求仅作用于其自身证据流程。
 

@@ -41,7 +41,7 @@ def test_engine_exposes_only_execution_methods():
     methods = {
         name for name, value in AgentEngine.__dict__.items() if callable(value) and not name.startswith("_")
     }
-    assert methods == {"run_turn", "continue_turn", "resume_turn", "arun_turn", "acontinue_turn", "aresume_turn", "close", "send_message", "call", "report", "kill", "spawn_subagent", "report_interruption", "accept_report"}
+    assert methods == {"run_turn", "continue_turn", "resume_turn", "arun_turn", "acontinue_turn", "aresume_turn", "close", "send_message", "call", "report", "kill", "spawn_subagent", "report_interruption", "accept_report", "list_subagents"}
     for method in {"run_turn", "continue_turn", "resume_turn", "close"}:
         assert list(inspect.signature(getattr(AgentEngine, method)).parameters) == ["self"]
 

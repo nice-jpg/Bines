@@ -9,6 +9,7 @@ from src.common.utils.json import JsonValue
 
 class EngineStatus(StrEnum):
     COMPLETED = "completed"
+    WAITING = "waiting"
     CONTINUE_REQUIRED = "continue_required"
     RESUME_READY = "resume_ready"
     INTERRUPTED = "interrupted"

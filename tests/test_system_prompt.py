@@ -26,14 +26,15 @@ class SystemPromptTests(unittest.TestCase):
         self.assertNotIn("prepare_collector", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_requires_explicit_navigation_and_runtime_manuals(self) -> None:
-        self.assertIn("Only after confirm_page accepts your conclusion", CONDUCTOR_PROMPT)
+        self.assertIn("confirm whether the page matches", CONDUCTOR_PROMPT)
         self.assertIn(
-            "latest `<current_page_manual>` system message is the authoritative manual", CONDUCTOR_PROMPT
+            "latest `<current_page_manual>` message is the authoritative manual", CONDUCTOR_PROMPT
         )
         self.assertIn("Use tap_in_page only", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_to", CONDUCTOR_PROMPT)
         self.assertIn("Use navigate_back", CONDUCTOR_PROMPT)
-        self.assertIn("Each merchant visit requires a page-bound collector", CONDUCTOR_PROMPT)
+        self.assertIn("A collector is page-bound", CONDUCTOR_PROMPT)
+        self.assertIn("Before spawning, query list_subagents", CONDUCTOR_PROMPT)
         self.assertIn("without task.md operation steps", CONDUCTOR_PROMPT)
 
     def test_conductor_prompt_forbids_direct_collection(self) -> None:

@@ -74,7 +74,13 @@ Host 维护 Worker 生命周期，MailboxRouter 维护父子关系、队列和�
 | `report(task_id, result)` | 仅任务接收者向原调用者报告；可多次 progress/blocked |
 | `accept_report(task_id)` | 父 Agent 核验已收到的最终报告后移除任务；不通过时使用原主题 call 返工 |
 | `spawn_subagent(agent_type)` | 创建并启动独立 Worker，不自动发送任务 |
+| `list_subagents()` | 查询存活直接子 Agent 的类型和任务主题/状态；验收后仍可查到空闲子 Agent，供复用或销毁 |
 | `kill(subagent_id)` | 只允许直接父销毁子树，在安全边界停止并等待退出 |
+
+父 Agent 本轮自然结束且有委派等待回复、没有最终报告待验收时，Engine 返回 WAITING。
+Worker 随后监听同一邮箱而非立即续跑模型。其他任务、进度或报告均可唤醒；监听不标记业务完成。
+工具在本轮仍可正常使用，独立任务不因委派而被禁止。验收后由父 Agent 判断复用或 kill，
+不自动销毁子 Agent；page-bound collector 的复用范围限于原页面访问。
 
 接收分两次确认：Router.read 只将 mail 移至 received；ConversationSession 成功暂存消息块后
 显式 ACK，停止传输重试；消息写入 checkpoint 后，Session 才移除本地 pending。

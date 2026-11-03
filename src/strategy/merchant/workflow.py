@@ -98,6 +98,7 @@ class MerchantWorkflowMiddleware(AgentMiddleware[ConductorState, None]):
             "think",
             "talk",
             "call",
+            "list_subagents",
             "spawn_subagent",
             "accept_report",
             "report",
