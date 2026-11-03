@@ -165,7 +165,8 @@ def test_async_receive_cancellation_and_close_leave_no_waiters() -> None:
     asyncio.run(run())
 
 
-def test_general_fork_owns_graph_checkpoint_tools_and_mailbox() -> None:
+def test_general_fork_owns_graph_checkpoint_tools_and_mailbox(monkeypatch) -> None:
+    monkeypatch.setattr("src.agent_hypervisor.root.get_model_instance", EchoModel)
     async def run() -> None:
         host = Host()
         root = RootAgent(model=EchoModel(), handle=host.register_root())
@@ -175,6 +176,7 @@ def test_general_fork_owns_graph_checkpoint_tools_and_mailbox() -> None:
         try:
             assert type(child) is type(root)
             assert child.agent is not root.agent
+            assert child._model is not root._model
             assert child._checkpoint_id != root._checkpoint_id
             assert child.handle.mailbox is not root.handle.mailbox
             root._fork_context._state["messages"][0].content = "changed"

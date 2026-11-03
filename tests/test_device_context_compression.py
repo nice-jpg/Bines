@@ -22,6 +22,35 @@ def user(content: str) -> dict:
     return {"role": "user", "content": content}
 
 
+def test_only_recent_three_user_blocks_keep_tool_details() -> None:
+    messages = []
+    for i in range(5):
+        messages.extend([
+            user(f"request-{i}"), manual(f"app/page-{i}", f"visit-{i}"),
+            *call_pair(f"shot-{i}", "screenshot", content=f"image-payload-{i}"),
+            {"role": "assistant", "content": f"handled-{i}"},
+        ])
+    original = json.dumps(messages)
+    result = compact_device_messages(messages)
+    assert json.dumps(messages) == original
+    assert tool_call_ids(result) == ["shot-2", "shot-3", "shot-4"]
+    text = str(result)
+    for i in range(5):
+        assert f"request-{i}" in text
+        assert f"handled-{i}" in text
+    assert "image-payload-0" not in text and "image-payload-1" not in text
+    assert "Processing record:" in text
+
+
+def test_navigation_collapse_keeps_latest_tool_receipt() -> None:
+    messages = [user("probe"), manual("app/child", "child"),
+                *call_pair("back", "navigate_back", next_path="app"),
+                *call_pair("confirm", "confirm_page"), manual("app", "parent")]
+    result = compact_device_messages(messages)
+    assert "confirm" in tool_call_ids(result)
+    assert any(isinstance(m, dict) and m.get("tool_call_id") == "confirm" for m in result)
+
+
 def manual(path: str, visit: str, content: str | None = None) -> dict:
     return {
         "role": "system",
@@ -377,11 +406,12 @@ def test_expired_tool_call_removes_its_entire_ai_turn_and_all_results() -> None:
         manual("meituan", "home"),
         assistant_tool_calls(*calls, content="running tools"),
         *(tool_result(call_id, name, f"result:{call_id}") for call_id, name, _ in calls),
+        *call_pair("latest", "think"),
     ]
 
     compacted = compact_device_messages(messages)
 
-    assert tool_call_ids(compacted) == []
+    assert tool_call_ids(compacted) == ["latest"]
     assert all(f"result:{call_id}" not in str(compacted) for call_id, _name, _args in calls)
     assert "running tools" not in str(compacted)
 

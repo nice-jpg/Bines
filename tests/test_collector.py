@@ -417,8 +417,9 @@ def test_collector_spawn_does_not_submit_work(tmp_path, monkeypatch):
         started.append(engine)
         host._workers[engine.handle.agent_id] = engine
     monkeypatch.setattr(host, "start", start)
+    monkeypatch.setattr("src.collector.delegation.get_model_instance", lambda rule: "fake")
     monkeypatch.setattr("src.collector.delegation.CollectorEngine", lambda **kwargs: SimpleNamespace(handle=kwargs["handle"]))
-    manager = CollectorTrainingCoordinator(handle=host.handle(parent), model="fake", mechanism=t.mechanism, event_hub=t.event_hub)
+    manager = CollectorTrainingCoordinator(handle=host.handle(parent), mechanism=t.mechanism, event_hub=t.event_hub)
     manager.history = collector_history(tmp_path / "history")
     monkeypatch.setattr(t.mechanism, "read_schema", lambda path, heading: {"name": ""} if heading == "Merchant Schema" else {"items": [{"name": ""}]})
     result = manager.spawn(read_conductor_state({**page_fields("meituan", "visit", "merchant"), "probe": {"run_id": "probe-a"}}))
@@ -516,7 +517,7 @@ def test_same_run_recreated_collector_keeps_all_prepared_cases(tmp_path):
 def test_collector_spawn_requires_runtime_run_identity(tmp_path, monkeypatch):
     box = setup(tmp_path)
     from gateway_helpers import GatewayHandle, RecordingChannel
-    manager = CollectorTrainingCoordinator(handle=GatewayHandle(RecordingChannel()).handle, model="fake", mechanism=box.mechanism, event_hub=box.event_hub)
+    manager = CollectorTrainingCoordinator(handle=GatewayHandle(RecordingChannel()).handle, mechanism=box.mechanism, event_hub=box.event_hub)
     monkeypatch.setattr("src.collector.delegation.CollectorEngine", lambda **_: pytest.fail("must not launch collector"))
     with pytest.raises(ValueError, match="probe_run_id"):
         manager.spawn(read_conductor_state(page_fields("meituan", "visit", "merchant")))

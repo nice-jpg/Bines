@@ -96,6 +96,12 @@ Channel 保持动态字符串结构：`服务商 → 连接名 → 字段名 →
 
 多组模型由 `model.default` 指定默认组；多组连接由该服务商的 `default` 指定默认连接。只有一组时可以自动选择；多组但未指定默认时，不按文件顺序猜测。显式指定组名的查询仍然可用，省略组名的查询报错。显式 default 指向不存在的组属于初始化错误。
 
+`model.coding`、`model.behave` 可分别指定编码和页面行为使用的模型组。未配置专用规则时选择 default；显式规则引用不存在的组则初始化失败，不静默回退。
+`from src.configuration import get_model_instance` 提供 `get_model_instance(model_rule: Literal["coding", "behave"] | None = None)`。
+该接口每次创建独立模型及传输资源，不缓存实例。Root 使用 None，conductor 使用 behave，collector 使用 coding；同类型 fork 也重新构造，不复制父模型或连接状态。
+`models.py` 负责模型适配与构造，替代原 `src/application/model.py`。ConfigurationManager 仍只提供冻结配置，不持有客户端。
+AgentEngine 接收模型所有权，在关闭或 graph 构造失败时释放 Codex 传输；只共享配置，不共享 WebSocket、请求锁或 previous_response_id 状态。
+
 `TraceConfig` 使用 `enabled: bool`、`server_url: str`。兼容当前默认值：开启 Trace，地址为 `http://127.0.0.1:8765`；启用时校验有效 HTTP(S) 地址。显式 false 必须保留，不使用真假判断回退到默认值。
 
 扩展值采用有限递归类型：`str | bool | int | float | tuple[ConfigValue, ...] | Mapping[str, ConfigValue]`。映射递归只读、序列冻结为元组；不支持 TOML 日期值和非有限浮点数。`options` 与 `other` 使用该类型，业务调用方必须先收窄类型再使用。固定的 model/trace 结构不会退化为通用字典。
@@ -174,6 +180,7 @@ class ConfigurationManager:
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class ConfigurationSnapshot:
     model_default: str | None
+    model_rules: Mapping[str, str]
     models: Mapping[str, ModelConfig]
     channel_defaults: Mapping[str, str]
     channels: Mapping[str, Mapping[str, Mapping[str, str]]]

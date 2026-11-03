@@ -23,7 +23,7 @@ Runtime 只负责独立 Agent 的运行，不管理 Channel、Root 或业务类�
 
 ```python
 host = Host()
-root = AssistantEngine(model=model, handle=host.register_root())
+root = AssistantEngine(model=get_model_instance(), handle=host.register_root())
 await host.run(root, [channel])
 ```
 
@@ -31,6 +31,8 @@ Host、RootAgent 位于 agent_hypervisor；AssistantEngine 位于 application。
 Host 统一负责通信服务和 Worker 生命周期，不再提供独立 AgentApplication。
 多个 Channel 共用一个 Root，session 只是外部对话地址，不绑定 Agent 身份。
 业务使用 handle.spawner 申请子身份并显式构造专用 Engine，不传 factory 回调。
+模型由 configuration.get_model_instance 每次独立构造，Engine 接收所有权并在关闭时释放 Codex 连接。
+Root 使用默认规则，conductor 使用 behave，collector 使用 coding；fork 同样重新构造模型，不共享传输状态。
 
 ## 独立 Engine 运行契约
 

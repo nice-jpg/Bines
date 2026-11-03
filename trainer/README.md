@@ -5,7 +5,7 @@ mind_controller-compatible slave.
 
 TrainingEngine inherits all business assembly from ConductorEngine:
 
-- configured model from `build_model()`;
+- independent configured model from `get_model_instance("behave")`;
 - common tools with plain operation/captcha notifications;
 - user task `执行应用探测任务`;
 - session `main`;

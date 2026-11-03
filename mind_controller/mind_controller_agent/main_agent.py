@@ -114,14 +114,14 @@ def _build_default_model() -> Any:
     src_entry = str(src_dir)
     if src_entry not in sys.path:
         sys.path.insert(0, src_entry)
-    from src.application.model import build_model
+    from src.configuration import get_model_instance
 
     from src.configuration.manager import ConfigurationManager
-    from src.application.trace import trace_client
+    from src.common.tracing import trace_client
 
     ConfigurationManager.initialize()
     trace_client()
-    return build_model()
+    return get_model_instance()
 
 
 def _resolve_debug_info(

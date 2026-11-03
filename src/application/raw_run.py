@@ -18,12 +18,13 @@ from openpyxl.worksheet.worksheet import Worksheet
 
 from src.agent_hypervisor.host import Host
 from src.application.assistant import AssistantEngine
-from src.application.model import build_model, close_model
 from src.channel.console import ConsoleChannel
 from src.common.paths import WORKSPACE_ROOT
 from src.common.tracing import trace_client
 from src.common.utils.validation import is_string_mapping, is_value_sequence
+from src.configuration import get_model_instance
 from src.configuration.manager import ConfigurationManager
+from src.configuration.models import close_model
 from src.tools.workbooks.excel import ExcelReadValue
 from src.tools.workbooks.paths import COLLECTION_WORKBOOK_NAME
 
@@ -83,7 +84,7 @@ def run() -> None:
     channel: ConsoleChannel = ConsoleChannel()
     model: BaseChatModel | None = None
     try:
-        model = build_model()
+        model = get_model_instance()
         asyncio.run(_console_session(channel, model))
     except KeyboardInterrupt:
         pass

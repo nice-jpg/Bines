@@ -71,7 +71,7 @@ def parse_configuration(data: Mapping[str, object]) -> ConfigurationSnapshot:
     if type(version) is not int or version != 1:
         raise ConfigurationError("Expected configuration schema_version = 1.")
     model: Mapping[str, ConfigValue] = _mapping(root.get("model", {}))
-    _keys(model, {"default", "providers"})
+    _keys(model, {"default", "coding", "behave", "providers"})
     models: dict[str, ModelConfig] = {}
     providers: Mapping[str, ConfigValue] = _mapping(model.get("providers", {}))
     for name, entry in providers.items():
@@ -95,6 +95,13 @@ def parse_configuration(data: Mapping[str, object]) -> ConfigurationSnapshot:
     model_default: str | None = _optional_text(model.get("default"))
     if model_default is not None and model_default not in models:
         raise ConfigurationError("Default model group does not exist.")
+    model_rules: dict[str, str] = {}
+    for rule in ("coding", "behave"):
+        selected = _optional_text(model.get(rule))
+        if selected is not None:
+            if selected not in models:
+                raise ConfigurationError(f"Model group for {rule} does not exist.")
+            model_rules[rule] = selected
     channels: dict[str, Mapping[str, Mapping[str, str]]] = {}
     defaults: dict[str, str] = {}
     channel_root: Mapping[str, ConfigValue] = _mapping(root.get("channel", {}))
@@ -131,6 +138,7 @@ def parse_configuration(data: Mapping[str, object]) -> ConfigurationSnapshot:
         _url(server_url)
     return ConfigurationSnapshot(
         model_default=model_default,
+        model_rules=MappingProxyType(model_rules),
         models=MappingProxyType(models),
         channel_defaults=MappingProxyType(defaults),
         channels=MappingProxyType(channels),

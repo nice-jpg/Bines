@@ -3,9 +3,11 @@ from __future__ import annotations
 import asyncio
 import builtins
 import concurrent.futures
+import hashlib
 import json
 import logging
 import threading
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -148,6 +150,8 @@ class OpenAICodexModel(BaseChatModel):
     _request_lock: asyncio.Lock | None = PrivateAttr(default=None)
     _connected_at: float | None = PrivateAttr(default=None)
     _connection_response_id: str | None = PrivateAttr(default=None)
+    _response_stored: bool = PrivateAttr(default=False)
+    _sent_messages: Counter[str] = PrivateAttr(default_factory=Counter)
     _transport_loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
     _transport_thread: threading.Thread | None = PrivateAttr(default=None)
     _transport_guard: threading.Lock = PrivateAttr(default_factory=threading.Lock)
@@ -299,7 +303,7 @@ class OpenAICodexModel(BaseChatModel):
                 raise
 
             self._record_usage(message)
-            self._connection_response_id = _message_response_id(message)
+            self._record_response(messages, message)
             return message
 
     def _build_request_for_connection(
@@ -308,20 +312,24 @@ class OpenAICodexModel(BaseChatModel):
         kwargs: Mapping[str, object],
     ) -> CreateResponseRequest:
         options: CodexRequestOptions = read_request_options(kwargs)
-        explicit_continuation: bool = "previous_response_id" in options
+        if "previous_response_id" in options:
+            # Explicit continuation callers supply their own incremental input.
+            return self._build_request(messages, **options)
+        if self._connection_response_id is None:
+            return self._build_request(messages, **options)
         return self._build_request(
-            messages,
-            auto_previous_response=(not explicit_continuation and self._can_continue_from_history(messages)),
-            **options,
+            messages, previous_response_id=self._connection_response_id,
+            sent_messages=self._sent_messages, **options
         )
 
-    def _can_continue_from_history(self, messages: Sequence[BaseMessage]) -> bool:
-        anchor_index, response_id = _latest_response_anchor(messages)
-        if anchor_index is None or response_id is None:
-            return False
-        if response_id == self._connection_response_id:
-            return True
-        return _message_response_is_stored(messages[anchor_index])
+    def _record_response(self, messages: Sequence[BaseMessage], message: AIMessage) -> None:
+        """Commit the continuation cursor only after a complete response."""
+        self._connection_response_id = _message_response_id(message)
+        self._response_stored = message.response_metadata.get("response_store") is True
+        if self._connection_response_id is not None and message.id is None:
+            message.id = f"codex:{self._connection_response_id}"
+        self._sent_messages |= Counter(_message_key(item) for item in messages)
+        self._sent_messages[_message_key(message)] += 1
 
     async def _ensure_connection(self) -> ClientConnection:
         loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
@@ -395,7 +403,9 @@ class OpenAICodexModel(BaseChatModel):
         ws: ClientConnection | None = self._ws
         self._ws = None
         self._connected_at = None
-        self._connection_response_id = None
+        if not self._response_stored:
+            self._connection_response_id = None
+            self._sent_messages.clear()
         if ws is None:
             return
         try:
@@ -506,7 +516,7 @@ class OpenAICodexModel(BaseChatModel):
         parallel_tool_calls: bool = True,
         previous_response_id: str | None = None,
         store: bool | None = None,
-        auto_previous_response: bool = True,
+        sent_messages: Mapping[str, int] | None = None,
         **kwargs: object,
     ) -> CreateResponseRequest:
         instructions: str = self.instructions
@@ -518,20 +528,17 @@ class OpenAICodexModel(BaseChatModel):
             leading_system_count += 1
 
         should_store: bool = self.store_responses if store is None else bool(store)
-        anchor_index: int | None = None
         if previous_response_id is not None:
             previous_response_id = str(previous_response_id).strip() or None
-            if previous_response_id is not None:
-                anchor_index = _response_anchor_index(messages, previous_response_id)
-        elif auto_previous_response:
-            anchor_index, previous_response_id = _latest_response_anchor(messages)
-
         input_start: int = leading_system_count
-        if anchor_index is not None:
-            input_start = max(input_start, anchor_index + 1)
 
         input_messages: list[ResponseInput] = []
+        remaining = Counter(sent_messages or {})
         for message in messages[input_start:]:
+            key = _message_key(message)
+            if remaining[key]:
+                remaining[key] -= 1
+                continue
             if isinstance(message, SystemMessage):
                 input_messages.append(
                     {
@@ -909,22 +916,12 @@ def _response_metadata(
     return metadata
 
 
-def _latest_response_anchor(messages: Sequence[BaseMessage]) -> tuple[int | None, str | None]:
-    for index in range(len(messages) - 1, -1, -1):
-        response_id: str | None = _message_response_id(messages[index])
-        if response_id is not None:
-            return index, response_id
-    return None, None
-
-
-def _response_anchor_index(
-    messages: Sequence[BaseMessage],
-    response_id: str,
-) -> int | None:
-    for index in range(len(messages) - 1, -1, -1):
-        if _message_response_id(messages[index]) == response_id:
-            return index
-    return None
+def _message_key(message: BaseMessage) -> str:
+    """Keep only compact identities, never retain a second copy of image history."""
+    # create_agent annotates model replies with the agent name after receipt.
+    # That local label isn't serialized to Responses input and must not replay it.
+    payload = message.model_dump_json(exclude={"name", "response_metadata", "usage_metadata", "artifact"})
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _message_response_id(message: BaseMessage) -> str | None:
@@ -935,12 +932,6 @@ def _message_response_id(message: BaseMessage) -> str | None:
     if not isinstance(response_id, str) or not response_id.strip():
         return None
     return response_id
-
-
-def _message_response_is_stored(message: BaseMessage) -> bool:
-    return bool(
-        isinstance(message, AIMessage) and message_response_metadata(message).get("response_store") is True
-    )
 
 
 def _usage_metadata(usage: ResponseUsage | None) -> UsageMetadata | None:

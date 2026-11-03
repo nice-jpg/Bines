@@ -10,6 +10,7 @@ from src.agent_runtime.contracts import AgentHandle
 from src.agent_runtime.engine import AgentEngine
 from src.channel.gateway import Gateway
 from src.channel.messages import OutBoundMessage
+from src.configuration import get_model_instance
 from src.tools.shared.factory import create_tool
 
 
@@ -17,7 +18,7 @@ class RootAgent(AgentEngine):
     _can_reply = False
 
     def _create_fork(self, handle: AgentHandle) -> RootAgent:
-        return RootAgent(model=self._model, handle=handle, max_iterations=self._max_iterations)
+        return RootAgent(model=get_model_instance(), handle=handle, max_iterations=self._max_iterations)
 
     def bind_gateway(self, gateway: Gateway) -> None:
         self._can_reply = True

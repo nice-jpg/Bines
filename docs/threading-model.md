@@ -8,7 +8,7 @@
 主线程运行应用 asyncio loop，承载 Channel 收发、Gateway、BatchCoordinator 和 DeliveryMonitor。
 这些服务都是协程，没有额外 Gateway 线程。每个 AgentWorker 独占一个线程和事件循环，
 包含 Coordinator、Engine、ConversationSession 和 Mailbox。同步工具由执行线程池承载，图中合并表示。
-Codex 模型继续使用自身传输线程；多个 Engine 共享同一模型时共享该传输对象，而不是每个 Agent 创建一份。
+每个 Engine 通过 configuration.get_model_instance 获得独立模型。Codex 模型首次请求时启动自己的传输线程和连接，不与其他 Agent 共享 response ID 或请求锁；Engine 关闭时释放该线程。
 
 委派后本轮返回且仍待回复时，Engine 返回 WAITING，Coordinator 结束本轮。
 同一个 Worker 在下一轮 await Mailbox.receive，等待任意新邮件，不创建轮询线程或持续调用模型。
@@ -50,8 +50,11 @@ flowchart TB
     Kill[kill]
     Device[swipe_up]
   end
-  subgraph Transport[Codex 传输线程]
-    Model(OpenAICodexModel)
+  subgraph Transport[Root Codex 传输线程]
+    RootModel(OpenAICodexModel)
+  end
+  subgraph ChildTransport[子 Agent Codex 传输线程]
+    ChildModel(OpenAICodexModel)
   end
   RootMailbox --> RootRoute[receive] --> Router
   ChildMailbox --> ChildRoute[receive] --> Router
@@ -60,13 +63,14 @@ flowchart TB
   Reply --> Gateway
   Spawn --> Host
   Kill --> Host
-  Root --> Generate[_submit_request] --> Model
-  Child --> Generate
+  Root --> Generate[_submit_request] --> RootModel
+  Child --> ChildGenerate[_submit_request] --> ChildModel
   style Main stroke-width:3px
   style RootThread stroke-width:3px
   style ChildThread stroke-width:3px
   style Tools stroke-width:3px
   style Transport stroke-width:3px
+  style ChildTransport stroke-width:3px
 ```
 
 Host 和 Router 在主线程创建，但**不是线程绑定对象**：所有线程访问的都是图中同一实例。

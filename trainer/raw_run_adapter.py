@@ -16,11 +16,12 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from src.agent_hypervisor.host import Host
 from src.agent_runtime.types.execution import EngineResult, EngineStatus, InterruptKind
-from src.application.model import close_model
 from src.channel.messages import InBoundMessage
 from src.common.tracing import trace_client
 from src.conductor.engine import ConductorEngine
+from src.configuration import get_model_instance
 from src.configuration.manager import ConfigurationManager
+from src.configuration.models import close_model
 from src.prompts import conductor_prompt
 
 try:
@@ -259,7 +260,7 @@ def _evaluate_raw_run(result: RunResult) -> int | dict[str, Any]:
 
 
 def _build_raw_model() -> Any:
-    return _raw_run_module().build_model()
+    return get_model_instance("behave")
 
 
 def _build_plain_notifier() -> Callable[[str], None]:

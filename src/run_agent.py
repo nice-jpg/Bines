@@ -11,10 +11,11 @@ from langchain_core.language_models import BaseChatModel
 
 from src.agent_hypervisor.host import Host
 from src.application.assistant import AssistantEngine
-from src.application.model import build_model, close_model
 from src.channel.feishu import FeishuChannel, load_feishu_config
 from src.common.tracing import trace_client
+from src.configuration import get_model_instance
 from src.configuration.manager import ConfigurationManager
+from src.configuration.models import close_model
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -32,7 +33,7 @@ def main() -> None:
     channel: FeishuChannel = FeishuChannel(load_feishu_config(), "feishu")
     model: BaseChatModel | None = None
     try:
-        model = build_model()
+        model = get_model_instance()
         host = Host()
         assistant = AssistantEngine(
             model=model, handle=host.register_root(), max_iterations=args.max_iterations

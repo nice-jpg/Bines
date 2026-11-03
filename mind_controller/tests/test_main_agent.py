@@ -31,8 +31,8 @@ def test_default_model_initializes_configuration_before_build(monkeypatch):
 
     calls = []
     monkeypatch.setattr(ConfigurationManager, 'initialize', lambda: calls.append('configuration'))
-    monkeypatch.setattr('src.application.trace.trace_client', lambda: calls.append('trace'))
+    monkeypatch.setattr('src.common.tracing.trace_client', lambda: calls.append('trace'))
     model = object()
-    monkeypatch.setattr('src.application.model.build_model', lambda: calls.append('model') or model)
+    monkeypatch.setattr('src.configuration.get_model_instance', lambda: calls.append('model') or model)
     assert _build_default_model() is model
     assert calls == ['configuration', 'trace', 'model']

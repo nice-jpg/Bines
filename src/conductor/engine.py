@@ -28,6 +28,7 @@ from src.conductor.state import (
     ConductorState,
     read_conductor_fields,
 )
+from src.configuration import get_model_instance
 from src.device import DeviceOperationService
 from src.page.mechanism import PageMechanism
 from src.prompts import CONDUCTOR_PROMPT
@@ -75,7 +76,6 @@ class ConductorEngine(AgentEngine[ConductorState]):
         session_id: str | None = None,
         notifier: Callable[[str], None] | None = None,
     ) -> None:
-        self._model: str | BaseChatModel = model
         self._notifier: Callable[[str], None] = notifier or self._notify
         super().__init__(
             model=model,
@@ -88,7 +88,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
         return "conductor"
 
     def _create_fork(self, handle: AgentHandle) -> ConductorEngine:
-        return ConductorEngine(model=self._model, handle=handle, max_iterations=self._max_iterations)
+        return ConductorEngine(model=get_model_instance("behave"), handle=handle, max_iterations=self._max_iterations)
 
     def _system_prompt(self) -> str:
         return CONDUCTOR_PROMPT
@@ -135,7 +135,6 @@ class ConductorEngine(AgentEngine[ConductorState]):
         from src.collector.delegation import CollectorTrainingCoordinator
 
         collector_manager: CollectorTrainingCoordinator = CollectorTrainingCoordinator(
-            model=self._model,
             mechanism=mechanism,
             event_hub=event_hub,
             handle=self.handle,

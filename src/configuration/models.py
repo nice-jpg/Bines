@@ -2,21 +2,27 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+from langchain_core.language_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
-from src.codex import OpenAICodexModel, create_chat_model
+if TYPE_CHECKING:
+    from src.codex import OpenAICodexModel
 from src.configuration.errors import ConfigurationError
 from src.configuration.manager import ConfigurationManager
-from src.configuration.types import ConfigValue, ModelConfig
+from src.configuration.types import ConfigValue, ModelConfig, ModelRule
 
 
-def build_model() -> ChatOpenAI | OpenAICodexModel:
-    """Build the configured model backend from the initialized configuration service."""
+def get_model_instance(model_rule: ModelRule = None) -> ChatOpenAI | OpenAICodexModel:
+    """Create an independent model and transport; unspecified rules use the default group."""
 
-    config: ModelConfig = load_model_config()
+    config: ModelConfig = ConfigurationManager.instance().get_model_for_rule(model_rule)
 
     if config.provider == "codex":
+        from src.codex import create_chat_model
+
         return create_chat_model(
             model=config.model,
             reasoning_effort=_option_text(config, "reasoning_effort") or "medium",
@@ -34,19 +40,13 @@ def build_model() -> ChatOpenAI | OpenAICodexModel:
     )
 
 
-def close_model(model: ChatOpenAI | OpenAICodexModel) -> None:
+def close_model(model: str | BaseChatModel) -> None:
     """Close only model backends that own persistent transport resources."""
+
+    from src.codex import OpenAICodexModel
 
     if isinstance(model, OpenAICodexModel):
         model.close()
-
-
-def load_model_config() -> ModelConfig:
-    config: ModelConfig = ConfigurationManager.instance().get_model()
-    if config.provider == "codex":
-        _option_text(config, "reasoning_effort")
-        _retry_count(config)
-    return config
 
 
 def _option_text(config: ModelConfig, name: str) -> str | None:

@@ -19,7 +19,7 @@ def test_entrypoint_constructs_root_before_application_start(monkeypatch):
     monkeypatch.setattr(entry, "trace_client", lambda: None)
     monkeypatch.setattr(entry, "load_feishu_config", lambda: None)
     monkeypatch.setattr(entry, "FeishuChannel", lambda *args: channel)
-    monkeypatch.setattr(entry, "build_model", lambda: model)
+    monkeypatch.setattr(entry, "get_model_instance", lambda: model)
     close = Mock()
     monkeypatch.setattr(entry, "close_model", close)
     monkeypatch.setattr(entry, "Host", Host)

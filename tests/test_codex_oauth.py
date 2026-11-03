@@ -378,13 +378,14 @@ class CodexOAuthModelTests(unittest.TestCase):
             }
         )
 
-        request = model._build_request(
+        model._record_response([SystemMessage(content="stable system prompt"), HumanMessage(content="first question")], previous)
+        request = model._build_request_for_connection(
             [
                 SystemMessage(content="stable system prompt"),
                 HumanMessage(content="first question"),
                 previous,
                 HumanMessage(content="follow-up question"),
-            ]
+            ], {}
         )
 
         self.assertEqual(request["previous_response_id"], "resp_first")
@@ -422,12 +423,13 @@ class CodexOAuthModelTests(unittest.TestCase):
             }
         )
 
-        request = model._build_request(
+        model._record_response([HumanMessage(content="Call a tool.")], previous)
+        request = model._build_request_for_connection(
             [
                 HumanMessage(content="Call a tool."),
                 previous,
                 ToolMessage(content="result text", tool_call_id="call_1"),
-            ]
+            ], {}
         )
 
         self.assertEqual(request["previous_response_id"], "resp_tool_call")
@@ -460,12 +462,13 @@ class CodexOAuthModelTests(unittest.TestCase):
             }
         )
 
-        request = model._build_request(
+        model._record_response([HumanMessage(content="first question")], previous)
+        request = model._build_request_for_connection(
             [
                 HumanMessage(content="first question"),
                 previous,
                 HumanMessage(content="follow-up question"),
-            ]
+            ], {}
         )
 
         self.assertFalse(request["store"])
@@ -476,7 +479,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             "follow-up question",
         )
 
-    def test_build_request_uses_response_id_from_its_own_history(self) -> None:
+    def test_history_metadata_cannot_create_a_continuation(self) -> None:
         model = OpenAICodexModel(model="test-model")
         first_conversation = AIMessage(
             content="first",
@@ -487,17 +490,17 @@ class CodexOAuthModelTests(unittest.TestCase):
             response_metadata={"response_id": "resp_b", "response_store": True},
         )
 
-        request_a = model._build_request(
-            [HumanMessage(content="a1"), first_conversation, HumanMessage(content="a2")]
+        request_a = model._build_request_for_connection(
+            [HumanMessage(content="a1"), first_conversation, HumanMessage(content="a2")], {}
         )
-        request_b = model._build_request(
-            [HumanMessage(content="b1"), second_conversation, HumanMessage(content="b2")]
+        request_b = model._build_request_for_connection(
+            [HumanMessage(content="b1"), second_conversation, HumanMessage(content="b2")], {}
         )
 
-        self.assertEqual(request_a["previous_response_id"], "resp_a")
-        self.assertEqual(request_b["previous_response_id"], "resp_b")
-        self.assertEqual(request_a["input"][0]["content"][0]["text"], "a2")
-        self.assertEqual(request_b["input"][0]["content"][0]["text"], "b2")
+        self.assertNotIn("previous_response_id", request_a)
+        self.assertNotIn("previous_response_id", request_b)
+        self.assertEqual(len(request_a["input"]), 3)
+        self.assertEqual(len(request_b["input"]), 3)
 
     def test_completed_message_parses_responses_function_calls(self) -> None:
         model = OpenAICodexModel(model="test-model")
@@ -913,6 +916,60 @@ class CodexOAuthModelTests(unittest.TestCase):
             self.assertEqual(second.response_metadata["response_id"], "resp_second")
         finally:
             model.close()
+
+    def test_continuation_survives_removal_of_response_and_old_input(self) -> None:
+        ws = PersistentFakeWebSocket([
+            completed_events("first", response_id="resp_first"),
+            completed_events("second", response_id="resp_second"),
+        ])
+        model = OpenAICodexModel(model="test-model", token_provider=FakeTokenProvider())
+
+        async def connect(*args, **kwargs):
+            return ws
+
+        try:
+            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
+                model.invoke([HumanMessage(content="old", id="user-1")])
+                model.invoke([
+                    HumanMessage(content="old", id="user-1"),
+                    SystemMessage(content="page processing record", id="record"),
+                    HumanMessage(content="new", id="user-2"),
+                ])
+            payload = json.loads(ws.sent[1])
+            self.assertEqual(payload["previous_response_id"], "resp_first")
+            self.assertEqual(len(payload["input"]), 2)
+            self.assertEqual(payload["input"][0]["role"], "developer")
+            self.assertEqual(payload["instructions"], "You are a helpful assistant.")
+        finally:
+            model.close()
+
+    def test_incremental_input_preserves_identical_new_messages_with_distinct_ids(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        first = HumanMessage(content="continue", id="first")
+        response = AIMessage(content="ok", response_metadata={"response_id": "resp"})
+        model._record_response([first], response)
+        request = model._build_request_for_connection([
+            first, HumanMessage(content="continue", id="second")
+        ], {})
+        self.assertEqual(request["previous_response_id"], "resp")
+        self.assertEqual(len(request["input"]), 1)
+
+    def test_agent_name_annotation_does_not_replay_completed_tool_call(self) -> None:
+        model = OpenAICodexModel(model="test-model")
+        user = HumanMessage(content="reply", id="user")
+        response = AIMessage(
+            content="", tool_calls=[{"name": "reply", "args": {"message": "hello"}, "id": "call-1"}],
+            response_metadata={"response_id": "resp-1"},
+        )
+        model._record_response([user], response)
+        response.name = "dialogue"
+        request = model._build_request_for_connection([
+            user, response, ToolMessage(content="true", tool_call_id="call-1")
+        ], {})
+        self.assertEqual(request["previous_response_id"], "resp-1")
+        self.assertEqual(request["input"], [{
+            "type": "function_call_output", "call_id": "call-1", "output": "true"
+        }])
 
     def test_unstored_response_restarts_with_full_context_after_reconnect(self) -> None:
         first_ws = PersistentFakeWebSocket(

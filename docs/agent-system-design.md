@@ -188,7 +188,7 @@ Host 统一负责服务装配和 Agent/Worker 所有权，不再设置独立 Age
 `start(engine)` 仍用于启动单个 Worker，供专用子 Agent 装配使用。
 `wait_root()` 只等待登记的 Root Worker；未登记或未启动时报错，不扫描父节点列表。
 关闭时禁止新派生并通知所有 Agent 停止，停止 Buffer 接收并取消批次/重投协程，异步等待 Worker，最后关闭 Channel。
-正在运行的有限工具或模型请求不被强行终止，关闭可能等待它们的超时；共享模型仍由模型所有者关闭。
+正在运行的有限工具或模型请求不被强行终止，关闭可能等待它们的超时；每个 Engine 独占由 configuration.get_model_instance 创建的模型，并在关闭时释放 Codex 传输资源。Root 使用 default，conductor 使用 behave，collector 使用 coding，fork 不共享父模型。
 
 相对实施前方案，Router 和 Host 使用短互斥区，而不是把全部方法调度到主循环；锁内不执行模型、设备或 join。
 Mailbox 的异步等待使用可取消 Future，不占用阻塞等待线程。Channel 缓冲仍严格主循环独占。

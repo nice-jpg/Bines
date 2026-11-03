@@ -70,7 +70,13 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
         self._state: dict[str, object] = {}
         self._checkpoint_id: str = session_id or f"agent:{uuid4().hex}"
         self._checkpointer: InMemorySaver = InMemorySaver()
-        self.agent, self._trace = self._build_graph(model)
+        try:
+            self.agent, self._trace = self._build_graph(model)
+        except BaseException:
+            from src.configuration.models import close_model
+
+            close_model(model)
+            raise
 
     def _build_graph(self, model: str | BaseChatModel) -> tuple[RuntimeGraph, NTrace]:
         from langchain.agents import create_agent  # pyright: ignore[reportUnknownVariableType]
@@ -342,6 +348,9 @@ class AgentEngine[StateT: AgentState = AgentState](ABC):
             return
         self._conversation.close()
         self._lifecycle = EngineLifecycle.CLOSED
+        from src.configuration.models import close_model
+
+        close_model(self._model)
 
     def _tool_yield_reason(self, state: Mapping[str, object]) -> YieldReason | None:
         pending: bool = self._conversation.poll_input()

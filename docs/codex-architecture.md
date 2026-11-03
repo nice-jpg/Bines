@@ -207,11 +207,13 @@ AIMessage 转换为助手文本、函数或 custom tool 调用，并回放 addit
 | --- | --- | --- |
 | session_id | 模型字段，默认每实例 UUIDv7 | prompt_cache_key、连接 session_id/x-client-request-id 头 |
 | request_id | 每次 _request 新建 UUIDv7 | 传输错误日志关联；不是上述 x-client-request-id 头 |
-| response_id | 服务端完成响应，存入 AIMessage.response_metadata | 下次请求的 previous_response_id 锚点 |
+| response_id | 服务端完成响应，由模型实例直接记录，同时存入 AIMessage.response_metadata | 下次请求的 previous_response_id，不从历史反查 |
 
-自动续接只考虑调用者历史中最后一个带 response_id 的 AIMessage。该响应属于当前连接，或历史明确标记 response_store=True，才允许自动续接。有效锚点之前的历史不再发送，只发送其后的增量。
+自动续接使用模型实例在完整响应到达后维护的 response_id。实例同步记录已提交消息的 SHA-256 身份与出现次数，只保存摘要，不复制图片历史。下一次请求只序列化未提交消息；带 ID 的相同正文属于不同消息，没有 ID 的重复内容按出现次数区分。模型返回消息在缺少 ID 时赋予稳定 ID，避免后续分配 ID 影响去重。请求失败不提交消息游标。历史压缩删除 AIMessage 不影响续接，历史中的 response_metadata 不能建立或覆盖连接状态。
 
-重连会清空连接锚点：未存储响应必须回到全量历史；已存储响应可按标记继续。显式传入 previous_response_id 会绕过自动资格判断，由调用者承担可用性责任；显式 None 关闭自动续接。请求还会附带 comparison_response_id 和 ttl="30ms"；此值与公开文档针对适用模型列出的 "30m" 不符，不能据此认定缓存期限控制已正确支持。模型适用范围及端点差异见 [协议支持矩阵第 5 节](codex-protocol-coverage.md#5-续接缓存与连接能力)。
+基础 system prompt 每次仍作为 instructions 提交；新增尾部 SystemMessage 保持 developer input，不因之前消息已发送而被提升到基础 instructions。previous_response_id 继承服务端已有上下文，本地投影不删除该上下文；裁剪主要约束首次请求和重连全量恢复的大小。
+
+重连会清空未存储响应的 ID 和消息游标，使用当前投影全量恢复；已存储响应的 ID 和游标保留。显式传入 previous_response_id 由调用者直接提供增量 input 并承担可用性责任，不再扫描历史定位；显式 None 关闭自动续接。请求还会附带 comparison_response_id 和 ttl="30ms"；此值与公开文档针对适用模型列出的 "30m" 不符，不能据此认定缓存期限控制已正确支持。模型适用范围及端点差异见 [协议支持矩阵第 5 节](codex-protocol-coverage.md#5-续接缓存与连接能力)。
 
 ### 响应表示
 

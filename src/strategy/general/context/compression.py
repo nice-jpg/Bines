@@ -55,6 +55,7 @@ SHORT_LIVED_PAGE_TOOLS: Final[frozenset[str]] = frozenset(
 )
 NAVIGATION_TOOLS: Final[frozenset[str]] = frozenset({"navigate_to", "navigate_back"})
 RECENT_PAGE_TOOL_LIMIT: Final[int] = 3
+RECENT_USER_BLOCK_LIMIT: Final[int] = 3
 
 
 class DeviceContextCompressionMiddleware(AgentMiddleware[AgentState, None]):
@@ -171,7 +172,10 @@ def compact_device_messages(
             page_stack=page_stack,
             collection_summaries=collection_summaries or {},
         )
-        projected.extend(block_output)
+        if block_index < len(user_blocks) - RECENT_USER_BLOCK_LIMIT:
+            projected.extend([block[0], _historical_block_record(block_output, block_index)])
+        else:
+            projected.extend(block_output)
         if active is not None:
             active_path = active.path
             active_visit_id = active.visit_id
@@ -180,7 +184,57 @@ def compact_device_messages(
 
     if not user_blocks:
         return _limit_short_lived_tools(_expand_manual_slots(projected))
-    return _expand_manual_slots(projected)
+    result = _expand_manual_slots(projected)
+    # The latest response may still require its tool receipts on the server.
+    latest_call = next((message for message in reversed(user_blocks[-1]) if (
+        isinstance(message, AIMessage) or isinstance(message, Mapping) and _message_role(message) == "assistant"
+    )), None)
+    if latest_call is not None:
+        calls = {call.call_id for call in _tool_calls(latest_call)}
+        retained = {call.call_id for message in result for call in _tool_calls(message)}
+        if not calls & retained:
+            result.append(latest_call)
+            result.extend(message for message in messages if _tool_message_call_id(message) in calls)
+    return result
+
+
+def _historical_block_record(
+    messages: Sequence[HistoryMessage | ManualOutputSlot], block_index: int
+) -> SystemMessage:
+    """Retain action/outcome records without old manuals, images, or tool payloads."""
+    records: list[str] = []
+    counts: dict[str, int] = {}
+    for message in _expand_manual_slots(messages):
+        identity = _manual_identity(message)
+        if identity is not None:
+            records.append(f"Worked at {identity[0]}.")
+        context = read_page_message_context(message)
+        if context is not None and context.get("kind") == MANUAL_PLACEHOLDER_CONTEXT_KIND:
+            content = message.content if isinstance(message, BaseMessage) else message.get("content", "")
+            if isinstance(content, str):
+                records.append(content)
+        calls = _tool_calls(message)
+        for call in calls:
+            counts[call.name] = counts.get(call.name, 0) + 1
+        is_ai = isinstance(message, AIMessage) or (
+            isinstance(message, Mapping) and _message_role(message) == "assistant"
+        )
+        if is_ai and not calls:
+            content = message.content if isinstance(message, BaseMessage) else message.get("content", "")
+            if isinstance(content, str) and content.strip():
+                records.append(f"Agent response: {content}")
+        if _tool_message_call_id(message):
+            status = message.status if isinstance(message, ToolMessage) else (
+                message.get("status", "success") if isinstance(message, Mapping) else "success"
+            )
+            if status == "error":
+                records.append("A tool call returned an error.")
+    if counts:
+        records.append("Tool calls: " + ", ".join(f"{name} x{count}" for name, count in counts.items()) + ".")
+    return SystemMessage(
+        content="Processing record:\n" + "\n".join(dict.fromkeys(records)),
+        id=f"user-block-record:{block_index}",
+    )
 
 
 def _split_user_blocks(

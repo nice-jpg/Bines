@@ -106,7 +106,7 @@
 | 能力 | 程度 | 当前行为及影响 |
 | --- | --- | --- |
 | 持久 WebSocket | 已支持 | 懒启动传输线程，复用连接，心跳与超时管理；每个实例串行处理请求 |
-| `previous_response_id` 增量输入 | 已支持限定路径 | 历史锚点属于当前连接或明确已存储时自动使用；只发送锚点后消息 |
+| `previous_response_id` 增量输入 | 已支持限定路径 | 完整响应到达后记录 ID 和已发送消息摘要；不依赖历史 AIMessage，只发送未提交消息 |
 | 重连全量恢复 | 部分支持 | 未存储锚点在新连接上自动回退；遇到服务端 previous_response_not_found 不会按错误码再次降级 |
 | 同连接多路并发/分支 | 未支持 | 没有 stream_id 与按 lane 保存的状态；parallel_tool_calls 无法替代此能力 |
 | Mid-turn steering | 未支持 | 不发送 response.steer，也不处理相应确认/后继响应；所有 incomplete 均作为失败 |

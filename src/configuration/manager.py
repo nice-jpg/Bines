@@ -7,7 +7,7 @@ from typing import ClassVar
 from .errors import ConfigurationError, ConfigurationKeyError, ConfigurationNotInitialized
 from .loader import load_configuration
 from .locking import ReadWriteLock
-from .types import ConfigurationSnapshot, ConfigValue, ModelConfig, TraceConfig
+from .types import ConfigurationSnapshot, ConfigValue, ModelConfig, ModelRule, TraceConfig
 
 
 class ConfigurationManager:
@@ -43,6 +43,14 @@ class ConfigurationManager:
     def get_model(self, name: str | None = None) -> ModelConfig:
         with self._lock.read_lock():
             selected: str = _select(self._snapshot.models, name, self._snapshot.model_default)
+            return self._snapshot.models[selected]
+
+    def get_model_for_rule(self, model_rule: ModelRule) -> ModelConfig:
+        if model_rule not in (None, "coding", "behave"):
+            raise ConfigurationError("Model rule must be coding, behave, or None.")
+        with self._lock.read_lock():
+            name = self._snapshot.model_rules.get(model_rule) if model_rule is not None else None
+            selected = _select(self._snapshot.models, name, self._snapshot.model_default)
             return self._snapshot.models[selected]
 
     def get_channel(self, provider: str, connection: str | None = None) -> Mapping[str, str]:

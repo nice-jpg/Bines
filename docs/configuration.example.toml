@@ -4,6 +4,9 @@ schema_version = 1
 
 [model]
 default = "primary"
+# Optional role overrides; omitted roles fall back to default.
+coding = "codex"
+behave = "primary"
 
 [model.providers.primary]
 provider = "openai"

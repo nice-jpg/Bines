@@ -2,6 +2,9 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import Literal
+
+type ModelRule = Literal["coding", "behave"] | None
 
 type ConfigValue = str | bool | int | float | tuple[ConfigValue, ...] | Mapping[str, ConfigValue]
 
@@ -24,6 +27,7 @@ class TraceConfig:
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)
 class ConfigurationSnapshot:
     model_default: str | None
+    model_rules: Mapping[str, str]
     models: Mapping[str, ModelConfig]
     channel_defaults: Mapping[str, str]
     channels: Mapping[str, Mapping[str, Mapping[str, str]]]

@@ -14,7 +14,9 @@
 
 ## 职责边界
 
-ConfigurationManager 是唯一接口提供方，持有 ConfigurationSnapshot 和 ReadWriteLock。loader 负责读取、校验及递归冻结；Snapshot 只保存数据，锁只负责访问协调。调用者不能取得可变底层容器或内部锁，也不需要了解快照发布过程。
+ConfigurationManager 提供配置查询，持有 ConfigurationSnapshot 和 ReadWriteLock。loader 负责读取、校验及递归冻结；Snapshot 只保存数据，锁只负责访问协调。调用者不能取得可变底层容器或内部锁，也不需要了解快照发布过程。
+
+models.py 对外提供 get_model_instance(model_rule=None)，每次返回独立模型。coding/behave 通过 get_model_for_rule 选择对应组，规则缺省时回退 default；模型构造在退出配置读锁之后进行。该模块替代 application/model.py，不维护模型缓存。Root、conductor、collector 和 fork 构建处分别申请实例，Engine 负责其 Codex 连接释放。认证实现延迟导入，避免 Codex 查询配置时形成模块初始化循环。
 
 ## 实现对应
 

@@ -2,10 +2,9 @@
 
 import json
 
-from langchain_core.language_models import BaseChatModel
-
 from src.agent_runtime.contracts import AgentHandle
 from src.conductor.state import ConductorState, current_visit
+from src.configuration import get_model_instance
 from src.device import DeviceOperationService
 from src.page.mechanism import PageMechanism
 from src.strategy.general.state import unconfirmed_arrival
@@ -20,10 +19,9 @@ from .training import CollectorTrainingRegistry
 class CollectorTrainingCoordinator:
     """Own shared training evidence; spawn a worker without submitting a task."""
 
-    def __init__(self, *, model: str | BaseChatModel, mechanism: PageMechanism,
+    def __init__(self, *, mechanism: PageMechanism,
                  event_hub: DeviceOperationService, handle: AgentHandle) -> None:
         self._handle = handle
-        self.model = model
         self.mechanism = mechanism
         self.event_hub = event_hub
         self.training_registry = CollectorTrainingRegistry()
@@ -48,7 +46,7 @@ class CollectorTrainingCoordinator:
         )
         with self._handle.spawner.child() as handle:
             engine = CollectorEngine(
-                model=self.model, toolbox=toolbox, handle=handle, registry=self.training_registry,
+                model=get_model_instance("coding"), toolbox=toolbox, handle=handle, registry=self.training_registry,
                 session_id=f"collector:{visit_id}", max_iterations=1000,
             )
             self.training_registry.register_visit(visit_id, path)
