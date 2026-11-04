@@ -20,6 +20,10 @@ ConfigurationManager 提供配置查询，持有 ConfigurationSnapshot 和 ReadW
 
 models.py 对外提供 get_model_instance(model_rule=None)，每次返回独立模型。coding/behave 通过 get_model_for_rule 选择对应组，规则缺省时回退 default；模型构造在退出配置读锁之后进行。该模块替代 application/model.py，不维护模型缓存。Root、conductor、collector 和 fork 构建处分别申请实例，Engine 负责其 Codex 连接释放。认证实现延迟导入，避免 Codex 查询配置时形成模块初始化循环。
 
+`provider="deepseek"` 构造 `src.providers.deepseek.ChatDeepSeek`，其他 API-key 服务继续使用 `ChatOpenAI`。当前工厂固定采用非流式 Chat Completions；同步和异步响应共用 `_create_chat_result`，在模型返回前将 LangChain 的 `input_token_details.cache_read` 改为项目统计协议的 `cached_tokens`。如果响应只提供 DeepSeek 原生 `prompt_cache_hit_tokens`，适配器也会补入该字段。零命中保留为零，缺失用量不伪造计数；原始响应和其他用量字段不变。统计层不识别供应商，也不修改请求协议。
+
+供应商实现统一放在 `src/providers/`：`codex/` 保存 OAuth、WebSocket 与协议类型，`deepseek.py` 保存用量适配。`configuration.models` 通过私有 `_MODEL_BUILDERS` 表选择构造函数：`codex` 使用专用构造函数，`deepseek`、`openai` 共享 API-key 构造过程并绑定各自模型类；未知 provider 沿用 OpenAI 兼容后端。配置选择与 prompt metadata 赋值统一在 `get_model_instance` 完成，不提供动态注册接口。Codex 延迟导入，避免其认证配置查询与配置包初始化循环；模型实例不缓存，关闭时仍释放实例独占的 Codex 连接。
+
 ## 实现对应
 
 `src/configuration/manager.py` 使用类级共享锁保护单例发布；仅主线程可初始化，解析期间不持读写锁。解析失败不写入单例引用。所有业务查询取得读锁，但返回值递归不可变，因此返回后不需要继续持锁。

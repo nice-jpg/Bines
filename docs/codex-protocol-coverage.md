@@ -19,7 +19,7 @@
 
 ## 2. 请求配置覆盖
 
-实现依据：[请求类型与选项校验](../src/codex/protocol_types.py)、[请求构造与工具绑定](../src/codex/codex_oauth.py)。当前单次调用仅识别 `tools`、`tool_choice`、`parallel_tool_calls`、`previous_response_id`、`store` 五个选项。模型名、instructions、reasoning_effort 来自实例字段。
+实现依据：[请求类型与选项校验](../src/providers/codex/protocol_types.py)、[请求构造与工具绑定](../src/providers/codex/codex_oauth.py)。当前单次调用仅识别 `tools`、`tool_choice`、`parallel_tool_calls`、`previous_response_id`、`store` 五个选项。模型名、instructions、reasoning_effort 来自实例字段。
 
 | 能力/字段 | 程度 | 当前范围与限制 |
 | --- | --- | --- |

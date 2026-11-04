@@ -276,7 +276,7 @@ def test_trace_injection_uses_snapshot_not_environment(monkeypatch, configuratio
 
 
 def test_codex_auth_path_uses_snapshot(configuration_service, monkeypatch, tmp_path):
-    from src.codex.codex_oauth import CodexOAuthTokenProvider
+    from src.providers.codex.codex_oauth import CodexOAuthTokenProvider
 
     configuration_service._snapshot = parse_configuration(
         {"schema_version": 1, "other": {"codex": {"auth_json": str(tmp_path / "saved.json")}}}

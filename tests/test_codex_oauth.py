@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from src.codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
-from src.codex import codex_oauth
+from src.providers.codex.codex_oauth import CodexOAuthTokenProvider, OpenAICodexModel
+from src.providers.codex import codex_oauth
 from src.agent_runtime.middleware.model_retry import (
     create_model_retry_middleware,
     is_retryable_model_transport_error,
@@ -38,7 +38,7 @@ class CodexOAuthModelTests(unittest.TestCase):
     def test_credentials_accept_known_shapes_and_reject_non_object_auth(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             auth_path = Path(directory) / "auth.json"
-            with patch("src.codex.codex_oauth._codex_setting", side_effect=lambda name: str(auth_path) if name == "auth_json" else None):
+            with patch("src.providers.codex.codex_oauth._codex_setting", side_effect=lambda name: str(auth_path) if name == "auth_json" else None):
                 provider = CodexOAuthTokenProvider()
             for data, expected in [
                 ({"tokens": {"access_token": "test-token", "account_id": "test-account"}}, ("test-token", "test-account")),
@@ -865,7 +865,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return ws
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 first = model.invoke([HumanMessage(content="first")])
                 second = model.invoke([HumanMessage(content="second")])
 
@@ -893,7 +893,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return ws
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect):
                 first = model.invoke([HumanMessage(content="first question")])
                 second = model.invoke(
                     [
@@ -928,7 +928,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return ws
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect):
                 model.invoke([HumanMessage(content="old", id="user-1")])
                 model.invoke([
                     HumanMessage(content="old", id="user-1"),
@@ -989,7 +989,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return next(sockets)
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect):
                 first = model.invoke([HumanMessage(content="first question")])
                 model._connected_at = time.monotonic() - 2800
                 model.invoke(
@@ -1027,7 +1027,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return next(sockets)
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect):
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect):
                 first = model.invoke([HumanMessage(content="first question")])
                 first_ws._send_error = ConnectionError("socket dropped before send")
                 model.invoke(
@@ -1065,7 +1065,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             await model.aclose()
             return results[0], results[1]
 
-        with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+        with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
             first, second = asyncio.run(scenario())
 
         self.assertEqual(first.content, "first")
@@ -1083,7 +1083,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return failed_ws if provider.calls == 1 else working_ws
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 message = model.invoke([HumanMessage(content="retry")])
 
             self.assertEqual(message.content, "recovered")
@@ -1103,7 +1103,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return failed_ws
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 with self.assertRaisesRegex(ConnectionError, "read failed"):
                     model.invoke([HumanMessage(content="do not replay")])
 
@@ -1134,7 +1134,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         middleware = create_model_retry_middleware()
         try:
             with (
-                patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect,
+                patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect,
                 patch("langchain.agents.middleware.model_retry.time.sleep"),
             ):
                 message = middleware.wrap_model_call(
@@ -1219,7 +1219,7 @@ class CodexOAuthModelTests(unittest.TestCase):
             return ws
 
         try:
-            with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+            with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
                 model.invoke([HumanMessage(content="first")])
 
             connect_kwargs = mocked_connect.call_args.kwargs
@@ -1243,7 +1243,7 @@ class CodexOAuthModelTests(unittest.TestCase):
         async def connect(*args, **kwargs):
             return next(sockets)
 
-        with patch("src.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
+        with patch("src.providers.codex.codex_oauth.websockets.connect", side_effect=connect) as mocked_connect:
             first = model.invoke([HumanMessage(content="first")])
             # The socket is younger than its hard lease, but too old to fit a
             # complete wait_seconds response window.

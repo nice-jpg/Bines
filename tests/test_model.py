@@ -1,6 +1,7 @@
 """Model adapters consume an initialized immutable configuration service."""
 
 from unittest.mock import Mock
+from functools import partial
 
 import pytest
 from pydantic import SecretStr
@@ -34,7 +35,7 @@ def test_build_model_passes_config(monkeypatch, configuration_service):
         }
     )
     constructor = Mock()
-    monkeypatch.setattr(model, "ChatOpenAI", constructor)
+    monkeypatch.setitem(model._MODEL_BUILDERS, "deepseek", partial(model._build_api_model, constructor))
     assert model.get_model_instance() is constructor.return_value
     constructor.assert_called_once_with(
         base_url="https://example.test/v1",
@@ -42,8 +43,29 @@ def test_build_model_passes_config(monkeypatch, configuration_service):
         model="test-model",
         streaming=False,
         use_responses_api=False,
-        metadata={"prompt_model": "test-model", "prompt_affinity": None},
     )
+    assert constructor.return_value.metadata == {"prompt_model": "test-model", "prompt_affinity": None}
+
+
+@pytest.mark.parametrize("provider,expected", [
+    ("deepseek", model.ChatDeepSeek),
+    ("openai", model.ChatOpenAI),
+    ("custom-compatible", model.ChatOpenAI),
+])
+def test_provider_table_selects_independent_models(provider, expected, configuration_service):
+    configuration_service._snapshot = parse_configuration({
+        "schema_version": 1,
+        "model": {"providers": {"test": {
+            "provider": provider, "model": "test-model", "affinity": "gpt-6.1-sol",
+            "base_url": "https://example.test/v1", "api_key": "test",
+        }}},
+    })
+    first, second = model.get_model_instance(), model.get_model_instance()
+    assert type(first) is expected
+    assert type(second) is expected
+    assert first is not second
+    assert first.root_client is not second.root_client
+    assert first.metadata == {"prompt_model": "test-model", "prompt_affinity": "gpt-6.1-sol"}
 
 
 def test_build_codex_model(monkeypatch, configuration_service):
@@ -56,7 +78,7 @@ def test_build_codex_model(monkeypatch, configuration_service):
         }
     )
     constructor = Mock()
-    monkeypatch.setattr("src.codex.create_chat_model", constructor)
+    monkeypatch.setattr("src.providers.codex.create_chat_model", constructor)
     assert model.get_model_instance() is constructor.return_value
     constructor.assert_called_once_with(
         model="gpt-configured", reasoning_effort="high", stream_max_retries=7
@@ -127,10 +149,10 @@ def test_missing_rules_fall_back_without_sharing_codex_transport(configuration_s
             "primary": {"provider": "codex", "model": "test"},
         }},
     })
-    from src.codex import OpenAICodexModel
+    from src.providers.codex import OpenAICodexModel
     from src.configuration import get_model_instance
 
-    monkeypatch.setattr("src.codex.create_chat_model", lambda **kwargs: OpenAICodexModel(**kwargs))
+    monkeypatch.setattr("src.providers.codex.create_chat_model", lambda **kwargs: OpenAICodexModel(**kwargs))
     models = [get_model_instance(rule) for rule in (None, "coding", "behave")]
     assert len({id(instance) for instance in models}) == 3
     models[0]._connection_response_id = "root-response"
@@ -153,7 +175,7 @@ def test_unknown_model_rule_rejected(configuration_service):
 
 def test_engine_releases_its_model_once(monkeypatch):
     from engine_helpers import ScriptedEngine
-    from src.codex import OpenAICodexModel
+    from src.providers.codex import OpenAICodexModel
 
     closed = []
     monkeypatch.setattr(OpenAICodexModel, "close", lambda self: closed.append(self))
@@ -166,7 +188,7 @@ def test_engine_releases_its_model_once(monkeypatch):
 
 def test_engine_construction_failure_releases_model(monkeypatch):
     from engine_helpers import ScriptedEngine
-    from src.codex import OpenAICodexModel
+    from src.providers.codex import OpenAICodexModel
 
     closed = []
     monkeypatch.setattr(OpenAICodexModel, "close", lambda self: closed.append(self))

@@ -18,7 +18,7 @@ from .optimizer_script import ensure_optimizer_script
 from .prompts import MAIN_SYSTEM_PROMPT
 from .provenance import commit_initial_optimizer
 from .runtime import OptimizerRuntime
-from src.codex import create_chat_model
+from src.providers.codex import create_chat_model
 
 
 @dataclass(frozen=True)

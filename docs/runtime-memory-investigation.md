@@ -212,7 +212,7 @@ sync 合并旧 `_deleted_ids` 和 `_deleted_aaids`，未见容量限制；当前
 
 ### M10. 次要成本：模型统计、协议日志、树重建和 Excel 全量读写
 
-- `src/codex/codex_oauth.py:630` 的 usage records 逐响应积累；有 reset 方法，但当前主运行路径未见周期调用。每条较小。
+- `src/providers/codex/codex_oauth.py:630` 的 usage records 逐响应积累；有 reset 方法，但当前主运行路径未见周期调用。每条较小。
 - `_request()` 同时持有 request、JSON payload 和消息输入直到响应完成，是大输入下的峰值因素；未发现模型对象持有一个无限增长的“所有请求/响应列表”。WS 独立线程不等于复制 Python 堆。
 - 协议日志逐文件落盘，当前目录约 9.93 MB；它不是 Python 常驻缓存，但无归档策略会长期占盘。
 - `ReadOnlyPageView` 重建 Reco 树、查询结果 deepcopy，`freeze_page()` 多次遍历区域树，属于临时分配/CPU 成本；没有证据说明每棵旧树永久保留。

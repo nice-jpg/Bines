@@ -93,7 +93,7 @@ def test_agent_and_trace_name_are_explicit_not_environment_owned(monkeypatch):
 
 
 def test_runtime_import_has_no_device_or_business_middleware_dependency():
-    code = "import sys; import src.agent_runtime; assert 'src.conductor.engine' not in sys.modules; assert 'src.strategy.general.page_visit' not in sys.modules; assert 'src.codex' not in sys.modules; assert 'Reco' not in sys.modules"
+    code = "import sys; import src.agent_runtime; assert 'src.conductor.engine' not in sys.modules; assert 'src.strategy.general.page_visit' not in sys.modules; assert 'src.providers.codex' not in sys.modules; assert 'Reco' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], check=True, env={**os.environ, "NTRACE_ENABLED": "0"})
 
 

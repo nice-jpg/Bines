@@ -1,6 +1,6 @@
 # Codex 模型适配模块架构
 
-状态：**2026-10-14 实现分析快照**。本文依据 `src/codex` 及其直接调用方编写，描述本项目适配器的行为，不代表服务端协议保证。此次只编写文档，不重构代码。配置服务见 [configuration](configuration-architecture.md)，当时 Agent 调度见 [历史 Runtime](deprecated/runtime-before-hypervisor/agent-runtime-architecture.md)，新目标见 [三层设计](agent-system-design.md)。
+状态：**2026-10-14 实现分析快照**。本文依据 `src/providers/codex` 及其直接调用方编写，描述本项目适配器的行为，不代表服务端协议保证。此次只编写文档，不重构代码。配置服务见 [configuration](configuration-architecture.md)，当时 Agent 调度见 [历史 Runtime](deprecated/runtime-before-hypervisor/agent-runtime-architecture.md)，新目标见 [三层设计](agent-system-design.md)。
 
 ## 1. 背景与职责
 
@@ -14,9 +14,9 @@
 
 | 文件 | 职责与出口 |
 | --- | --- |
-| [__init__.py](../src/codex/__init__.py) | 仅导出 OpenAICodexModel、create_chat_model |
-| [codex_oauth.py](../src/codex/codex_oauth.py) | 两个行为类、工厂、消息与工具转换、响应汇总和协议日志 |
-| [protocol_types.py](../src/codex/protocol_types.py) | 请求/响应 TypedDict、联合类型和 Pydantic TypeAdapter 校验函数 |
+| [__init__.py](../src/providers/codex/__init__.py) | 仅导出 OpenAICodexModel、create_chat_model |
+| [codex_oauth.py](../src/providers/codex/codex_oauth.py) | 两个行为类、工厂、消息与工具转换、响应汇总和协议日志 |
+| [protocol_types.py](../src/providers/codex/protocol_types.py) | 请求/响应 TypedDict、联合类型和 Pydantic TypeAdapter 校验函数 |
 
 `src/application/model.py` 从 ConfigurationManager 选择模型配置，并在 provider 为 codex 时调用工厂。认证路径和 WebSocket 地址通过 `get_other("codex", ...)` 读取。配置初始化必须在构造默认 TokenProvider 前完成。
 
@@ -227,7 +227,7 @@ read_response_event 使用 TypeAdapter 严格检查已声明字段的类型。�
 
 ### 数据契约清单
 
-以下均定义于 [protocol_types.py](../src/codex/protocol_types.py)。TypedDict 只描述字典结构，没有对象方法，不在运行架构图中扩展成服务节点。
+以下均定义于 [protocol_types.py](../src/providers/codex/protocol_types.py)。TypedDict 只描述字典结构，没有对象方法，不在运行架构图中扩展成服务节点。
 
 | 数据类型 | 作用 |
 | --- | --- |
