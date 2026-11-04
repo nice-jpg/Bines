@@ -317,7 +317,7 @@ class CollectorToolbox:
             result, _ = bridge.query(name, args)
         else:
             result, _ = bridge.call(name, args)
-        if name in {"page_read", "page_node", "page_catalog"}:
+        if name in {"page_read", "page_node", "page_nodes_at", "page_catalog"}:
             self._read_regions = True
         if name == "update_aaid" and guide is not None:
             alias: JsonValue = args["value"]

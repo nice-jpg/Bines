@@ -104,6 +104,9 @@ class ReadOnlyPageView:
     def page_node(self, key: int) -> JsonObject:
         return json_object(self.__session.call("page_node", {"key": key}))
 
+    def page_nodes_at(self, x: int, y: int) -> list[JsonObject]:
+        return [json_object(node) for node in self.__session.page_nodes_at(x, y)]
+
     def select_aaid(self, aaid: int) -> JsonObject:
         try:
             node: JsonObject = json_object(self.__session.call("select_aaid", {"aaid": aaid}))

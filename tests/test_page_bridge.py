@@ -117,3 +117,25 @@ def test_refresh_ratios_match_both_reco_queries():
             assert region[name] == bridge.call(name, {'id': region['id']})[0]
     assert hint['view_update_ratio'] == .5
     assert hint['view_update_ratio'] == bridge.root_change_ratio()
+
+
+def test_coordinate_query_tool_and_frozen_view():
+    from src.device.services.page.view import ReadOnlyPageView
+
+    dumps = []
+    bridge = PageBridge(lambda: dumps.append(1) or XML)
+    tools = {tool.name: tool for tool in create_page_tools(bridge)}
+    result = tools['page_nodes_at'].invoke({
+        'type': 'tool_call', 'id': 'hit-1', 'name': 'page_nodes_at',
+        'args': {'x': 50, 'y': 40},
+    })
+    nodes = json.loads(result.content)
+    assert [n['type'] for n in nodes] == ['button', 'page']
+    assert 'private-id' not in result.content
+    frozen = ReadOnlyPageView(result.artifact['page_snapshot'])
+    assert frozen.page_nodes_at(50, 40) == nodes
+    assert bridge.query('page_nodes_at', {'x': 50, 'y': 40})[0] == nodes
+    assert len(dumps) == 1
+    bridge.observe(XML.replace('商品', '点菜'))
+    assert frozen.page_nodes_at(50, 40) == nodes
+    assert bridge.query('page_nodes_at', {'x': 50, 'y': 40})[0][0]['summary'] == '点菜'

@@ -47,6 +47,7 @@ SHORT_LIVED_PAGE_TOOLS: Final[frozenset[str]] = frozenset(
         "page_catalog",
         "page_read",
         "page_node",
+        "page_nodes_at",
         "select_aaid",
         "node_update_ratio",
         "view_update_ratio",
