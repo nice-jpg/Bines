@@ -25,6 +25,13 @@ The shipped `gpt-6.1-sol` directory contains the existing instructions and page
 mechanisms. The other directories illustrate optional overrides. There is no
 `default` prompt directory.
 
+`deepseek/` is a complete Chinese-language override of the baseline tree: the same
+role files and the same `page_mechanism` layout, translated and restructured for a
+DeepSeek target while keeping every tool name, numeric limit, and page contract
+unchanged. Because prompt directories are matched by literal model name, it is
+selected only when a model's name or `affinity` is exactly `deepseek`; for a
+DeepSeek provider model, set `affinity = "deepseek"` to activate it.
+
 For each requested file, lookup checks the current model, its configured affinity,
 then `gpt-6.1-sol`. Overrides replace the entire body of that file. A model directory
 can override only one role while the other files fall back independently. An empty
