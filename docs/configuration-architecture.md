@@ -205,6 +205,7 @@ class ModelConfig:
     base_url: str | None
     api_key: str | None
     options: Mapping[str, ConfigValue]
+    affinity: str | None
 ```
 
 这些字段均公开只读。provider 和 model 必须为非空字符串；provider 在加载时去除首尾空白并统一小写。API Key 模型的 base_url 与 api_key 必须为非空字符串；现有 codex 类型允许缺省为 None。base_url 如有值须为有效 HTTP(S) 地址。options 缺省为空只读映射，具体选项由模型适配器验证和收窄类型。

@@ -8,7 +8,7 @@ from src.configuration import get_model_instance
 
 class AssistantEngine(RootAgent):
     def _system_prompt(self) -> str:
-        return super()._system_prompt() + "\nAvailable agent type: conductor (application exploration)."
+        return super()._system_prompt() + "\n" + self._prompt("assistant")
 
     def spawn_subagent(self, agent_type: str) -> dict[str, str]:
         """Create a persistent conductor child; send tasks separately with call."""

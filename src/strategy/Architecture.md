@@ -168,6 +168,7 @@ Toolbox 清除旧评分、冻结视图、滑动样本和还原状态，要求重
 路由层的生命周期对齐先于所选策略的所有 before_model hooks；VisitHistory 随后记录已提交页面事实。
 PageInput 在 VisitHistory 之后运行；未确认时注入明确标识的候选 manual，不宣称目标已到达。旧页面指令只作为历史。
 manual 和事实消息只在变化时追加，基础 system prompt 不变。压缩仅投影 ModelRequest.messages，不修改完整 graph history，也不压缩 collector。
+基础 system prompt 在 Engine 构造时从模型目录、affinity 或 `gpt-6.1-sol` 目录选择，不由策略或 middleware 选择。conductor 按相同优先级选择完整的 `page_mechanism` 目录，页面文档、指南和脚本不跨模型目录混合。委派的 collector 共用该页面服务，确保训练与采集使用相同契约和脚本；collector 自身角色 prompt 仍按 coding 模型选择。canonical path 不包含模型目录；同一 Engine 运行期间基础 prompt 固定。
 仅最近三个 user block 保留完整页面投影，更早的 block 留下用户原文和确定性的处理记录，不携带图片、manual 和工具载荷。最近一轮工具调用与回执成对保留，避免页面折叠破坏增量协议。
 页面确认反馈只由 PageVisit 发出：导航后的候选提示与 confirm_page 的工具结果。PageInput 仅提供候选/当前 manual，不重复发出确认要求，也不追加 page_identity 消息。完整消息来源、压缩规则和一帧输入/输出图见 [上下文投影说明](general/context/Compression.md)。
 通知、manual 读取或诊断失败不建立新业务卡口；框架 interrupt 和取消不被当作普通诊断吞掉。

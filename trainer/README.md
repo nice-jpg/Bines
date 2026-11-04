@@ -13,9 +13,9 @@ TrainingEngine inherits all business assembly from ConductorEngine:
 - evaluation delegated to `src/application/raw_run.py:eval`.
 
 Unlike the current `raw_run.run()`, the adapter returns the real
-training `RunResult` (output, evaluation state and compact summary) instead of only printing it. Before every round it reloads the
-conductor_prompt.py binding, so edits made by mind_controller take effect.
-`PAGE.md` manuals are already read dynamically by `query_manual`.
+training `RunResult` (output, evaluation state and compact summary) instead of only printing it.
+Each new engine reads its model-affine conductor.md file, so edits made by mind_controller
+take effect on the next round without reloading Python modules. `PAGE.md` manuals remain dynamic.
 
 If captcha HITL interrupts a task, `run()` keeps the same runtime and session
 alive, waits for the exact input `done`, and submits `done` through TrainingChannel and Gateway. AgentCoordinator then selects

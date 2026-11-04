@@ -13,6 +13,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
+from Reco.model_interface import INSTRUCTIONS as PAGE_READING_INSTRUCTIONS
 from src.agent_messages.text import latest_message_text
 from src.agent_messages.types import GraphInput, InputMessage
 from src.agent_runtime.contracts import AgentHandle
@@ -31,7 +32,6 @@ from src.conductor.state import (
 from src.configuration import get_model_instance
 from src.device import DeviceOperationService
 from src.page.mechanism import PageMechanism
-from src.prompts import CONDUCTOR_PROMPT
 from src.strategy.general.captcha import (
     CaptchaHumanInTheLoopMiddleware,
     create_captcha_human_in_the_loop_middleware,
@@ -91,7 +91,7 @@ class ConductorEngine(AgentEngine[ConductorState]):
         return ConductorEngine(model=get_model_instance("behave"), handle=handle, max_iterations=self._max_iterations)
 
     def _system_prompt(self) -> str:
-        return CONDUCTOR_PROMPT
+        return self._prompt("conductor") + "\nPage reading tools:\n" + PAGE_READING_INSTRUCTIONS
 
     def spawn_subagent(self, agent_type: str, runtime: ToolRuntime[None, ConductorState]) -> dict[str, str]:
         """Spawn a collector for the confirmed current page, or fork a general child. Submit work with call."""
@@ -131,7 +131,10 @@ class ConductorEngine(AgentEngine[ConductorState]):
         captcha: CaptchaAuthenticationTool = CaptchaAuthenticationTool(
             notifier=self._notifier, device_operations=event_hub
         )
-        mechanism: PageMechanism = PageMechanism()
+        from src.prompts.loader import resolve_page_mechanism
+
+        profile = self._model.metadata if isinstance(self._model, BaseChatModel) else {"prompt_model": self._model}
+        mechanism: PageMechanism = PageMechanism(resolve_page_mechanism(profile))
         from src.collector.delegation import CollectorTrainingCoordinator
 
         collector_manager: CollectorTrainingCoordinator = CollectorTrainingCoordinator(

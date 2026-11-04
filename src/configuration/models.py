@@ -19,15 +19,18 @@ def get_model_instance(model_rule: ModelRule = None) -> ChatOpenAI | OpenAICodex
     """Create an independent model and transport; unspecified rules use the default group."""
 
     config: ModelConfig = ConfigurationManager.instance().get_model_for_rule(model_rule)
+    metadata = {"prompt_model": config.model, "prompt_affinity": config.affinity}
 
     if config.provider == "codex":
         from src.codex import create_chat_model
 
-        return create_chat_model(
+        model = create_chat_model(
             model=config.model,
             reasoning_effort=_option_text(config, "reasoning_effort") or "medium",
             stream_max_retries=_retry_count(config),
         )
+        model.metadata = metadata
+        return model
 
     if config.base_url is None or config.api_key is None:
         raise ConfigurationError("API key models require base_url and api_key.")
@@ -37,6 +40,7 @@ def get_model_instance(model_rule: ModelRule = None) -> ChatOpenAI | OpenAICodex
         model=config.model,
         streaming=False,
         use_responses_api=False,
+        metadata=metadata,
     )
 
 

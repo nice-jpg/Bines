@@ -13,6 +13,8 @@ provider = "openai"
 base_url = "https://api.openai.com/v1"
 api_key = "replace-with-your-api-key"
 model = "replace-with-your-model"
+# Optional prompt fallback directory; does not change the API model.
+# affinity = "gpt-6.1-sol"
 
 # A second group can use the same provider with a different endpoint or model.
 [model.providers.codex]

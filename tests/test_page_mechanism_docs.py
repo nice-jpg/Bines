@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGE_ROOT = ROOT / "src" / "prompts" / "page_mechanism" / "meituan"
+PAGE_ROOT = ROOT / "src" / "prompts" / "gpt-6.1-sol" / "page_mechanism" / "meituan"
 
 
 class PageMechanismDocTests(unittest.TestCase):

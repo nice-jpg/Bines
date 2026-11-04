@@ -77,7 +77,7 @@ def parse_configuration(data: Mapping[str, object]) -> ConfigurationSnapshot:
     for name, entry in providers.items():
         _text(name)
         fields: Mapping[str, ConfigValue] = _mapping(entry)
-        _keys(fields, {"provider", "model", "base_url", "api_key", "options"})
+        _keys(fields, {"provider", "model", "base_url", "api_key", "options", "affinity"})
         provider: str = _text(fields.get("provider")).strip().lower()
         base_url: str | None = _optional_text(fields.get("base_url"))
         api_key: str | None = _optional_text(fields.get("api_key"))
@@ -91,6 +91,7 @@ def parse_configuration(data: Mapping[str, object]) -> ConfigurationSnapshot:
             base_url=base_url,
             api_key=api_key,
             options=_mapping(fields.get("options", {})),
+            affinity=_optional_text(fields.get("affinity")),
         )
     model_default: str | None = _optional_text(model.get("default"))
     if model_default is not None and model_default not in models:

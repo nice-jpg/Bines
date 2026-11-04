@@ -148,6 +148,7 @@ def test_prompt_catalog_uses_page_mechanism_relative_scope(tmp_path: Path) -> No
         tmp_path
         / "src"
         / "prompts"
+        / "gpt-6.1-sol"
         / "page_mechanism"
         / "meituan"
         / "美食"
@@ -156,8 +157,8 @@ def test_prompt_catalog_uses_page_mechanism_relative_scope(tmp_path: Path) -> No
 
     entry = _prompt_catalog_entry(page_prompt, tmp_path)
 
-    assert entry["path"] == "src/prompts/page_mechanism/meituan/美食/PAGE.md"
-    assert entry["display_path"] == "src/prompts/page_mechanism/meituan/美食/PAGE.md"
+    assert entry["path"] == "src/prompts/gpt-6.1-sol/page_mechanism/meituan/美食/PAGE.md"
+    assert entry["display_path"] == "src/prompts/gpt-6.1-sol/page_mechanism/meituan/美食/PAGE.md"
     assert entry["resolved_path"] == str(page_prompt)
     assert entry["scope_hint"].startswith("page-specific instructions for meituan/美食;")
 

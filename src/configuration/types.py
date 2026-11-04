@@ -16,6 +16,7 @@ class ModelConfig:
     base_url: str | None
     api_key: str | None
     options: Mapping[str, ConfigValue]
+    affinity: str | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True, repr=False)

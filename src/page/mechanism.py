@@ -28,17 +28,17 @@ from src.page.scripts import (
     PageScriptExecutor,
 )
 
-PAGE_MECHANISM_DIR: Final[Path] = Path(__file__).resolve().parents[1] / "prompts" / "page_mechanism"
+PAGE_MECHANISM_DIR: Final[Path] = Path(__file__).resolve().parents[1] / "prompts" / "gpt-6.1-sol" / "page_mechanism"
 RUN_AGENT_PY_PATCH_DESCRIPTION_RE: Final[re.Pattern[str]] = re.compile(
     r"UpdateFile: run\.agent\.py \([1-9]\d* chunks\)"
 )
 
 
 class PageMechanism:
-    """Resolve page mechanism files under ``prompts/page_mechanism``."""
+    """Own page documents and scripts within one selected model's mechanism tree."""
 
-    def __init__(self) -> None:
-        self.root: Path = PAGE_MECHANISM_DIR.resolve()
+    def __init__(self, root: Path | None = None) -> None:
+        self.root: Path = (root if root is not None else PAGE_MECHANISM_DIR).resolve()
         self._states: dict[str, JsonObject] = {}
         self._run_patch_lock: Lock = Lock()
         self._documents: PageDocumentStore = PageDocumentStore(self._run_patch_lock)

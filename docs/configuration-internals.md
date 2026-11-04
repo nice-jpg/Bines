@@ -14,6 +14,8 @@
 
 ## 职责边界
 
+模型组可配置 `affinity = "gpt-6.1-sol"`，值是 prompt 目录对应的模型名，不是 provider 分组或环境变量表达式。模型工厂将实际模型名与 affinity 写入实例 metadata；配置层不读取 prompt，也不维护 prompt 缓存。独立 loader 按每份角色文件依次选择模型目录、affinity 目录和 `gpt-6.1-sol`；页面机制按相同优先级选择完整目录，见 [Prompt 目录说明](../src/prompts/README.md)。
+
 ConfigurationManager 提供配置查询，持有 ConfigurationSnapshot 和 ReadWriteLock。loader 负责读取、校验及递归冻结；Snapshot 只保存数据，锁只负责访问协调。调用者不能取得可变底层容器或内部锁，也不需要了解快照发布过程。
 
 models.py 对外提供 get_model_instance(model_rule=None)，每次返回独立模型。coding/behave 通过 get_model_for_rule 选择对应组，规则缺省时回退 default；模型构造在退出配置读锁之后进行。该模块替代 application/model.py，不维护模型缓存。Root、conductor、collector 和 fork 构建处分别申请实例，Engine 负责其 Codex 连接释放。认证实现延迟导入，避免 Codex 查询配置时形成模块初始化循环。

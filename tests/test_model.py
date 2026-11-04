@@ -42,6 +42,7 @@ def test_build_model_passes_config(monkeypatch, configuration_service):
         model="test-model",
         streaming=False,
         use_responses_api=False,
+        metadata={"prompt_model": "test-model", "prompt_affinity": None},
     )
 
 
@@ -60,6 +61,7 @@ def test_build_codex_model(monkeypatch, configuration_service):
     constructor.assert_called_once_with(
         model="gpt-configured", reasoning_effort="high", stream_max_retries=7
     )
+    assert constructor.return_value.metadata == {"prompt_model": "gpt-configured", "prompt_affinity": None}
 
 
 @pytest.mark.parametrize("value", [-1, True, "5"])

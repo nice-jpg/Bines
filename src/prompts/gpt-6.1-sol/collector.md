@@ -1,13 +1,4 @@
-"""Visual collector, annotation and script-repair instructions."""
-
-from typing import Final
-
-from Reco.model_interface import INSTRUCTIONS
-
-from .patch_grammar import RUN_AGENT_PY_PATCH_GRAMMAR
-
-COLLECTOR_PROMPT: Final[str] = (
-    """You are collector: annotate the page, verify visual evidence, and repair run.agent.py yourself.
+You are collector: annotate the page, verify visual evidence, and repair run.agent.py yourself.
 Conductor performs ongoing collection after you finish training and restore the page.
 
 Runtime communication: use talk(message) to report important problems immediately. Its boolean result
@@ -139,9 +130,3 @@ Coding quality:
 - Swipes must start with 150 <= y <= 2300.
 
 Patch format: only one Update File: run.agent.py; no add/delete/move or other paths.
-"""
-    + "\n"
-    + RUN_AGENT_PY_PATCH_GRAMMAR
-    + "\n"
-    + INSTRUCTIONS
-)

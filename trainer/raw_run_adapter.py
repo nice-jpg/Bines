@@ -22,7 +22,6 @@ from src.conductor.engine import ConductorEngine
 from src.configuration import get_model_instance
 from src.configuration.manager import ConfigurationManager
 from src.configuration.models import close_model
-from src.prompts import conductor_prompt
 
 try:
     # This is the canonical import when launched through mind_controller/run_master.py.
@@ -33,8 +32,6 @@ except ModuleNotFoundError:
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
-SYSTEM_PROMPT_PATH = SRC_DIR / "prompts" / "conductor_prompt.py"
-PAGE_MECHANISM_DIR = SRC_DIR / "prompts" / "page_mechanism"
 APP_PROBE_MESSAGE = "执行应用探测任务"
 CAPTCHA_RESUME_TEXT = "done"
 
@@ -53,9 +50,6 @@ class RunResult:
 
 
 class TrainingEngine(ConductorEngine):
-    def _system_prompt(self) -> str:
-        return conductor_prompt.CONDUCTOR_PROMPT
-
     @property
     def evaluation_state(self) -> Mapping[str, object]:
         # A training report is read after execution; Coordinator never reads graph state.
@@ -170,13 +164,13 @@ class RawRunSlave:
         """Describe the prompt surface that may be optimized by the master."""
 
         prompt_paths = (
-            SYSTEM_PROMPT_PATH,
-            *sorted(PAGE_MECHANISM_DIR.rglob("PAGE.md")),
+            *sorted((SRC_DIR / "prompts").glob("*/conductor.md")),
+            *sorted((SRC_DIR / "prompts").glob("*/page_mechanism/**/PAGE.md")),
         )
         return SlaveDebugInfo(
             prompt_paths=prompt_paths,
             prompt_structure=(
-                "conductor_prompt.py defines the global collection policy and tool protocol. "
+                "Model-scoped conductor.md files define collection policy and tool protocol. "
                 "Each PAGE.md defines canonical, page-specific operating instructions and "
                 "is injected by the runtime together with task.md for the current page path."
             ),
@@ -272,9 +266,7 @@ def _raw_run_module() -> Any:
 
 
 def _reload_training_engine() -> EngineFactory:
-    """Reload the prompt read by the training engine's protected extension point."""
-    importlib.invalidate_caches()
-    importlib.reload(conductor_prompt)
+    """New engines read their selected prompt files directly, without import caching."""
     return TrainingEngine
 
 

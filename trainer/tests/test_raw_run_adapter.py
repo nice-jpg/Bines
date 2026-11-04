@@ -8,7 +8,7 @@ from langchain_core.tools import StructuredTool
 from src.agent_runtime.engine import AgentEngine
 from src.agent_runtime.contracts import TaskResult
 from tests.engine_helpers import ScriptedEngine, Model
-from trainer.raw_run_adapter import PAGE_MECHANISM_DIR, RawRunSlave, TrainingEngine
+from trainer.raw_run_adapter import SRC_DIR, RawRunSlave, TrainingEngine
 
 
 class ReportEngine(ScriptedEngine):
@@ -47,7 +47,9 @@ def test_adapter_runs_graph_and_evaluates_report():
 def test_debug_info_declares_existing_prompt_files():
     info = RawRunSlave().debug_info()
     assert all(path.is_file() for path in info.prompt_paths)
-    assert {p for p in info.prompt_paths if p.name == "PAGE.md"} == set(PAGE_MECHANISM_DIR.rglob("PAGE.md"))
+    assert {p for p in info.prompt_paths if p.name == "PAGE.md"} == set(
+        (SRC_DIR / "prompts").glob("*/page_mechanism/**/PAGE.md")
+    )
 
 
 def test_adapter_handles_repeated_human_interrupts_and_detaches_context():

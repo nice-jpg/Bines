@@ -5,12 +5,13 @@ from collections.abc import Sequence
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 
+from Reco.model_interface import INSTRUCTIONS
 from src.agent_messages.types import InputMessage
 from src.agent_runtime.contracts import AgentHandle, TaskResult
 from src.agent_runtime.engine import AgentEngine
 from src.agent_runtime.strategy.registration import StrategyRegistration
 from src.agent_runtime.strategy.state import StrategyInput
-from src.prompts import COLLECTOR_PROMPT
+from src.prompts.patch_grammar import RUN_AGENT_PY_PATCH_GRAMMAR
 from src.strategy.collector.state import COLLECTOR, CollectorState
 from src.strategy.collector.strategy import CollectorStrategy
 from src.tools.communication.tools import create_talk_tool
@@ -87,7 +88,14 @@ class CollectorEngine(AgentEngine[CollectorAgentState]):
         return "collector"
 
     def _system_prompt(self) -> str:
-        return COLLECTOR_PROMPT + "\n" + self._toolbox.mechanism.query_page_doc(self._toolbox.page_path)
+        return "\n".join(
+            (
+                self._prompt("collector"),
+                RUN_AGENT_PY_PATCH_GRAMMAR,
+                INSTRUCTIONS,
+                self._toolbox.mechanism.query_page_doc(self._toolbox.page_path),
+            )
+        )
 
     def _create_tools(self) -> Sequence[BaseTool]:
         return [*self._toolbox.create_tools(), create_talk_tool(self.send_message)]

@@ -7,10 +7,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from src.prompts import (
-    COLLECTOR_PROMPT,
-    CONDUCTOR_PROMPT,
+    load_prompt,
     RUN_AGENT_PY_PATCH_GRAMMAR,
 )
+from Reco.model_interface import INSTRUCTIONS
+
+CONDUCTOR_PROMPT = load_prompt("conductor", None) + "\nPage reading tools:\n" + INSTRUCTIONS
+COLLECTOR_PROMPT = "\n".join((load_prompt("collector", None), RUN_AGENT_PY_PATCH_GRAMMAR, INSTRUCTIONS))
 
 
 class SystemPromptTests(unittest.TestCase):

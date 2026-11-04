@@ -32,6 +32,7 @@ Host 统一负责通信服务和 Worker 生命周期，不再提供独立 AgentA
 多个 Channel 共用一个 Root，session 只是外部对话地址，不绑定 Agent 身份。
 业务使用 handle.spawner 申请子身份并显式构造专用 Engine，不传 factory 回调。
 模型由 configuration.get_model_instance 每次独立构造，Engine 接收所有权并在关闭时释放 Codex 连接。
+Engine 构建 graph 时依据模型 metadata 选择角色和通信 prompt。静态正文位于 `src/prompts/<model>/`，缺少覆盖时按 affinity、`gpt-6.1-sol` 回退；不在业务代码中判断模型名。页面服务使用同样的选择规则，manual 注入机制不变。
 Root 使用默认规则，conductor 使用 behave，collector 使用 coding；fork 同样重新构造模型，不共享传输状态。
 
 ## 独立 Engine 运行契约
